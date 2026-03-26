@@ -126,7 +126,10 @@ class Hyperparameters:
     ngram_eval_min_count = int(os.environ.get("NGRAM_EVAL_MIN_COUNT", 2))
     ngram_eval_buckets = int(os.environ.get("NGRAM_EVAL_BUCKETS", 4_194_304))
     ngram_eval_max_seconds = float(os.environ.get("NGRAM_EVAL_MAX_SECONDS", 0.0))
+    ngram_eval_alpha_clip = float(os.environ.get("NGRAM_EVAL_ALPHA_CLIP", 0.95))
+    ngram_use_learned_alpha = bool(int(os.environ.get("NGRAM_USE_LEARNED_ALPHA", "1")))
     ngram_entropy_shift = bool(int(os.environ.get("NGRAM_ENTROPY_SHIFT", "0")))  # per-order center shift
+    ngram_entropy_shift_per_order = float(os.environ.get("NGRAM_ENTROPY_SHIFT_PER_ORDER", 0.25))
     ngram_order_mults_str = os.environ.get("NGRAM_ORDER_MULTS", "")  # fixed per-order multipliers (comma-sep)
     cubric_cadence = int(os.environ.get("CUBRIC_CADENCE", 0))
     # Learned mixer head: train a tiny linear head to predict per-token expert weights
@@ -1345,13 +1348,23 @@ def eval_val_sliding_hashed_ngram(
     adaptive = args.ngram_eval_adaptive
     alpha_min = args.ngram_eval_alpha_min
     alpha_max = args.ngram_eval_alpha_max
+    alpha_clip = args.ngram_eval_alpha_clip
     ent_center = args.ngram_eval_entropy_center
     ent_scale = args.ngram_eval_entropy_scale
 
     # Parse fixed per-order multipliers (PR #809 style)
-    _fixed_order_mults = None
+    n_orders = max_order - min_order + 1
+    _fixed_order_mults = np.ones((n_orders,), dtype=np.float64)
+    _has_fixed_order_mults = False
     if args.ngram_order_mults_str:
-        _fixed_order_mults = np.array([float(x) for x in args.ngram_order_mults_str.split(",")], dtype=np.float64)
+        raw_mults = np.array(
+            [float(x.strip()) for x in args.ngram_order_mults_str.split(",") if x.strip()],
+            dtype=np.float64,
+        )
+        if raw_mults.size > 0:
+            _has_fixed_order_mults = True
+            use_n = min(raw_mults.size, n_orders)
+            _fixed_order_mults[:use_n] = raw_mults[:use_n]
 
     seq_len = eval_seq_len or args.train_seq_len
     total_tokens = val_tokens.numel() - 1
@@ -1403,7 +1416,8 @@ def eval_val_sliding_hashed_ngram(
         _c_beats = {n: [0] * _TOTAL_CELLS for n in range(min_order, max_order + 1)}
 
     base_model.eval()
-    _use_learned_alpha = (hasattr(base_model, 'alpha_head') and base_model.alpha_head is not None)
+    _has_learned_alpha_head = (hasattr(base_model, 'alpha_head') and base_model.alpha_head is not None)
+    _use_learned_alpha = _has_learned_alpha_head and args.ngram_use_learned_alpha
     if _use_learned_alpha:
         _compiled_la = maybe_torch_compile(base_model.forward_logits_and_alpha, args)
     compiled_logits = maybe_torch_compile(base_model.forward_logits, args)
@@ -1414,6 +1428,19 @@ def eval_val_sliding_hashed_ngram(
     if rank == 0:
         print(f"ngram_eval:chunks={num_chunks} chunk_tokens={chunk_tokens} "
               f"windows={len(all_window_starts)} shared_tables=True", flush=True)
+        blend_mode = "learned_alpha" if _use_learned_alpha else "classic_alpha"
+        mult_desc = ",".join(f"{m:.2f}" for m in _fixed_order_mults) if _has_fixed_order_mults else "none"
+        print(
+            f"ngram_eval:blend_mode={blend_mode} adaptive={int(adaptive)} "
+            f"alpha=[{alpha_min:.2f},{alpha_max:.2f}] clip={alpha_clip:.2f} "
+            f"entropy_shift={int(args.ngram_entropy_shift)} shift_per_order={args.ngram_entropy_shift_per_order:.2f} "
+            f"order_mults={mult_desc}",
+            flush=True,
+        )
+        if _has_learned_alpha_head and not _use_learned_alpha:
+            print("ngram_eval:learned_alpha_head_present but disabled by NGRAM_USE_LEARNED_ALPHA=0", flush=True)
+        if _use_learned_alpha and args.ngram_entropy_shift:
+            print("ngram_eval:note NGRAM_ENTROPY_SHIFT is ignored in learned_alpha mode", flush=True)
 
     with torch.inference_mode():
         for ci in range(num_chunks):
@@ -1468,24 +1495,25 @@ def eval_val_sliding_hashed_ngram(
                     seg_nll = nll[i, s:wlen].to(torch.float64).cpu().numpy()
                     seg_model_p = np.exp(-seg_nll)
 
-                    if not _use_learned_alpha and adaptive:
-                        log_probs = F.log_softmax(logits_f[i, s:wlen], dim=-1)
-                        probs_a = log_probs.exp()
-                        entropy = -(probs_a * log_probs).sum(dim=-1).cpu().numpy()
-                        sig = 1.0 / (1.0 + np.exp(-ent_scale * (entropy - ent_center)))
-                        per_token_alpha = alpha_min + (alpha_max - alpha_min) * sig
-                        # Bin entropy for 2D cubric: 0=low, 1=mid, 2=high
-                        _ent_bins = np.digitize(entropy, _ENT_EDGES).astype(np.int32)
-                    elif not _use_learned_alpha:
-                        per_token_alpha = np.full(seg_len, alpha)
-                        _ent_bins = np.ones(seg_len, dtype=np.int32)  # all mid
+                    entropy = None
+                    if not _use_learned_alpha:
+                        if adaptive:
+                            log_probs = F.log_softmax(logits_f[i, s:wlen], dim=-1)
+                            probs_a = log_probs.exp()
+                            entropy = -(probs_a * log_probs).sum(dim=-1).cpu().numpy()
+                            sig = 1.0 / (1.0 + np.exp(-ent_scale * (entropy - ent_center)))
+                            per_token_alpha = alpha_min + (alpha_max - alpha_min) * sig
+                            # Bin entropy for 2D cubric: 0=low, 1=mid, 2=high
+                            _ent_bins = np.digitize(entropy, _ENT_EDGES).astype(np.int32)
+                        else:
+                            per_token_alpha = np.full(seg_len, alpha, dtype=np.float64)
+                            _ent_bins = np.ones(seg_len, dtype=np.int32)  # all mid
 
                     global_j = np.arange(ws + s + 1, ws + wlen + 1, dtype=np.int64)
                     tgt_np = val_np[global_j].astype(np.uint64)
 
                     if _use_learned_alpha:
                         # Learned mixer: get per-order probs and blend with learned weights
-                        n_orders = max_order - min_order + 1
                         order_p = np.full((seg_len, n_orders), 1.0 / 1024.0, dtype=np.float64)
                         order_valid = np.zeros((seg_len, n_orders), dtype=np.bool_)
                         for oi, n in enumerate(range(min_order, max_order + 1)):
@@ -1523,6 +1551,8 @@ def eval_val_sliding_hashed_ngram(
                         seg_alpha_masked -= seg_alpha_masked.max(axis=1, keepdims=True)
                         exp_a = np.exp(seg_alpha_masked)
                         weights = exp_a / exp_a.sum(axis=1, keepdims=True)
+                        if _has_fixed_order_mults:
+                            weights[:, 1:] *= _fixed_order_mults[None, :]
                         # Neural floor
                         nf = getattr(base_model, 'mixer_neural_floor', 0.05)
                         weights[:, 0] = nf + (1.0 - nf) * weights[:, 0]
@@ -1561,13 +1591,33 @@ def eval_val_sliding_hashed_ngram(
                                 ng_matched[hit_idx] = True
                                 _ng_ord[hit_idx] = n
                                 _ng_ctx_count[hit_idx] = ctx_counts[has_data]
-                        # Oracle alpha: use actual model_p vs ngram_p comparison
+                        # Deterministic alpha blend (no oracle look-ahead):
+                        # entropy-adaptive alpha, optional per-order center shift,
+                        # optional fixed per-order multipliers, then clip.
                         if ng_matched.any():
                             m_idx = np.nonzero(ng_matched)[0]
                             mp = seg_model_p[m_idx]
                             np_val = p_ng[m_idx]
-                            log_ratio = np.log(np.maximum(np_val, 1e-12)) - np.log(np.maximum(mp, 1e-12))
-                            a = 0.95 / (1.0 + np.exp(-8.0 * log_ratio))
+                            if adaptive:
+                                if entropy is None:
+                                    raise RuntimeError("entropy must be computed when adaptive ngram eval is enabled")
+                                ent = entropy[m_idx]
+                                if args.ngram_entropy_shift:
+                                    centers = (
+                                        ent_center
+                                        - args.ngram_entropy_shift_per_order
+                                        * (_ng_ord[m_idx].astype(np.float64) - float(min_order))
+                                    )
+                                else:
+                                    centers = np.full_like(ent, ent_center, dtype=np.float64)
+                                sig = 1.0 / (1.0 + np.exp(-ent_scale * (ent - centers)))
+                                a = alpha_min + (alpha_max - alpha_min) * sig
+                            else:
+                                a = per_token_alpha[m_idx]
+                            if _has_fixed_order_mults:
+                                ord_idx = np.clip(_ng_ord[m_idx] - min_order, 0, n_orders - 1)
+                                a = a * _fixed_order_mults[ord_idx]
+                            a = np.clip(a, 0.0, alpha_clip)
                             seg_model_p[m_idx] = (1.0 - a) * mp + a * np_val
 
                     seg_nll = -np.log(np.clip(seg_model_p, 1e-12, 1.0))
@@ -2199,9 +2249,20 @@ def main() -> None:
     log0(f"compile:enabled={int(args.compile_enabled)} fullgraph={int(args.compile_fullgraph)}")
     log0(f"seed:{args.seed}")
     if args.ngram_eval_order >= 2:
+        order_mults_enabled = bool(args.ngram_order_mults_str.strip())
         log0(
-            f"ngram_eval:order={args.ngram_eval_order} alpha={args.ngram_eval_alpha} "
-            f"min_count={args.ngram_eval_min_count} buckets={args.ngram_eval_buckets}"
+            f"ngram_eval:order={args.ngram_eval_order} min_count={args.ngram_eval_min_count} "
+            f"buckets={args.ngram_eval_buckets} use_learned_alpha={int(args.ngram_use_learned_alpha)} "
+            f"adaptive={int(args.ngram_eval_adaptive)} alpha={args.ngram_eval_alpha} "
+            f"alpha_min={args.ngram_eval_alpha_min} alpha_max={args.ngram_eval_alpha_max} "
+            f"alpha_clip={args.ngram_eval_alpha_clip}"
+        )
+        log0(
+            f"ngram_eval:entropy_center={args.ngram_eval_entropy_center} "
+            f"entropy_scale={args.ngram_eval_entropy_scale} "
+            f"entropy_shift={int(args.ngram_entropy_shift)} "
+            f"entropy_shift_per_order={args.ngram_entropy_shift_per_order} "
+            f"order_mults={'set' if order_mults_enabled else 'none'}"
         )
     train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
     def zero_grad_all() -> None:

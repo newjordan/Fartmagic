@@ -91,6 +91,13 @@ NGRAM_ORDER_MULTS="0.3,0.3,0.97,2.0,2.0,2.0,2.0,2.0"
 7. SWA_EVERY 50 vs 100 — A/B test
 8. WARMDOWN_ITERS tuning (currently 3500, ~50% of training)
 
+## A/B Tests (200s wallclock, directional signal only)
+
+| Test | val_bpb @cap | Post-EMA | Sliding BPB | N-gram BPB | Steps | Variable |
+|------|-------------|----------|-------------|------------|-------|----------|
+| ROPE_DIMS=16 (control) | 1.2053 | 1.2079 | 1.1847 | 0.4702 | 2292 | baseline |
+| ROPE_DIMS=24 (test) | PENDING | — | — | — | — | old SOTA value |
+
 ## Checkpoints
 - `checkpoints/final_model_ratrod_green_v1_1.1129.pt` — saved on pod
 - `experiments/Rat_Rod/green_v1_1.1129/` — frozen v1 experiment copy on pod

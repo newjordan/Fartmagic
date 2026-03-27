@@ -3,8 +3,10 @@ set -euo pipefail
 # RAT ROD PURPLE 1: Green base + PR #931 + PR #900 + PR #859
 #
 # New vs Green v1:
-#   - ARTIFACT_NGRAM=1        (PR #931) — seed eval tables from 2 training shards
-#                               eliminates cold-start: every val token sees a warm cache
+#   - ARTIFACT_NGRAM=0        (PR #931) — DISABLED: legally gray. Training n-gram oracle
+#                               seeds eval tables with training corpus counts. Not ruled on
+#                               by organizers; functions as answer-lookup not prediction.
+#                               Enable explicitly for research only, NOT for submissions.
 #   - NGRAM_DIRICHLET=1       (PR #900) — Bayesian posterior mixing replaces linear alpha
 #                               p = (count + c * neural) / (ctx_count + c)
 #                               naturally down-weights low-count matches without hand-tuned alpha
@@ -69,7 +71,7 @@ NGRAM_EVAL_MAX_SECONDS=0 \
 CUBRIC_CADENCE=0 \
 NGRAM_ENTROPY_SHIFT=1 \
 NGRAM_ORDER_MULTS="0.3,0.3,0.97,2.0,2.0,2.0,2.0,2.0" \
-ARTIFACT_NGRAM=1 \
+ARTIFACT_NGRAM=0 \
 ARTIFACT_NGRAM_MAX_SHARDS=2 \
 NGRAM_DIRICHLET=1 \
 NGRAM_DIRICHLET_CONC=5.0 \

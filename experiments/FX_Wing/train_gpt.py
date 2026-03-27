@@ -1290,6 +1290,7 @@ class DeltaNetMemory(nn.Module):
         self.norm   = RMSNorm()
         nn.init.zeros_(self.o_proj.weight)          # start as identity (no-op)
 
+    @torch.compiler.disable  # T-loop unrolled by dynamo → OOM; run in eager instead
     def forward(self, x: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
         """
         x:     [B, T, D]

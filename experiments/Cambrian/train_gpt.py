@@ -109,6 +109,10 @@ class Hyperparameters:
     compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
     compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
     cambrian_delta_layers = int(os.environ.get("CAMBRIAN_DELTA_LAYERS", 6))  # bottom N layers use GatedDeltaNet
+    cambrian_myelin    = bool(int(os.environ.get("CAMBRIAN_MYELIN", "1")))
+    cambrian_circadian = bool(int(os.environ.get("CAMBRIAN_CIRCADIAN", "1")))
+    cambrian_clonal    = bool(int(os.environ.get("CAMBRIAN_CLONAL", "1")))
+    cambrian_astrocyte = bool(int(os.environ.get("CAMBRIAN_ASTROCYTE", "1")))
 
 
 def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool):
@@ -737,6 +741,10 @@ class Block(nn.Module):
             x_out = x_in + gate * (x_out - x_in)
         return x_out, raw_v
 
+_PHI = (1 + 5**0.5) / 2
+_FIBONACCI_SEAMS = {1, 2, 3, 5, 8, 13, 21}  # 1-indexed chunk indices
+
+
 class GatedDeltaNet(nn.Module):
     """
     Gated Delta Network: recurrent state updated via selective erase+write.
@@ -745,13 +753,37 @@ class GatedDeltaNet(nn.Module):
 
     Cambrian-0: replaces CausalSelfAttention in bottom N layers.
     Does NOT use parameter banks — has its own CastedLinear projections.
+
+    Bio seam controllers (Cambrian-1):
+      myelin    — Fibonacci-spaced direct residual bridges into S
+      circadian — φ-spaced irrational gate on S magnitude per chunk
+      clonal    — top-K norm slot amplification at each seam
+      astrocyte — learned β-scaling from state norm summary
+    All zero-init so they have no effect at step 0.
     """
-    def __init__(self, dim: int, num_heads: int, chunk_size: int = 64):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        chunk_size: int = 64,
+        use_myelin: bool = True,
+        use_circadian: bool = True,
+        use_clonal: bool = True,
+        use_astrocyte: bool = True,
+    ):
         super().__init__()
         assert dim % num_heads == 0
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.chunk_size = chunk_size
+        self.use_myelin = use_myelin
+        self.use_circadian = use_circadian
+        self.use_clonal = use_clonal
+        self.use_astrocyte = use_astrocyte
+        # d_k = d_v = head_dim (per head); state S is (B, H, d_k, d_v)
+        # For seam controllers we work on the flattened (B*H, d_k, d_v) view
+        # but expose parameters in terms of D and head_dim directly.
+        self.d_k = self.head_dim
         self.q_proj  = CastedLinear(dim, dim, bias=False)
         self.k_proj  = CastedLinear(dim, dim, bias=False)
         self.v_proj  = CastedLinear(dim, dim, bias=False)
@@ -760,6 +792,25 @@ class GatedDeltaNet(nn.Module):
         nn.init.constant_(self.beta_proj.bias, 0.0)  # sigmoid(0)=0.5
         self.out_proj = CastedLinear(dim, dim, bias=False)
         self.norm = nn.LayerNorm(self.head_dim)
+        # --- Bio seam parameters (all zero-init) ---
+        if use_myelin:
+            self.myelin_weight = nn.Parameter(torch.zeros(1))
+            self.myelin_proj = nn.Linear(dim, self.d_k, bias=False)
+            nn.init.normal_(self.myelin_proj.weight, std=0.01)
+        if use_circadian:
+            self.circ_amp   = nn.Parameter(torch.zeros(1))
+            self.circ_phase = nn.Parameter(torch.zeros(1))
+        if use_clonal:
+            self.clonal_scale = nn.Parameter(torch.zeros(1))
+        if use_astrocyte:
+            _astro_hidden = max(32, self.d_k // 4)
+            self.astrocyte_net = nn.Sequential(
+                nn.Linear(self.d_k, _astro_hidden, bias=True),
+                nn.ReLU(),
+                nn.Linear(_astro_hidden, 1, bias=True),
+            )
+            nn.init.zeros_(self.astrocyte_net[-1].weight)
+            nn.init.zeros_(self.astrocyte_net[-1].bias)
 
     def forward(self, x: Tensor) -> Tensor:
         B, T, D = x.shape
@@ -778,14 +829,37 @@ class GatedDeltaNet(nn.Module):
         v_c = v.reshape(B, H, num_chunks, C, d)
         b_c = beta.reshape(B, H, num_chunks, C)
 
+        # Circadian: precompute base phase tensor for each chunk (static, no tensor indexing)
+        # We unroll as a list so fullgraph compile sees static shapes.
+        if self.use_circadian:
+            _circ_phase_list: list[Tensor] = []
+            for _ci in range(num_chunks):
+                _base = 2 * math.pi * _PHI * (_ci + 1) / num_chunks
+                _circ_phase_list.append(
+                    torch.tensor(_base, device=x.device, dtype=x.dtype)
+                )
+
+        # Clonal: precompute K once
+        if self.use_clonal:
+            _clonal_K = max(1, round(d / (_PHI ** 5)))
+
         # Process chunks sequentially, passing state between seams
         S = torch.zeros(B, H, d, d, device=x.device, dtype=torch.float32)
         outputs = []
+        # Astrocyte gate from previous seam; starts at 0.5 (neutral: 0.5+0.5=1.0 × beta)
+        # Using a tensor from the start avoids None-vs-Tensor branching inside compile.
+        if self.use_astrocyte:
+            _astro_gate = x.new_zeros(B, 1)  # first chunk: 0.5+0.0=0.5 scale → use ci==0 guard
         for ci in range(num_chunks):
             qci = q_c[:, :, ci]   # (B, H, C, d)
             kci = k_c[:, :, ci]
             vci = v_c[:, :, ci]
             bci = b_c[:, :, ci]   # (B, H, C)
+
+            # --- Astrocyte: apply gate from previous seam to beta (skip chunk 0) ---
+            if self.use_astrocyte and ci > 0:
+                # _astro_gate: (B, 1) → scale bci (B, H, C)
+                bci = bci * (0.5 + _astro_gate.unsqueeze(1).unsqueeze(2))
 
             # Within-chunk recurrence (unrolled at compile time — C=64 static)
             chunk_outs = []
@@ -805,6 +879,44 @@ class GatedDeltaNet(nn.Module):
 
             chunk_out = torch.stack(chunk_outs, dim=2)  # (B, H, C, d)
             outputs.append(chunk_out)
+
+            # === SEAM POINT: apply bio controllers after chunk ci ===
+
+            # 1. Myelin Fibonacci Bridges
+            if self.use_myelin and (ci + 1) in _FIBONACCI_SEAMS:
+                # chunk_out: (B, H, C, d) → mean over C and H → (B, D)
+                h_mean = chunk_out.permute(0, 2, 1, 3).reshape(B, C, D).mean(dim=1)  # (B, D)
+                bridge = self.myelin_proj(h_mean.to(x.dtype))  # (B, d_k)
+                # S: (B, H, d_k, d_v); inject bridge across all heads
+                S = S + self.myelin_weight.to(S.dtype) * bridge.unsqueeze(1).unsqueeze(-1)
+
+            # 2. Circadian φ-Gate
+            if self.use_circadian:
+                _phase_val = _circ_phase_list[ci]
+                gate = 1.0 + torch.tanh(self.circ_amp.to(S.dtype)) * torch.cos(
+                    _phase_val.to(S.dtype) + self.circ_phase.to(S.dtype)
+                )
+                S = S * gate
+
+            # 3. Clonal Selection
+            if self.use_clonal:
+                # S: (B, H, d_k, d_v) — compute norm over d_v axis
+                state_norms = S.norm(dim=-1)          # (B, H, d_k)
+                topk_idx = state_norms.topk(_clonal_K, dim=-1).indices  # (B, H, K)
+                clonal_mask = torch.zeros_like(state_norms)              # (B, H, d_k)
+                clonal_mask.scatter_(-1, topk_idx, 1.0)
+                S = S * (1.0 + self.clonal_scale.to(S.dtype) * clonal_mask.unsqueeze(-1))
+
+            # 4. Astrocyte Seam Controller — compute gate for NEXT chunk
+            if self.use_astrocyte:
+                # Summarise state: average across heads, then normalise norms
+                state_norms_avg = S.norm(dim=-1).mean(dim=1)  # (B, d_k)
+                state_summary = state_norms_avg / (
+                    state_norms_avg.max(dim=-1, keepdim=True).values.clamp(min=1e-6)
+                )
+                _astro_gate = torch.sigmoid(
+                    self.astrocyte_net(state_summary.to(x.dtype))
+                )  # (B, 1)
 
         out = torch.cat(outputs, dim=2)  # (B, H, T, d)
         out = out.permute(0, 2, 1, 3).reshape(B, T, H, d)
@@ -841,6 +953,10 @@ class GPT(nn.Module):
         gated_attention: bool = False,
         value_residual: bool = False,
         cambrian_delta_layers: int = 0,
+        cambrian_myelin: bool = True,
+        cambrian_circadian: bool = True,
+        cambrian_clonal: bool = True,
+        cambrian_astrocyte: bool = True,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)  # kv_dim for value projection
@@ -895,7 +1011,13 @@ class GPT(nn.Module):
         self.cambrian_delta_layers = cambrian_delta_layers
         if cambrian_delta_layers > 0:
             for i in range(min(cambrian_delta_layers, num_layers)):
-                self.blocks[i].attn = GatedDeltaNet(model_dim, num_heads)
+                self.blocks[i].attn = GatedDeltaNet(
+                    model_dim, num_heads,
+                    use_myelin=cambrian_myelin,
+                    use_circadian=cambrian_circadian,
+                    use_clonal=cambrian_clonal,
+                    use_astrocyte=cambrian_astrocyte,
+                )
                 self.blocks[i].use_delta = True
         self.ve_layer_indices = [int(x) for x in ve_layers.split(",") if x.strip()] if ve_enabled else []
         kv_dim_ve = self._ve_target_dim
@@ -1581,6 +1703,10 @@ def main() -> None:
         gated_attention=args.gated_attention,
         value_residual=args.value_residual,
         cambrian_delta_layers=args.cambrian_delta_layers,
+        cambrian_myelin=args.cambrian_myelin,
+        cambrian_circadian=args.cambrian_circadian,
+        cambrian_clonal=args.cambrian_clonal,
+        cambrian_astrocyte=args.cambrian_astrocyte,
     ).to(device).bfloat16()
     # Banks stay FP32 (like CastedLinear weights), cast to BF16 in forward
     base_model.qo_bank.data = base_model.qo_bank.data.float()
@@ -1697,6 +1823,7 @@ def main() -> None:
     xsa_layers = [i for i, b in enumerate(base_model.blocks) if not getattr(b, 'use_delta', False) and b.attn.use_xsa]
     delta_layers = [i for i, b in enumerate(base_model.blocks) if getattr(b, 'use_delta', False)]
     log0(f"cambrian:delta_layers={args.cambrian_delta_layers} active_delta:{delta_layers}")
+    log0(f"cambrian: myelin={args.cambrian_myelin} circadian={args.cambrian_circadian} clonal={args.cambrian_clonal} astrocyte={args.cambrian_astrocyte}")
     log0(f"XSA:last_{args.xsa_last_n} active_layers:{xsa_layers}")
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")

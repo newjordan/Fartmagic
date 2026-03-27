@@ -31,8 +31,8 @@ except ImportError:
 echo "============================================"
 echo "  RAT ROD GREEN — Parallel Muon + Full Stack"
 echo "  Seed: ${SEED}"
-echo "  Parallel Muon, XSA-all-11, Trigram, No GPTQ"
-echo "  B-WING n-gram eval | QAT killed"
+echo "  Parallel Muon, XSA-all-11, MTP=2, No GPTQ"
+echo "  B-WING n-gram eval | QAT killed | Trigram reverted"
 echo "  Legal entropy-adaptive alpha"
 echo "============================================"
 
@@ -43,8 +43,8 @@ XSA_LAST_N=11 \
 BIGRAM_VOCAB_SIZE=2048 \
 ROPE_DIMS=16 \
 SWA_EVERY=50 \
-MTP_NUM_HEADS=0 \
-TRIGRAM=1 \
+MTP_NUM_HEADS=2 \
+TRIGRAM=0 \
 LATE_QAT_THRESHOLD=0 \
 NGRAM_EVAL_ORDER=9 \
 NGRAM_EVAL_MIN_ORDER=2 \

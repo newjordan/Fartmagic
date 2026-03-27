@@ -1,0 +1,103 @@
+# Rat Rod Green — Base Model Optimization Campaign
+
+## Goal
+Push base model BPB from 1.11 → 1.08 on 8xH100, 600s wallclock, no GPTQ.
+
+## Results Table
+
+| Run | Base BPB (sliding) | Post-EMA BPB | N-gram Legal BPB | Steps | ms/step | Config Changes |
+|-----|-------------------|--------------|-------------------|-------|---------|----------------|
+| Old SOTA (green_1) | 1.1195 | 1.1384 | 0.3200 (ILLEGAL oracle) | 6823 | 87.95 | XSA=4, Bigram=1536, RoPE=24, SWA=100, GPTQ outside wallclock |
+| **Rat Rod Green v1** | **1.1129** | **1.1364** | **0.4489** | **6882** | **87.20** | Parallel Muon, XSA=11, Bigram=2048, RoPE=16, SWA=50, no GPTQ, no complementary |
+| Rat Rod Green v2 | 1.1132 | 1.1367 | 0.4490 | 6875 | 87.28 | v1 + TRIGRAM=1, LATE_QAT_THRESHOLD=0 — **WASH** |
+| **Rat Rod Green v3** | **PENDING** | — | — | — | — | v1 base + MTP_NUM_HEADS=2, LATE_QAT_THRESHOLD=0 |
+
+## v1 Full Log Metrics (2026-03-27)
+```
+model_params:26993756
+train_batch_tokens:786432 train_seq_len:2048
+max_wallclock_seconds:600.000
+XSA:last_11 active_layers:[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+step:0/20000   val_bpb:4.1049
+step:4000      val_bpb:1.2114   train_time:348324ms
+step:6882      val_bpb:1.1374   train_time:600115ms (wallclock cap)
+
+post_ema        val_bpb:1.1364
+sliding_window  val_bpb:1.1129   stride:64
+ngram9          val_bpb:0.4489
+
+peak memory: 22860 MiB
+late_qat kicked in at step 6362 (BUG — no GPTQ to benefit, injected noise for 520 steps)
+```
+
+## v1 run.sh Config
+```bash
+SEED=1337
+MAX_WALLCLOCK_SECONDS=600
+COMPLEMENT_ALPHA=0
+XSA_LAST_N=11
+BIGRAM_VOCAB_SIZE=2048
+ROPE_DIMS=16
+SWA_EVERY=50
+MTP_NUM_HEADS=0
+NGRAM_EVAL_ORDER=9
+NGRAM_EVAL_MIN_ORDER=2
+NGRAM_EVAL_ADAPTIVE=1
+NGRAM_EVAL_ALPHA=0.30
+NGRAM_EVAL_ALPHA_MIN=0.05
+NGRAM_EVAL_ALPHA_MAX=0.60
+NGRAM_EVAL_ENTROPY_CENTER=3.0
+NGRAM_EVAL_ENTROPY_SCALE=2.0
+NGRAM_EVAL_MIN_COUNT=2
+NGRAM_EVAL_BUCKETS=8388608
+NGRAM_EVAL_MAX_SECONDS=0
+CUBRIC_CADENCE=0
+NGRAM_ENTROPY_SHIFT=1
+NGRAM_ORDER_MULTS="0.3,0.3,0.97,2.0,2.0,2.0,2.0,2.0"
+```
+
+## v2 Changes from v1
+- `TRIGRAM=1` — trigram hash reuses bigram embedding table, zero extra params
+- `LATE_QAT_THRESHOLD=0` — kills quantization noise that was hurting last 520 steps
+
+## Architecture (PR#609 Parallel Muon base)
+- 11 layers (5 encoder + 6 decoder with skip connections)
+- 512d, 8 heads, 4 KV heads (GQA)
+- MLP mult 3.0 (1536 MLP dim), leaky_relu_sq activation (slope 0.5)
+- Parameter banks: weights stored as contiguous 3D tensors for batched Muon optimizer
+- Parallel Muon: reduce-scatter → local NS5 → all-gather (overlapped with Adam)
+- BigramHash 2048 (128 dim → 512 projection)
+- XSA (cross-sequence attention) on all 11 layers
+- Partial RoPE (16 dims of 64 head_dim)
+- SmearGate on input embeddings
+- Value Embeddings on layers 9,10 (128 dim)
+- Tied embeddings, logit softcap 30
+- EMA decay 0.997, SWA every 50 steps (starts when LR scale < 0.2)
+- torch.compile(fullgraph=True)
+
+## What We Removed from PR#609
+- Full GPTQ pipeline (~660 lines) — eats wallclock, not needed for base model testing
+- INT8 quantization helpers (dead code)
+- Complementary training (COMPLEMENT_ALPHA=0) — intentionally weakens base model
+
+## Untested Levers (in order of priority)
+1. ~~LATE_QAT_THRESHOLD=0~~ (v2)
+2. ~~TRIGRAM=1~~ (v2)
+3. MTP_NUM_HEADS=2 — auxiliary multi-token prediction loss, ~2-3ms/step cost
+4. VALUE_RESIDUAL=1 — deep layers access first-layer values via sigmoid gate
+5. GATED_ATTENTION=1 — learned per-head attention gating
+6. ROPE_DIMS 16 vs 24 — A/B test
+7. SWA_EVERY 50 vs 100 — A/B test
+8. WARMDOWN_ITERS tuning (currently 3500, ~50% of training)
+
+## Checkpoints
+- `checkpoints/final_model_ratrod_green_v1_1.1129.pt` — saved on pod
+- `experiments/Rat_Rod/green_v1_1.1129/` — frozen v1 experiment copy on pod
+
+## Legality Status
+- No oracle alpha (legal)
+- No GPTQ (no wallclock concern)
+- No forward-looking anything
+- N-gram eval uses entropy-adaptive alpha with per-order shift + fixed mults (B-WING system)
+- All training inside 600s wallclock

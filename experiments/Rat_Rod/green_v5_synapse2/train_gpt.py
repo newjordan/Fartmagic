@@ -749,8 +749,7 @@ class GPT(nn.Module):
         self.syn2_num_heads = syn2_num_heads
         self.syn2_loss_weight = syn2_loss_weight
         self.syn2_hash_dim = syn2_hash_dim
-        self.syn2_every = syn2_every
-        self._syn2_step = 0
+        # syn2_every removed — integer counter breaks torch.compile
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim, trigram=bool(int(os.environ.get("TRIGRAM", "0")))) if bigram_vocab_size > 0 else None
         self.smear = SmearGate(model_dim)
@@ -912,37 +911,35 @@ class GPT(nn.Module):
                 mtp_loss_count += 1
             if mtp_loss_count > 0:
                 main_loss = main_loss + self.mtp_loss_weight * (mtp_loss_sum / mtp_loss_count)
-        # Synapse v2: GPU-native hash-space prediction (every N steps)
+        # Synapse v2: GPU-native hash-space prediction (every step, ~1.5ms overhead)
         if self.training and self.syn2_num_heads > 0 and self.syn2_loss_weight > 0.0:
-            self._syn2_step += 1
-            if self._syn2_step % self.syn2_every == 0:
-                _, seqlen, dim = x.shape
-                mod = self.syn2_hash_dim - 1
-                # Entropy weight from main logits (already computed, no extra cost)
-                with torch.no_grad():
-                    log_p = logits.float().log_softmax(-1)
-                    token_ent = -(log_p.exp() * log_p).sum(-1)
-                    ew = (token_ent / (token_ent.mean() + 1e-6)).clamp(0.3, 3.0)
-                    ew = ew.view(x.shape[0], seqlen)
-                syn2_loss_sum = x.new_zeros(())
-                syn2_count = 0
-                t_ids = input_ids.to(torch.int32)
-                for k, syn2_head in enumerate(self.syn2_heads):
-                    shift = k + 1
-                    valid_t = seqlen - shift
-                    if valid_t <= 0:
-                        continue
-                    hash_targets = (torch.bitwise_xor(
-                        36313 * t_ids[:, shift:], 27191 * t_ids[:, :-shift]
-                    ) % mod).long()
-                    hid = x[:, :valid_t, :].reshape(-1, dim)
-                    h_logits = syn2_head(hid)
-                    per_tok = F.cross_entropy(h_logits.float(), hash_targets.reshape(-1), reduction="none")
-                    w = ew[:, :valid_t].reshape(-1)
-                    syn2_loss_sum = syn2_loss_sum + (per_tok * w).mean()
-                    syn2_count += 1
-                if syn2_count > 0:
-                    main_loss = main_loss + self.syn2_loss_weight * (syn2_loss_sum / syn2_count)
+            _, seqlen, dim = x.shape
+            mod = self.syn2_hash_dim - 1
+            # Entropy weight from main logits (already computed, no extra cost)
+            with torch.no_grad():
+                log_p = logits.float().log_softmax(-1)
+                token_ent = -(log_p.exp() * log_p).sum(-1)
+                ew = (token_ent / (token_ent.mean() + 1e-6)).clamp(0.3, 3.0)
+                ew = ew.view(x.shape[0], seqlen)
+            syn2_loss_sum = x.new_zeros(())
+            syn2_count = 0
+            t_ids = input_ids.to(torch.int32)
+            for k, syn2_head in enumerate(self.syn2_heads):
+                shift = k + 1
+                valid_t = seqlen - shift
+                if valid_t <= 0:
+                    continue
+                hash_targets = (torch.bitwise_xor(
+                    36313 * t_ids[:, shift:], 27191 * t_ids[:, :-shift]
+                ) % mod).long()
+                hid = x[:, :valid_t, :].reshape(-1, dim)
+                h_logits = syn2_head(hid)
+                per_tok = F.cross_entropy(h_logits.float(), hash_targets.reshape(-1), reduction="none")
+                w = ew[:, :valid_t].reshape(-1)
+                syn2_loss_sum = syn2_loss_sum + (per_tok * w).mean()
+                syn2_count += 1
+            if syn2_count > 0:
+                main_loss = main_loss + self.syn2_loss_weight * (syn2_loss_sum / syn2_count)
         return main_loss
     def forward_logits(self, input_ids: Tensor) -> Tensor:
         """Return logits (bsz, seq_len, vocab) without computing loss."""

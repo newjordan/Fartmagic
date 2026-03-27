@@ -79,7 +79,7 @@ CRAWLER_MLP_MULT=2.0 \
 INST_DIM=16 \
 CRAWLER_QUANT_INT8=1 \
 DELTA_NET_HEADS=2 \
-python3 "${SCRIPT_DIR}/micro_train_gpt.py" \
+python3 -u "${SCRIPT_DIR}/micro_train_gpt.py" \
     2>&1 | tee "logs/fxwing_micro_s${SEED}_$(date +%Y%m%d_%H%M%S).log"
 
 echo "============================================"

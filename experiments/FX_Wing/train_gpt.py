@@ -2590,6 +2590,11 @@ def main() -> None:
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     dynamo = getattr(torch, "_dynamo", None)
+    if args.compile_enabled and dynamo is not None:
+        # NTK-scaled RoPE at large seq_len produces sympy NaN in inductor bounds
+        # analysis on PyTorch 2.4. suppress_errors lets that subgraph fall back to
+        # eager (just the tiny sin/cos kernel) while everything else stays compiled.
+        dynamo.config.suppress_errors = True
     if args.compile_enabled and distributed and dynamo is not None:
         dynamo.config.optimize_ddp = args.torchdynamo_optimize_ddp
     if args.compile_enabled:

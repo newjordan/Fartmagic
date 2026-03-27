@@ -42,7 +42,7 @@ echo "  K tokens: ${CLONAL_K_TOKENS} | Bottleneck: ${CLONAL_BOTTLENECK_DIM} | LR
 echo "============================================"
 
 SEED="$SEED" \
-MAX_WALLCLOCK_SECONDS=180 \
+MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-180}" \
 COMPLEMENT_ALPHA=0 \
 XSA_LAST_N=11 \
 BIGRAM_VOCAB_SIZE=2048 \

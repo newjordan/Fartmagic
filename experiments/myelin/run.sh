@@ -37,7 +37,7 @@ echo "  Fibonacci nodes: 1,2,3,5,8 (layers 4,6,7,9,10,11 myelinated)"
 echo "============================================"
 
 SEED="$SEED" \
-MAX_WALLCLOCK_SECONDS=180 \
+MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-180}" \
 COMPLEMENT_ALPHA=0 \
 XSA_LAST_N=11 \
 BIGRAM_VOCAB_SIZE=2048 \

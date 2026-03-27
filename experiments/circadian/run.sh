@@ -41,7 +41,7 @@ echo "  Enabled: ${CIRCADIAN_ENABLED} | Amplitude init: ${CIRCADIAN_AMPLITUDE_IN
 echo "============================================"
 
 SEED="$SEED" \
-MAX_WALLCLOCK_SECONDS=180 \
+MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-180}" \
 COMPLEMENT_ALPHA=0 \
 XSA_LAST_N=11 \
 BIGRAM_VOCAB_SIZE=2048 \

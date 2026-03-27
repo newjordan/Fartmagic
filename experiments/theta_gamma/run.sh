@@ -42,7 +42,7 @@ echo "  Cadence: ${THETA_GAMMA_CADENCE} | τ_fast: ${THETA_GAMMA_TAU_FAST} | τ_
 echo "============================================"
 
 SEED="$SEED" \
-MAX_WALLCLOCK_SECONDS=180 \
+MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-180}" \
 COMPLEMENT_ALPHA=0 \
 XSA_LAST_N=11 \
 BIGRAM_VOCAB_SIZE=2048 \

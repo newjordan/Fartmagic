@@ -124,6 +124,7 @@ model forward:                                │
 5. ~~Synapse v1 (CPU bridge)~~ (v4) — **DEAD**, 15ms overhead, worse per-step
 6. ~~Synapse v2 (GPU-native)~~ (v5) — **DEAD**, worse on both base AND ngram. Concept disproven.
 7. ~~VALUE_RESIDUAL=1~~ — **WORSE** (+0.0012 sliding at 200s)
+8. ~~Siphon (ensemble loss training)~~ — **DEAD**, sliding +0.151, ngram +0.017. Model can't learn under ensemble objective.
 
 ## Untested Levers
 1. GATED_ATTENTION=1 — learned per-head attention gating
@@ -141,6 +142,8 @@ model forward:                                │
 | WARMDOWN_ITERS=5000 | 1.4111 | 1.4764 | skipped | skipped | 1032 | 200s/seed1337 |
 | SWA_EVERY=50 | 1.3778 | 1.4354 | skipped | skipped | 1032 | 200s/seed1337 |
 | SWA_EVERY=100 | 1.3773 | 1.4335 | skipped | skipped | 1037 | 200s/seed1337 |
+| Siphon OFF (WD=2000) | 1.1970 | 1.1996 | 1.1760 | 0.4674 | 2299 | control |
+| Siphon ON α=0.50 (WD=2000) | 1.3459 | 1.3538 | 1.3269 | 0.4841 | 2284 | **DEAD** +0.151 sliding |
 
 ## Checkpoints
 - `checkpoints/final_model_ratrod_green_v1_1.1129.pt` — saved on pod

@@ -31,6 +31,23 @@ echo "[preflight] checking zstandard..."
 python3 -c "import zstandard; print(f'  zstandard {zstandard.__version__} OK')" 2>/dev/null \
     || echo "  WARNING: zstandard not found"
 
+echo "[preflight] patching torch inductor AttrsDescriptor bug (if present)..."
+python3 -c "
+import importlib.util, pathlib
+spec = importlib.util.find_spec('torch._inductor.runtime.hints')
+if spec and spec.origin:
+    p = pathlib.Path(spec.origin)
+    txt = p.read_text()
+    old = 'attr_desc_fields = {f.name for f in fields(AttrsDescriptor)}'
+    if old in txt:
+        import attr
+        new = 'import attr as _attr; attr_desc_fields = {f.name for f in _attr.fields(AttrsDescriptor)}'
+        p.write_text(txt.replace(old, new))
+        print('  patched OK')
+    else:
+        print('  no patch needed')
+" 2>/dev/null || echo "  WARNING: could not patch hints.py"
+
 echo "[preflight] checking flash_attn..."
 python3 -c "
 try:
@@ -94,7 +111,7 @@ NUM_CRAWLER_LAYERS=1 \
 CRAWLER_LOOPS=4 \
 INST_DIM=32 \
 CRAWLER_QUANT_INT8=1 \
-DELTA_NET_HEADS=2 \
+DELTA_NET_HEADS=0 \
 torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" \
     "${SCRIPT_DIR}/train_gpt.py" \
     2>&1 | tee "logs/fxwdelta_s${SEED}_$(date +%Y%m%d_%H%M%S).log"

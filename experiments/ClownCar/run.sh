@@ -1,20 +1,13 @@
 #!/bin/bash
 set -euo pipefail
-# CLOWNCAR: Flow Instructions + Crawler (no DeltaNet) + budget-optimised ngram finish
+# CLOWNCAR: Flow Instructions + Crawler (no DeltaNet) — compression baseline
 #
-# Based on FX_Wing_Delta (produced 0.2233 BPB at 758s ngram — our crawler baseline).
-# Eval budget: 10 min (600s) separate from training.
-#   GPTQ + EMA:        ~15s
-#   Sliding window:    ~77s
-#   Ngram budget:      508s  (600 - 15 - 77 = 508)
+# Based on FX_Wing_Delta. Testing raw crawler compression quality only.
+# Ngram eval DISABLED — hashed n-gram mixing ruled illegal by competition
+# (unnormalized hash tables + target-token lookup, see issues tab).
 #
-# Changes vs FX_Wing_Delta:
-#   - NGRAM_EVAL_MAX_SECONDS=508  (hard cap — fits eval budget, ~635/947 chunks, ~0.278 BPB est.)
-#   - REGIME_TRACKER: removed     (unproven gain, CPU overhead)
-#   - NGRAM_CHUNK_TOKENS=65536    (KEPT — 947 fine-grained chunks, drives quality vs 1M/60 chunks)
-#   - PHRASE_CACHE=1              (KEPT — major BPB driver in 0.2233 result)
-#   - NGRAM_DIRICHLET=1           (KEPT — count-sensitive mixing)
-#   - DELTA_NET_HEADS=0           (crawler only, no DeltaNet)
+# Score = final_int6_sliding_window val_bpb (FX_Wing_Delta got 1.1809)
+# Size  = 9.27MB int6+zstd — well under 16MB limit
 #
 # Hypothesis: legal submission beating 1.2 BPB under 11MB
 
@@ -62,7 +55,7 @@ echo "  CLOWNCAR — Flow Instructions + Crawler (no DeltaNet)"
 echo "  Seed: ${SEED}"
 echo "  inst_dim=32 FLOW | 4 flat + 1 crawler x 4 loops"
 echo "  CRAWLER_QUANT_INT8=1 | matrix_lr=0.03 | warmdown=2000"
-echo "  phrase_cache | ngram_dirichlet | chunk=65K | ngram_cap=508s"
+echo "  ngram eval DISABLED — sliding window submission only"
 echo "============================================"
 
 SEED="$SEED" \
@@ -79,36 +72,7 @@ LATE_QAT_THRESHOLD=0 \
 MATRIX_LR=0.03 \
 TORCHDYNAMO_OPTIMIZE_DDP=0 \
 COMPILE_FULLGRAPH=0 \
-NGRAM_EVAL_ORDER=9 \
-NGRAM_EVAL_MIN_ORDER=2 \
-NGRAM_EVAL_ADAPTIVE=1 \
-NGRAM_EVAL_ALPHA=0.30 \
-NGRAM_EVAL_ALPHA_MIN=0.05 \
-NGRAM_EVAL_ALPHA_MAX=0.60 \
-NGRAM_EVAL_ENTROPY_CENTER=3.0 \
-NGRAM_EVAL_ENTROPY_SCALE=2.0 \
-NGRAM_EVAL_MIN_COUNT=1 \
-NGRAM_EVAL_BUCKETS=8388608 \
-NGRAM_EVAL_MAX_SECONDS=508 \
-NGRAM_CHUNK_TOKENS=65536 \
-CUBRIC_CADENCE=0 \
-NGRAM_ENTROPY_SHIFT=1 \
-NGRAM_ORDER_MULTS="0.3,0.3,0.97,2.0,2.0,2.0,2.0,2.0" \
-NGRAM_DIRICHLET=1 \
-NGRAM_DIRICHLET_CONC=5.0 \
-PHRASE_CACHE=1 \
-PHRASE_BUCKETS=4194304 \
-PHRASE_PROBE_LENGTHS="48,36,28,20,16" \
-PHRASE_CONCENTRATION=2.0 \
-PHRASE_MIN_COUNT=1 \
-ARTIFACT_NGRAM=0 \
-USE_CRAWLER=1 \
-NUM_FLAT_LAYERS=4 \
-NUM_CRAWLER_LAYERS=1 \
-CRAWLER_LOOPS=4 \
-INST_DIM=32 \
-CRAWLER_QUANT_INT8=1 \
-DELTA_NET_HEADS=0 \
+NGRAM_EVAL_ORDER=0 \
 torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" \
     "${SCRIPT_DIR}/train_gpt.py" \
     2>&1 | tee "logs/clowncar_s${SEED}_$(date +%Y%m%d_%H%M%S).log"

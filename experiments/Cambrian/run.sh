@@ -73,6 +73,7 @@ CAMBRIAN_MYELIN="${CAMBRIAN_MYELIN:-1}" \
 CAMBRIAN_CIRCADIAN="${CAMBRIAN_CIRCADIAN:-1}" \
 CAMBRIAN_CLONAL="${CAMBRIAN_CLONAL:-1}" \
 CAMBRIAN_ASTROCYTE="${CAMBRIAN_ASTROCYTE:-1}" \
+PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
 torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" \
     "${SCRIPT_DIR}/train_gpt.py" \
     2>&1 | tee "logs/cambrian_s${SEED}_dl${CAMBRIAN_DELTA_LAYERS}_$(date +%Y%m%d_%H%M%S).log"

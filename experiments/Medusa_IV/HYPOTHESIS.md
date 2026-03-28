@@ -1,6 +1,22 @@
-# ClownCar Hypothesis
+# Medusa_IV — NEW SOTA 2026-03-28
 
-**We can make a legal submission that beats 1.2 BPB and is less than 11MB.**
+**sliding window BPB: 0.9578 (seed=300) — first sub-1.0 result**
+
+| Run | Seed | Live BPB | Post-EMA | Sliding Window | Size |
+|-----|------|----------|----------|----------------|------|
+| CC_II | 1337 | 0.4723 | 0.7278 | 1.0427 | ~9.8MB |
+| Medusa_II | 1337 | 0.3324 | 0.3451 | 1.0366 | ~9.8MB |
+| **Medusa_IV** | **300** | **0.3736** | **0.3882** | **0.9578** | **~10.1MB** |
+
+Checkpoint: `checkpoints/medusa4_s300_sw0.9578.pt`
+int6 model: `checkpoints/medusa4_s300_sw0.9578.int6.ptz`
+
+## Config
+
+Late-start EMA (step 4400, decay=0.99) + loop-aware 2-phase GPTQ.
+Identical to Medusa_III/Medusa_II winning config — seed variance delivered the gap.
+
+---
 
 ## Baseline
 

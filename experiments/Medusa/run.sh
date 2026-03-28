@@ -23,6 +23,9 @@ export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 
 SEED="${SEED:-1337}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+NITRUST_ENABLE="${NITRUST_ENABLE:-0}"
+NITRUST_STRICT="${NITRUST_STRICT:-0}"
+NITRUST_SO_PATH="${NITRUST_SO_PATH:-Nitrust/rust/target/release/libnitrust_py.so}"
 
 echo "[preflight] checking zstandard..."
 python3 -c "import zstandard; print(f'  zstandard {zstandard.__version__} OK')" 2>/dev/null \
@@ -67,6 +70,7 @@ echo "  Seed: ${SEED}"
 echo "  inst_dim=32 FLOW | 4 flat + 1 crawler x 4 loops"
 echo "  DELTA_NET_HEADS=4 | chunk_delta_rule | short_conv=True"
 echo "  SKIP_EMA=1 | LOOP_AWARE_GPTQ=1 | ngram eval DISABLED"
+echo "  NITRUST_ENABLE=${NITRUST_ENABLE} | NITRUST_STRICT=${NITRUST_STRICT}"
 echo "============================================"
 
 SEED="$SEED" \
@@ -92,6 +96,9 @@ CRAWLER_QUANT_INT8=1 \
 DELTA_NET_HEADS=4 \
 SKIP_EMA=1 \
 LOOP_AWARE_GPTQ=1 \
+NITRUST_ENABLE="${NITRUST_ENABLE}" \
+NITRUST_STRICT="${NITRUST_STRICT}" \
+NITRUST_SO_PATH="${NITRUST_SO_PATH}" \
 torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" \
     "${SCRIPT_DIR}/train_gpt.py" \
     2>&1 | tee "logs/medusa_s${SEED}_$(date +%Y%m%d_%H%M%S).log"

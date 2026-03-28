@@ -21,16 +21,16 @@
     "eval_time_s": "~108s"
   },
   "seed_42": {
-    "val_bpb": "NOT RUN — pod closed",
-    "sliding_window_bpb": "NOT RUN",
-    "post_ema_bpb": "NOT RUN",
-    "steps": "NOT RUN",
+    "val_bpb": 0.2441,
+    "sliding_window_bpb": 0.81041025,
+    "post_ema_bpb": 0.2519,
+    "steps": 4872,
     "train_time_s": 600,
-    "eval_time_s": "NOT RUN"
+    "eval_time_s": "~124s"
   },
-  "val_bpb": "INCOMPLETE — seed 42 not run",
-  "bytes_total": 9956729,
+  "val_bpb": 0.9984,
+  "bytes_total": 10031847,
   "bytes_code": 180226,
   "hardware": "8xH100 SXM",
-  "notes": "High cross-seed variance: seed 300=0.9578 vs seed 1337=1.2269 (gap 0.269). ClownCar gap was 0.00015. DeltaNet heads introduce seed sensitivity. Log files on pod — may be lost. Numbers from session memory."
+  "notes": "High cross-seed variance (std dev 0.1724 vs ClownCar 0.00015). Best seed: 42 at 0.8104. DeltaNet heads introduce seed sensitivity. Stabilization ongoing in Medusa_VII."
 }

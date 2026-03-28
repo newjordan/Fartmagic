@@ -15,11 +15,11 @@
 
 | Seed | BPB (sliding window) | Size (int6+zstd) | Post-EMA BPB | Steps |
 |------|---------------------:|-----------------:|-------------:|------:|
-| 300  | **0.9578** | 9.97MB | 0.3882 | 4880 |
+| 42   | **0.8104** ← best | 9.96MB | 0.2519 | 4872 |
+| 300  | 0.9578 | 9.97MB | 0.3882 | 4880 |
 | 1337 | 1.2269 | 9.96MB | 0.7126 | 4876 |
-| 42   | PENDING | PENDING | PENDING | PENDING |
-| **Mean** | **PENDING** | | | |
-| **Std dev** | **PENDING** | | | |
+| **Mean** | **0.9984** | | | |
+| **Std dev** | **0.1724** | | | |
 
 ## What Changed vs PR #990 (ClownCar)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import copy
 import glob
+import importlib.util
 import io
 import math
 import os
@@ -47,6 +48,44 @@ try:
 except ImportError:
     _fla_chunk_delta_rule = None
     _HAS_FLA_OPS = False
+
+NITRUST_ENABLE = bool(int(os.environ.get("NITRUST_ENABLE", "0")))
+NITRUST_STRICT = bool(int(os.environ.get("NITRUST_STRICT", "0")))
+NITRUST_SO_PATH = os.environ.get("NITRUST_SO_PATH", "Nitrust/rust/target/release/libnitrust_py.so")
+_NITRUST_IMPORT_ERROR: str | None = None
+_NITRUST_RUNTIME_FALLBACK_WARNED = False
+
+
+def _load_nitrust_bridge():
+    global _NITRUST_IMPORT_ERROR
+    if not NITRUST_ENABLE:
+        return None
+    try:
+        import nitrust_py as mod
+        return mod
+    except Exception as e:
+        _NITRUST_IMPORT_ERROR = f"import nitrust_py failed: {e}"
+    so_path = Path(NITRUST_SO_PATH)
+    if not so_path.is_absolute():
+        so_path = (Path.cwd() / so_path).resolve()
+    if not so_path.exists():
+        _NITRUST_IMPORT_ERROR = f"{_NITRUST_IMPORT_ERROR}; missing shared object at {so_path}"
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("nitrust_py", so_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"unable to create import spec for {so_path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as e:
+        _NITRUST_IMPORT_ERROR = f"direct load from {so_path} failed: {e}"
+        return None
+
+
+_NITRUST = _load_nitrust_bridge()
+NITRUST_ACTIVE = bool(NITRUST_ENABLE and _NITRUST is not None)
+
 class Hyperparameters:
     data_path = os.environ.get("DATA_PATH", "./data/datasets/fineweb10B_sp1024")
     train_files = os.path.join(data_path, "fineweb_train_*.bin")
@@ -472,6 +511,7 @@ def dequantize_state_dict_int8(obj: dict[str, object]) -> dict[str, Tensor]:
         out[name] = out_t
     return out
 def load_data_shard(file: Path) -> Tensor:
+    global _NITRUST_RUNTIME_FALLBACK_WARNED
     header_bytes = 256 * np.dtype("<i4").itemsize
     token_bytes = np.dtype("<u2").itemsize
     header = np.fromfile(file, dtype="<i4", count=256)
@@ -481,6 +521,18 @@ def load_data_shard(file: Path) -> Tensor:
     expected_size = header_bytes + num_tokens * token_bytes
     if file.stat().st_size != expected_size:
         raise ValueError(f"Shard size mismatch for {file}: expected {expected_size} bytes")
+    if NITRUST_ACTIVE:
+        try:
+            tokens = _NITRUST.mmap_read_tokens(str(file), 0, num_tokens)
+            if len(tokens) != num_tokens:
+                raise ValueError(f"Rust shard read returned {len(tokens)} tokens, expected {num_tokens}")
+            return torch.from_numpy(np.asarray(tokens, dtype=np.uint16))
+        except Exception as e:
+            if NITRUST_STRICT:
+                raise
+            if not _NITRUST_RUNTIME_FALLBACK_WARNED:
+                print(f"nitrust:warning rust shard read failed ({e}); falling back to numpy loader", flush=True)
+                _NITRUST_RUNTIME_FALLBACK_WARNED = True
     tokens_np = np.fromfile(file, dtype="<u2", count=num_tokens, offset=header_bytes)
     if tokens_np.size != num_tokens:
         raise ValueError(f"Short read for {file}")
@@ -2804,6 +2856,13 @@ def main() -> None:
     log0("=" * 100, console=False)
     log0(f"Running Python {sys.version}", console=False)
     log0(f"Running PyTorch {torch.__version__}", console=False)
+    if NITRUST_ENABLE:
+        if NITRUST_ACTIVE:
+            log0(f"nitrust:enabled backend=rust so_path={NITRUST_SO_PATH}")
+        else:
+            log0(f"nitrust:disabled_fallback reason={_NITRUST_IMPORT_ERROR}")
+    else:
+        log0("nitrust:disabled NITRUST_ENABLE=0")
     log0(
         subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False).stdout,
         console=False,

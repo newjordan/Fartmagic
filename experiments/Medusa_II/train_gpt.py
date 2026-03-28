@@ -102,6 +102,7 @@ class Hyperparameters:
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 786_432))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 2048))
     eval_seq_len = int(os.environ.get("EVAL_SEQ_LEN", 2048))
+    val_token_cap = int(os.environ.get("VAL_TOKEN_CAP", 0))  # 0 -> full val split
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
@@ -183,7 +184,13 @@ class Hyperparameters:
     crawler_loops = int(os.environ.get("CRAWLER_LOOPS", 2))        # how many times shared blocks fire
     crawler_mlp_mult = float(os.environ.get("CRAWLER_MLP_MULT", 4.0))  # MLP width multiplier for crawler
     inst_dim = int(os.environ.get("INST_DIM", "32"))          # instruction bottleneck dim per loop (0=disabled, use legacy loop_pos)
+    gptq_post_ema = bool(int(os.environ.get("GPTQ_POST_EMA", "1")))  # calibrate on final exported weights (after EMA/distill)
+    gptq_calib_samples = int(os.environ.get("GPTQ_CALIB_SAMPLES", "256"))  # Hessian samples for GPTQ calibration
+    gptq_calib_seq_len = int(os.environ.get("GPTQ_CALIB_SEQ_LEN", "0"))  # 0 -> use TRAIN_SEQ_LEN
+    init_model_path = os.environ.get("INIT_MODEL_PATH", "")  # optional checkpoint to load before training/exit
+    exit_only = bool(int(os.environ.get("EXIT_ONLY", "0")))  # skip training loop, run eval+quantization pipeline only
     crawler_quant_int8 = bool(int(os.environ.get("CRAWLER_QUANT_INT8", "0")))  # use int8 for shared crawler block (multi-context quant resilience)
+    delta_net_quant_int8 = bool(int(os.environ.get("DELTA_NET_QUANT_INT8", "0")))  # optional int8 protection for recurrent delta-net path
     delta_net_heads = int(os.environ.get("DELTA_NET_HEADS", "0"))              # DeltaNet heads in crawler (0=disabled); state carried between loops
     # Purple-1: Dirichlet-Multinomial smoothing (PR #900 — replaces linear alpha)
     ngram_dirichlet = bool(int(os.environ.get("NGRAM_DIRICHLET", "0")))
@@ -333,11 +340,13 @@ def build_sentencepiece_luts(
         torch.tensor(has_leading_space_np, dtype=torch.bool, device=device),
         torch.tensor(is_boundary_token_np, dtype=torch.bool, device=device),
     )
-def load_validation_tokens(pattern: str, seq_len: int) -> Tensor:
+def load_validation_tokens(pattern: str, seq_len: int, token_cap: int = 0) -> Tensor:
     files = [Path(p) for p in sorted(glob.glob(pattern))]
     if not files:
         raise FileNotFoundError(f"No files found for pattern: {pattern}")
     tokens = torch.cat([load_data_shard(file) for file in files]).contiguous()
+    if token_cap > 0:
+        tokens = tokens[: min(tokens.numel(), token_cap + 1)]
     usable = ((tokens.numel() - 1) // seq_len) * seq_len
     if usable <= 0:
         raise ValueError(f"Validation split is too short for TRAIN_SEQ_LEN={seq_len}")
@@ -2682,7 +2691,8 @@ def gptq_calibrate_loop_aware(model: nn.Module, train_pattern: str, device: torc
     return merged
 def mixed_quantize_int6_gptq(state_dict: dict[str, Tensor], int6_cats: set[str],
                               hessians: dict[str, Tensor],
-                              crawler_int8: bool = False) -> tuple[dict, dict]:
+                              crawler_int8: bool = False,
+                              delta_net_int8: bool = False) -> tuple[dict, dict]:
     """Like mixed_quantize_int6 but uses GPTQ for int6 categories when Hessian available."""
     result: dict[str, Tensor] = {}
     meta: dict[str, object] = {}
@@ -2698,13 +2708,20 @@ def mixed_quantize_int6_gptq(state_dict: dict[str, Tensor], int6_cats: set[str],
             result[name] = t.float()
             meta[name] = "passthrough_ctrl"
             continue
-        # Crawler reservoir: shared block used K times — give it int8 range (±127) for multi-context resilience
-        if crawler_int8 and name.startswith("crawler_blocks.") and t.is_floating_point() and t.numel() > 65536:
-            q, s = quantize_float_tensor(t)  # int8 ±127 — wider range for shared weights serving K loop contexts
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int8"}
-            continue
+        # Shared/recurrent paths are most sensitive to quantization drift across loop contexts.
+        if t.is_floating_point() and t.numel() > 65536:
+            if crawler_int8 and name.startswith("crawler_blocks."):
+                q, s = quantize_float_tensor(t)  # int8 ±127 for shared crawler reservoir
+                result[name + ".q"] = q
+                result[name + ".scale"] = s
+                meta[name] = {"type": "int8"}
+                continue
+            if delta_net_int8 and name.startswith("delta_net."):
+                q, s = quantize_float_tensor(t)  # optional int8 for recurrent delta-net
+                result[name + ".q"] = q
+                result[name + ".scale"] = s
+                meta[name] = {"type": "int8"}
+                continue
         if cat in int6_cats and t.ndim == 2:
             module_name = name.rsplit(".weight", 1)[0] if name.endswith(".weight") else name
             H = hessians.get(module_name)
@@ -2883,19 +2900,47 @@ def main() -> None:
     actual_train_files = len(list(dataset_dir.glob("fineweb_train_*.bin")))
     effective_eval_seq_len = args.eval_seq_len if args.eval_seq_len > 0 else args.train_seq_len
     val_seq_len = max(args.train_seq_len, effective_eval_seq_len)
-    val_tokens = load_validation_tokens(args.val_files, val_seq_len)
+    val_tokens = load_validation_tokens(args.val_files, val_seq_len, args.val_token_cap)
     base_bytes_lut, has_leading_space_lut, is_boundary_token_lut = build_sentencepiece_luts(
         sp, args.vocab_size, device
     )
     log0(f"val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path={args.tokenizer_path}")
     log0(f"train_loader:dataset:{dataset_dir.name} train_shards:{actual_train_files}")
     log0(f"val_loader:shards pattern={args.val_files} tokens:{val_tokens.numel() - 1}")
+    if args.val_token_cap > 0:
+        log0(f"val_loader:token_cap:{args.val_token_cap}")
     CastedLinear._qat_enabled = args.qat_enabled
     base_model = build_model(args, device)
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
+    if args.init_model_path:
+        init_path = Path(args.init_model_path)
+        if not init_path.exists():
+            raise FileNotFoundError(f"INIT_MODEL_PATH not found: {init_path}")
+        raw_state = torch.load(init_path, map_location="cpu")
+        loaded_state: dict[str, Tensor]
+        if isinstance(raw_state, dict) and "state_dict" in raw_state and isinstance(raw_state["state_dict"], dict):
+            loaded_state = raw_state["state_dict"]
+        elif isinstance(raw_state, dict) and "model" in raw_state and isinstance(raw_state["model"], dict):
+            loaded_state = raw_state["model"]
+        elif isinstance(raw_state, dict) and "w" in raw_state and "m" in raw_state:
+            template_cpu = {k: v.detach().cpu() for k, v in base_model.state_dict().items()}
+            loaded_state = dequantize_mixed_int6(raw_state["w"], raw_state["m"], template_cpu)
+        elif isinstance(raw_state, dict):
+            loaded_state = raw_state
+        else:
+            raise ValueError(f"Unsupported checkpoint format at INIT_MODEL_PATH={init_path}")
+        missing_keys, unexpected_keys = base_model.load_state_dict(loaded_state, strict=False)
+        log0(
+            f"init_model:loaded path={init_path} "
+            f"missing_keys:{len(missing_keys)} unexpected_keys:{len(unexpected_keys)}"
+        )
+        if missing_keys:
+            log0(f"init_model:missing_keys_sample:{missing_keys[:6]}")
+        if unexpected_keys:
+            log0(f"init_model:unexpected_keys_sample:{unexpected_keys[:6]}")
     # Complementary training: downweight tokens predictable by bigrams
     complement_alpha = float(os.environ.get("COMPLEMENT_ALPHA", "0"))
     if complement_alpha > 0:
@@ -3128,6 +3173,12 @@ def main() -> None:
             f"min_count={args.ngram_eval_min_count} buckets={args.ngram_eval_buckets}"
         )
     train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
+    if args.exit_only:
+        if not args.init_model_path:
+            log0("exit_only:enabled without INIT_MODEL_PATH — using current initialized weights")
+        args.warmup_steps = 0
+        args.iterations = 0
+        log0("exit_only:enabled warmup_steps:0 iterations:0 (training loop skipped)")
     def zero_grad_all() -> None:
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
@@ -3290,22 +3341,41 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    # GPTQ calibration: collect Hessians from training data DURING training phase
-    # (must happen before training ends to comply with eval-time data access rules)
+    # GPTQ calibration: collect Hessians from training data during run execution.
+    # Default path calibrates on post-EMA weights because those are what get exported.
     skip_gptq = int(os.environ.get("SKIP_GPTQ", "0"))
-    if skip_gptq:
-        log0("gptq:SKIPPED (SKIP_GPTQ=1) — will use naive int6")
-        gptq_hessians = {}
-    elif int(os.environ.get("LOOP_AWARE_GPTQ", "0")):
-        log0("gptq:loop-aware 2-phase calibration...")
-        t_gptq = time.perf_counter()
-        gptq_hessians = gptq_calibrate_loop_aware(base_model, args.train_files, device, n_samples=256, seq_len=args.train_seq_len)
-        log0(f"gptq:loop-aware calibrated {len(gptq_hessians)} layers in {time.perf_counter()-t_gptq:.1f}s")
-    else:
+    gptq_hessians: dict[str, Tensor] = {}
+    gptq_calib_seq_len = args.gptq_calib_seq_len if args.gptq_calib_seq_len > 0 else args.train_seq_len
+
+    def collect_gptq_hessians() -> dict[str, Tensor]:
+        if skip_gptq:
+            log0("gptq:SKIPPED (SKIP_GPTQ=1) — will use naive int6")
+            return {}
+        log0(f"gptq:calibration config samples:{args.gptq_calib_samples} seq_len:{gptq_calib_seq_len}")
+        if int(os.environ.get("LOOP_AWARE_GPTQ", "0")):
+            log0("gptq:loop-aware 2-phase calibration...")
+            t_gptq = time.perf_counter()
+            h = gptq_calibrate_loop_aware(
+                base_model, args.train_files, device,
+                n_samples=args.gptq_calib_samples, seq_len=gptq_calib_seq_len,
+            )
+            log0(f"gptq:loop-aware calibrated {len(h)} layers in {time.perf_counter()-t_gptq:.1f}s")
+            return h
         log0("gptq:calibrating with training data...")
         t_gptq = time.perf_counter()
-        gptq_hessians = gptq_calibrate(base_model, args.train_files, device, n_samples=256, seq_len=args.train_seq_len)
-        log0(f"gptq:calibrated {len(gptq_hessians)} layers in {time.perf_counter()-t_gptq:.1f}s")
+        h = gptq_calibrate(
+            base_model, args.train_files, device,
+            n_samples=args.gptq_calib_samples, seq_len=gptq_calib_seq_len,
+        )
+        log0(f"gptq:calibrated {len(h)} layers in {time.perf_counter()-t_gptq:.1f}s")
+        return h
+
+    if args.gptq_post_ema:
+        if not skip_gptq:
+            log0("gptq:deferred until post-EMA export weights (GPTQ_POST_EMA=1)")
+    else:
+        log0("gptq:calibrating on pre-EMA weights (GPTQ_POST_EMA=0)")
+        gptq_hessians = collect_gptq_hessians()
     if args.distill_enabled and args.distill_steps > 0:
         log0(
             f"distill:start steps:{args.distill_steps} lr_factor:{args.distill_lr_factor} "
@@ -3389,6 +3459,8 @@ def main() -> None:
         f"DIAGNOSTIC post_ema val_loss:{diag_val_loss:.4f} val_bpb:{diag_val_bpb:.4f} "
         f"eval_time:{1000.0 * (time.perf_counter() - t_diag):.0f}ms"
     )
+    if args.gptq_post_ema:
+        gptq_hessians = collect_gptq_hessians()
     full_state_dict = base_model.state_dict()
     export_sd = {k: v for k, v in full_state_dict.items() if "mtp_heads" not in k}
     excluded_mtp = sum(int(t.numel()) for k, t in full_state_dict.items() if "mtp_heads" in k)
@@ -3408,6 +3480,7 @@ def main() -> None:
         quant_result, quant_meta = mixed_quantize_int6_gptq(
             sd_cpu, {"mlp", "attn", "aux"}, gptq_hessians,
             crawler_int8=args.crawler_quant_int8,
+            delta_net_int8=args.delta_net_quant_int8,
         )
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)

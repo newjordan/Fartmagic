@@ -10,6 +10,7 @@ set -euo pipefail
 #   EMA_START_STEP=4400  — re-initialize EMA at SWA/warmdown onset, skip early steps
 #   EMA_DECAY=0.99       — fast decay: closely tracks warmdown weights (~400 steps)
 #   LOOP_AWARE_GPTQ=1    — 2-phase crawler calibration (from CC_VII)
+#   GPTQ_POST_EMA=1      — calibrate GPTQ on final exported weights (after EMA)
 #
 # Expected: BPB close to live (~0.47-0.52), weights smooth enough for GPTQ (+0.20 gap)
 # Baseline: CC_II 1.0427 BPB | CC_VII roundtrip 1.1879 BPB
@@ -67,7 +68,7 @@ echo "  MEDUSA_II — late-start EMA (step 4400) + loop-aware GPTQ"
 echo "  Seed: ${SEED}"
 echo "  inst_dim=32 FLOW | 4 flat + 1 crawler x 4 loops"
 echo "  DELTA_NET_HEADS=4 | chunk_delta_rule | short_conv=True"
-echo "  EMA_START_STEP=4400 | EMA_DECAY=0.99 | LOOP_AWARE_GPTQ=1"
+echo "  EMA_START_STEP=4400 | EMA_DECAY=0.99 | LOOP_AWARE_GPTQ=1 | GPTQ_POST_EMA=1"
 echo "  NITRUST_ENABLE=${NITRUST_ENABLE} | NITRUST_STRICT=${NITRUST_STRICT}"
 echo "============================================"
 
@@ -95,6 +96,7 @@ DELTA_NET_HEADS=4 \
 EMA_START_STEP=4400 \
 EMA_DECAY=0.99 \
 LOOP_AWARE_GPTQ=1 \
+GPTQ_POST_EMA=1 \
 NITRUST_ENABLE="${NITRUST_ENABLE}" \
 NITRUST_STRICT="${NITRUST_STRICT}" \
 NITRUST_SO_PATH="${NITRUST_SO_PATH}" \

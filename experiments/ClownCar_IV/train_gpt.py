@@ -1397,7 +1397,7 @@ class CanonicalDeltaNet(nn.Module):
             output_final_state=True,
         )
         y = o.reshape(B, T, H * Dh)
-        return self.norm(x + self.o_proj(y)), new_state.to(dtype)
+        return self.norm(x + self.o_proj(y)), new_state
 
 
 # flat blocks (unique, U-Net enc/dec) + crawler blocks (shared, looped K times)

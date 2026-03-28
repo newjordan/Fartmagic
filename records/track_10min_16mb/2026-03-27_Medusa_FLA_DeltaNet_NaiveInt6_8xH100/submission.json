@@ -1,0 +1,35 @@
+{
+  "author": "Frosty40",
+  "github_id": "newjordan",
+  "name": "Medusa: Canonical FLA DeltaNet + Naive Int6 (GPTQ bypass)",
+  "blurb": "Successor to PR #990 (ClownCar, 1.1813 BPB). Catalyzed by PR #875 (@shalyhinpavel, GDN 1.0226) — the same chunk_delta_rule mechanism that makes GDN explosive is symbiotic with the crawler topology here. Adds DELTA_NET_HEADS=4, bypasses GPTQ (SKIP_GPTQ=1, which degraded 0.7278→0.9340 in ClownCar_II), and fixes BF16 state dtype recompile bug. 4 flat + 1 crawler × 4 loops, INST_DIM=32, CRAWLER_QUANT_INT8=1. 3-seed mean val_bpb=PENDING.",
+  "date": "2026-03-27",
+  "seed_1337": {
+    "val_bpb": "PENDING",
+    "sliding_window_bpb": "PENDING",
+    "post_ema_bpb": "PENDING",
+    "steps": "PENDING",
+    "train_time_s": 600,
+    "eval_time_s": "PENDING"
+  },
+  "seed_42": {
+    "val_bpb": "PENDING",
+    "sliding_window_bpb": "PENDING",
+    "post_ema_bpb": "PENDING",
+    "steps": "PENDING",
+    "train_time_s": 600,
+    "eval_time_s": "PENDING"
+  },
+  "seed_123": {
+    "val_bpb": "PENDING",
+    "sliding_window_bpb": "PENDING",
+    "post_ema_bpb": "PENDING",
+    "steps": "PENDING",
+    "train_time_s": 600,
+    "eval_time_s": "PENDING"
+  },
+  "val_bpb": "PENDING",
+  "bytes_total": "PENDING",
+  "bytes_code": "PENDING",
+  "hardware": "8xH100 SXM"
+}

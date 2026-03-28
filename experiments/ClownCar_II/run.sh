@@ -49,6 +49,12 @@ except ImportError:
     else: print(f'  WARNING: FA{v[0]} detected — want FA3')
 " 2>/dev/null || echo "  WARNING: no flash_attn found"
 
+echo "[preflight] checking fla.ops.delta_rule (canonical DeltaNet kernel)..."
+python3 -c "
+from fla.ops.delta_rule import chunk_delta_rule
+print('  chunk_delta_rule OK — CANONICAL kernel active')
+" 2>/dev/null || echo "  WARNING: fla.ops not found — will fall back to Python DeltaNet loop (slow, non-canonical)"
+
 echo "============================================"
 echo "  CLOWNCAR_II — Canonical FLA DeltaNet + Crawler"
 echo "  Seed: ${SEED}"

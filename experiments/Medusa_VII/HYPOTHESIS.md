@@ -45,9 +45,18 @@ SEED=300 bash experiments/Medusa_VII/run.sh
 
 ## Results
 
-| Run | Seed | Live BPB | Post-EMA | Sliding Window | Size | Notes |
-|-----|------|----------|----------|----------------|------|-------|
-| CC_II | 1337 | 0.4723 | 0.7278 | 1.0427 | ~9.8MB | DeltaNet=4, no EMA+GPTQ |
-| Medusa_IV | 300 | 0.3736 | 0.3882 | 0.9578 | ~10.1MB | DeltaNet=4, causality violation |
-| Medusa_VII DN=0 | 300 | TBD | TBD | TBD | TBD | No DeltaNet |
-| Medusa_VII DN=4 | 300 | TBD | TBD | TBD | TBD | Fixed DeltaNet |
+| Run | Seed | Post-EMA | RT Int6 | SW Int6 | SW<RT? | EMA steps | Size | Notes |
+|-----|------|----------|---------|---------|--------|-----------|------|-------|
+| CC_II | 1337 | 0.7278 | ~0.934 | 1.0427 | ❌ | ~full | ~9.8MB | DN=4 violation, no late EMA |
+| Medusa_IV | 300 | 0.3882 | ~0.85 | **0.9578** | ❌ | ~3000 | ~10.1MB | DN=4 violation — score was the bug |
+| M_VII DN=0 | 300 | 1.2002 | 1.2065 | **1.1823** | ✅ | 3088 | 9.08MB | Honest baseline |
+| M_VII DN=4 fixed | 300 | 1.2124 | 1.2204 | **1.1958** | ✅ | 494 | 9.60MB | EMA-starved (55% slower train) |
+
+## Verdict
+
+- SW < RT restored on both honest runs — causality fix confirmed working.
+- Causal DeltaNet (per-loop reset) provides no measurable benefit at this wall-clock budget.
+  55% compute overhead → fewer training steps → EMA starved (494 vs 3088 steps).
+  Even accounting for this, result is ~identical to DN=0.
+- The entire 0.9578 margin over baseline came from the DeltaNet look-ahead (causality violation).
+- Honest architecture score: **~1.18 BPB** (Medusa_VII DN=0).

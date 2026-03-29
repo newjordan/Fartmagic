@@ -3128,6 +3128,11 @@ def main() -> None:
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
+    # GPTQ calibration reads training data — it must complete within the wallclock budget.
+    # We stop the training loop early (by GPTQ_RESERVE_MS) so GPTQ runs before the cap.
+    _skip_gptq = int(os.environ.get("SKIP_GPTQ", "0"))
+    _gptq_reserve_ms = float(os.environ.get("GPTQ_RESERVE_MS", "30000")) if (max_wallclock_ms is not None and not _skip_gptq) else 0.0
+    effective_max_wallclock_ms = (max_wallclock_ms - _gptq_reserve_ms) if max_wallclock_ms is not None else None
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
             return 1.0
@@ -3275,8 +3280,8 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
-        reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
-        if distributed and max_wallclock_ms is not None:
+        reached_cap = effective_max_wallclock_ms is not None and approx_training_time_ms >= effective_max_wallclock_ms
+        if distributed and effective_max_wallclock_ms is not None:
             reached_cap_tensor = torch.tensor(int(reached_cap), device=device)
             dist.all_reduce(reached_cap_tensor, op=dist.ReduceOp.MAX)
             reached_cap = bool(reached_cap_tensor.item())
@@ -3286,8 +3291,11 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    # GPTQ calibration: collect Hessians from training data DURING training phase
-    # (must happen before training ends to comply with eval-time data access rules)
+    # GPTQ calibration: reads training data — must complete within MAX_WALLCLOCK_SECONDS.
+    # Training loop stopped GPTQ_RESERVE_MS early so this runs inside the budget.
+    t_gptq_start = time.perf_counter()
+    _elapsed_at_gptq_ms = (t_gptq_start - t0) * 1000.0
+    log0(f"gptq:starting calibration at elapsed={_elapsed_at_gptq_ms:.0f}ms (budget={max_wallclock_ms:.0f}ms)")
     skip_gptq = int(os.environ.get("SKIP_GPTQ", "0"))
     if skip_gptq:
         log0("gptq:SKIPPED (SKIP_GPTQ=1) — will use naive int6")

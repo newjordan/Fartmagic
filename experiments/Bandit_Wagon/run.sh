@@ -63,7 +63,7 @@ except ImportError:
 " 2>/dev/null || echo "  WARNING: no flash_attn found"
 
 echo "============================================"
-echo "  BANDIT_WAGON — crawler headroom ablation (no ngram)"
+echo "  BANDIT_WAGON — width/depth headroom sweep"
 echo "  Seed: ${SEED}"
 echo "  MODEL_DIM=${MODEL_DIM} | inst_dim=32 FLOW | ${NUM_FLAT_LAYERS}F+1C x 3 loops | DN=0"
 echo "  mlp_mult=6.0 | COMPILE_FULLGRAPH=0 | SKIP_GPTQ=1 | CRAWLER_QUANT_INT8=1"

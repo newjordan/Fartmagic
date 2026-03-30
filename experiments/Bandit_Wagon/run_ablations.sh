@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SEED="${SEED:-444}"
-NPROC="${NPROC_PER_NODE:-8}"
+NPROC="${NPROC_PER_NODE:-1}"
 
 RESULTS=()
 

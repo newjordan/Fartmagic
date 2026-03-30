@@ -10,6 +10,7 @@ NPROC="${NPROC:-8}"
 SEEDS_STR="${SEEDS:-42}"
 TARGET_BPB="${TARGET_BPB:-1.10200000}"
 RUN_TAG="${RUN_TAG:-rascal_ab_${PROFILE}_$(date +%Y%m%d_%H%M%S)}"
+TORCHRUN_BIN="${TORCHRUN_BIN:-torchrun}"
 
 export DATA_PATH="${DATA_PATH:-${REPO_ROOT}/data/datasets/fineweb10B_sp1024}"
 export TOKENIZER_PATH="${TOKENIZER_PATH:-${REPO_ROOT}/data/tokenizers/fineweb_1024_bpe.model}"
@@ -45,6 +46,10 @@ if [[ ! -f "${TOKENIZER_PATH}" ]]; then
     echo "ERROR: TOKENIZER_PATH does not exist: ${TOKENIZER_PATH}"
     exit 1
 fi
+if ! command -v "${TORCHRUN_BIN}" >/dev/null 2>&1; then
+    echo "ERROR: TORCHRUN_BIN not found: ${TORCHRUN_BIN}"
+    exit 1
+fi
 
 extract_metric() {
     local log_file="$1"
@@ -52,6 +57,9 @@ extract_metric() {
     m=$(grep 'final_sliding_window_exact' "${log_file}" 2>/dev/null | tail -1 | grep -oP 'val_bpb:\K[0-9.]+' || true)
     if [[ -z "${m}" ]]; then
         m=$(grep 'final_sliding_window_s64_exact' "${log_file}" 2>/dev/null | tail -1 | grep -oP 'val_bpb:\K[0-9.]+' || true)
+    fi
+    if [[ -z "${m}" ]]; then
+        m=$(grep 'DIAGNOSTIC post_ema' "${log_file}" 2>/dev/null | tail -1 | grep -oP 'val_bpb:\K[0-9.]+' || true)
     fi
     if [[ -z "${m}" ]]; then
         m="N/A"
@@ -119,7 +127,7 @@ run_one() {
         ROPE_DIMS="${ROPE_DIMS:-16}" \
         BIGRAM_VOCAB_SIZE="${BIGRAM_VOCAB_SIZE:-2048}" \
         TRIGRAM="${TRIGRAM:-0}" \
-        torchrun --standalone --nproc_per_node="${NPROC}" "${script}" 2>&1 | tee "${log_file}"
+        "${TORCHRUN_BIN}" --standalone --nproc_per_node="${NPROC}" "${script}" 2>&1 | tee "${log_file}"
     elif [[ "${PROFILE}" == "full" ]]; then
         SEED="${seed}" \
         RUN_ID="ab_${PROFILE}_${variant}_s${seed}" \
@@ -141,7 +149,7 @@ run_one() {
         NGRAM_EVAL_ORDER="${NGRAM_EVAL_ORDER:-0}" \
         CUBRIC_CADENCE="${CUBRIC_CADENCE:-0}" \
         NGRAM_ENTROPY_SHIFT="${NGRAM_ENTROPY_SHIFT:-0}" \
-        torchrun --standalone --nproc_per_node="${NPROC}" "${script}" 2>&1 | tee "${log_file}"
+        "${TORCHRUN_BIN}" --standalone --nproc_per_node="${NPROC}" "${script}" 2>&1 | tee "${log_file}"
     else
         echo "ERROR: PROFILE must be smoke or full (got: ${PROFILE})"
         exit 1

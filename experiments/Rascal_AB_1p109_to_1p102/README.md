@@ -39,7 +39,7 @@ bash experiments/Rascal_AB_1p109_to_1p102/run_ab_gb10_signal.sh
 
 Default proxy profile:
 
-- `TORCHRUN_BIN=/home/frosty40/miniconda3/bin/torchrun` (CUDA-enabled torchrun)
+- `TORCHRUN_BIN=torchrun` (or set explicitly if your pod has multiple torch installs)
 - `NPROC=1`
 - `SEEDS=444`
 - `ITERATIONS=220` (10% of 2200)

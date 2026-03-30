@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # Arms: baseline -> turbomuon -> engramlite -> combo
 
 PROFILE=smoke \
-TORCHRUN_BIN="${TORCHRUN_BIN:-/home/frosty40/miniconda3/bin/torchrun}" \
+TORCHRUN_BIN="${TORCHRUN_BIN:-torchrun}" \
 NPROC="${NPROC:-1}" \
 SEEDS="${SEEDS:-444}" \
 ITERATIONS="${ITERATIONS:-2000}" \

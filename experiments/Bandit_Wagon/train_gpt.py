@@ -1,7 +1,6 @@
 from __future__ import annotations
 import copy
 import glob
-import importlib.util
 import io
 import math
 import os
@@ -40,52 +39,6 @@ except ImportError:
             v2 = v2.repeat_interleave(rep, dim=1)
         out = torch.nn.functional.scaled_dot_product_attention(q2, k2, v2, is_causal=causal)
         return out.transpose(1, 2)
-# Canonical FLA delta rule kernel — replaces Python token loop in DeltaNetMemory
-# chunk_delta_rule: parallelized over sequence chunks on CUDA (arxiv 2406.06484)
-try:
-    from fla.ops.delta_rule import chunk_delta_rule as _fla_chunk_delta_rule
-    _HAS_FLA_OPS = True
-except ImportError:
-    _fla_chunk_delta_rule = None
-    _HAS_FLA_OPS = False
-
-NITRUST_ENABLE = bool(int(os.environ.get("NITRUST_ENABLE", "0")))
-NITRUST_STRICT = bool(int(os.environ.get("NITRUST_STRICT", "0")))
-NITRUST_SO_PATH = os.environ.get("NITRUST_SO_PATH", "Nitrust/rust/target/release/libnitrust_py.so")
-_NITRUST_IMPORT_ERROR: str | None = None
-_NITRUST_RUNTIME_FALLBACK_WARNED = False
-
-
-def _load_nitrust_bridge():
-    global _NITRUST_IMPORT_ERROR
-    if not NITRUST_ENABLE:
-        return None
-    try:
-        import nitrust_py as mod
-        return mod
-    except Exception as e:
-        _NITRUST_IMPORT_ERROR = f"import nitrust_py failed: {e}"
-    so_path = Path(NITRUST_SO_PATH)
-    if not so_path.is_absolute():
-        so_path = (Path.cwd() / so_path).resolve()
-    if not so_path.exists():
-        _NITRUST_IMPORT_ERROR = f"{_NITRUST_IMPORT_ERROR}; missing shared object at {so_path}"
-        return None
-    try:
-        spec = importlib.util.spec_from_file_location("nitrust_py", so_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"unable to create import spec for {so_path}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-    except Exception as e:
-        _NITRUST_IMPORT_ERROR = f"direct load from {so_path} failed: {e}"
-        return None
-
-
-_NITRUST = _load_nitrust_bridge()
-NITRUST_ACTIVE = bool(NITRUST_ENABLE and _NITRUST is not None)
-
 class Hyperparameters:
     data_path = os.environ.get("DATA_PATH", "./data/datasets/fineweb10B_sp1024")
     train_files = os.path.join(data_path, "fineweb_train_*.bin")
@@ -130,8 +83,6 @@ class Hyperparameters:
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.3))
     eval_stride = int(os.environ.get("EVAL_STRIDE", 64))
-    mtp_num_heads = int(os.environ.get("MTP_NUM_HEADS", 0))
-    mtp_loss_weight = float(os.environ.get("MTP_LOSS_WEIGHT", 0.2))
     muon_beta2 = float(os.environ.get("MUON_BETA2", 0.95))
     swa_enabled = bool(int(os.environ.get("SWA_ENABLED", "1")))
     swa_every = int(os.environ.get("SWA_EVERY", 50))  # tighter: collect more recent checkpoints
@@ -144,7 +95,6 @@ class Hyperparameters:
     rope_dims = int(os.environ.get("ROPE_DIMS", 16))
     ln_scale = bool(int(os.environ.get("LN_SCALE", "1")))
     dtg_enabled = bool(int(os.environ.get("DTG_ENABLED", "0")))
-    late_qat_threshold = float(os.environ.get("LATE_QAT_THRESHOLD", 0.5))
     ve_enabled = bool(int(os.environ.get("VE_ENABLED", "1")))
     ve_dim = int(os.environ.get("VE_DIM", 128))
     ve_layers = os.environ.get("VE_LAYERS", "9,10")
@@ -167,7 +117,6 @@ class Hyperparameters:
     crawler_mlp_mult = float(os.environ.get("CRAWLER_MLP_MULT", 4.0))  # MLP width multiplier for crawler
     inst_dim = int(os.environ.get("INST_DIM", "32"))          # instruction bottleneck dim per loop (0=disabled, use legacy loop_pos)
     crawler_quant_int8 = bool(int(os.environ.get("CRAWLER_QUANT_INT8", "0")))  # use int8 for shared crawler block (multi-context quant resilience)
-    delta_net_heads = int(os.environ.get("DELTA_NET_HEADS", "0"))              # DeltaNet heads in crawler (0=disabled); state carried between loops
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
     phrase_cache_enabled = bool(int(os.environ.get("PHRASE_CACHE", "0")))
     phrase_buckets = int(os.environ.get("PHRASE_BUCKETS", 4_194_304))
@@ -455,7 +404,6 @@ def dequantize_state_dict_int8(obj: dict[str, object]) -> dict[str, Tensor]:
         out[name] = out_t
     return out
 def load_data_shard(file: Path) -> Tensor:
-    global _NITRUST_RUNTIME_FALLBACK_WARNED
     header_bytes = 256 * np.dtype("<i4").itemsize
     token_bytes = np.dtype("<u2").itemsize
     header = np.fromfile(file, dtype="<i4", count=256)
@@ -465,18 +413,6 @@ def load_data_shard(file: Path) -> Tensor:
     expected_size = header_bytes + num_tokens * token_bytes
     if file.stat().st_size != expected_size:
         raise ValueError(f"Shard size mismatch for {file}: expected {expected_size} bytes")
-    if NITRUST_ACTIVE:
-        try:
-            tokens = _NITRUST.mmap_read_tokens(str(file), 0, num_tokens)
-            if len(tokens) != num_tokens:
-                raise ValueError(f"Rust shard read returned {len(tokens)} tokens, expected {num_tokens}")
-            return torch.from_numpy(np.asarray(tokens, dtype=np.uint16))
-        except Exception as e:
-            if NITRUST_STRICT:
-                raise
-            if not _NITRUST_RUNTIME_FALLBACK_WARNED:
-                print(f"nitrust:warning rust shard read failed ({e}); falling back to numpy loader", flush=True)
-                _NITRUST_RUNTIME_FALLBACK_WARNED = True
     tokens_np = np.fromfile(file, dtype="<u2", count=num_tokens, offset=header_bytes)
     if tokens_np.size != num_tokens:
         raise ValueError(f"Short read for {file}")
@@ -770,8 +706,6 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
-        mtp_num_heads: int = 0,
-        mtp_loss_weight: float = 0.1,
         bigram_vocab_size: int = 0,
         bigram_dim: int = 128,
         xsa_last_n: int = 0,
@@ -793,8 +727,6 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
-        self.mtp_num_heads = mtp_num_heads
-        self.mtp_loss_weight = mtp_loss_weight
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim) if bigram_vocab_size > 0 else None
         self.smear = SmearGate(model_dim)
@@ -840,11 +772,7 @@ class GPT(nn.Module):
         self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
         if self.lm_head is not None:
             self.lm_head._zero_init = True
-        self.mtp_heads = nn.ModuleList(
-            [CastedLinear(model_dim, vocab_size, bias=False) for _ in range(mtp_num_heads)]
-        )
-        for head in self.mtp_heads:
-            head._zero_init = True
+        self.mtp_heads = nn.ModuleList()
         # Low-rank correction path for extra capacity under size budget.
         self.f1_corr_rank = f1_corr_rank
         if f1_corr_rank > 0:
@@ -916,22 +844,6 @@ class GPT(nn.Module):
             logits_proj = logits_proj + self.f1_corr_scale.to(dtype=logits_proj.dtype) * corr_proj
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
         main_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
-        if self.training and self.mtp_num_heads > 0 and self.mtp_loss_weight > 0.0:
-            _, seqlen, dim = x.shape
-            mtp_loss_sum = x.new_zeros(())
-            mtp_loss_count = 0
-            for k, mtp_head in enumerate(self.mtp_heads):
-                valid_t = seqlen - (k + 1)
-                if valid_t <= 0:
-                    continue
-                mtp_hidden = x[:, :valid_t, :].reshape(-1, dim)
-                mtp_targets = target_ids[:, k + 1 :].reshape(-1)
-                mtp_logits_proj = mtp_head(mtp_hidden)
-                mtp_logits = self.logit_softcap * torch.tanh(mtp_logits_proj / self.logit_softcap)
-                mtp_loss_sum = mtp_loss_sum + F.cross_entropy(mtp_logits.float(), mtp_targets, reduction="mean")
-                mtp_loss_count += 1
-            if mtp_loss_count > 0:
-                main_loss = main_loss + self.mtp_loss_weight * (mtp_loss_sum / mtp_loss_count)
         return main_loss
     def forward_logits(self, input_ids: Tensor) -> Tensor:
         """Return logits (bsz, seq_len, vocab) without computing loss."""
@@ -968,135 +880,6 @@ class GPT(nn.Module):
 # ──────────────────────────────────────────────────────────────────────────────
 # F-Wing: Frugendorff Crawler GPT
 # ──────────────────────────────────────────────────────────────────────────────
-# DeltaNet associative memory — delta rule update, state carried between loops
-# Update rule: S_t += β_t * outer(v_t - S_t @ k_t, k_t)   (error correction)
-# The state S accumulates pattern associations across crawler loop iterations,
-# giving each loop genuine new information rather than repeating the same pass.
-# ──────────────────────────────────────────────────────────────────────────────
-class DeltaNetMemory(nn.Module):
-    """Delta-rule associative memory for the FX-Wing crawler reservoir.
-
-    State S (shape [B, H, Dh, Dh]) is carried between crawler loop iterations.
-    Each pass corrects prediction errors, progressively refining associations.
-    Output projection is zero-initialized so it starts as a residual no-op.
-    """
-    def __init__(self, model_dim: int, n_heads: int):
-        super().__init__()
-        assert model_dim % n_heads == 0
-        self.n_heads = n_heads
-        self.head_dim = model_dim // n_heads
-        d = model_dim
-        Dh = self.head_dim
-        H = n_heads
-        self.k_proj = nn.Linear(d, H * Dh, bias=False)
-        self.v_proj = nn.Linear(d, H * Dh, bias=False)
-        self.q_proj = nn.Linear(d, H * Dh, bias=False)
-        self.b_proj = nn.Linear(d, H, bias=True)   # per-head beta (learning rate)
-        self.o_proj = nn.Linear(H * Dh, d, bias=False)
-        self.norm   = RMSNorm()
-        nn.init.zeros_(self.o_proj.weight)          # start as identity (no-op)
-
-    @torch.compiler.disable  # T-loop unrolled by dynamo → OOM; run in eager instead
-    def forward(self, x: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
-        """
-        x:     [B, T, D]
-        state: [B, H, Dh, Dh]  — carried from previous loop iteration
-        returns (x_out [B, T, D], new_state [B, H, Dh, Dh])
-        """
-        B, T, D = x.shape
-        H, Dh = self.n_heads, self.head_dim
-        k = F.normalize(self.k_proj(x).reshape(B, T, H, Dh), dim=-1)   # [B,T,H,Dh]
-        v = self.v_proj(x).reshape(B, T, H, Dh)                          # [B,T,H,Dh]
-        q = F.normalize(self.q_proj(x).reshape(B, T, H, Dh), dim=-1)   # [B,T,H,Dh]
-        beta = torch.sigmoid(self.b_proj(x))                              # [B,T,H]
-        # Sequential delta rule — process each token, carry state forward
-        S = state  # [B, H, Dh, Dh]
-        outs: list[Tensor] = []
-        for t in range(T):
-            k_t  = k[:, t]           # [B, H, Dh]
-            v_t  = v[:, t]
-            q_t  = q[:, t]
-            b_t  = beta[:, t, :, None, None]  # [B, H, 1, 1]
-            # Read: y = S @ q
-            y_t  = torch.einsum("bhij,bhj->bhi", S, q_t)       # [B, H, Dh]
-            # Delta rule write: S += β * outer(v - S@k, k)
-            pred = torch.einsum("bhij,bhj->bhi", S, k_t)       # [B, H, Dh]
-            S    = S + b_t * torch.einsum("bhi,bhj->bhij", v_t - pred, k_t)
-            outs.append(y_t)
-        y = torch.stack(outs, dim=1).reshape(B, T, H * Dh)     # [B, T, H*Dh]
-        return self.norm(x + self.o_proj(y)), S
-
-
-class CanonicalDeltaNet(nn.Module):
-    """Delta rule associative memory using FLA's chunk_delta_rule CUDA kernel.
-
-    Replaces DeltaNetMemory's Python token-by-token loop with the parallelized
-    chunk implementation from flash-linear-attention (arxiv 2406.06484).
-    Adds causal short convolutions on Q/K/V — proven quality gain from the paper.
-
-    State API is identical to DeltaNetMemory: forward(x, state) -> (x_out, new_state)
-    so _run_crawler state threading requires no changes.
-    Output projection is zero-initialized so it starts as a residual no-op.
-    """
-    def __init__(self, model_dim: int, n_heads: int, conv_size: int = 4):
-        super().__init__()
-        assert model_dim % n_heads == 0
-        self.n_heads = n_heads
-        self.head_dim = model_dim // n_heads
-        self._conv_size = conv_size
-        d = model_dim
-        H = n_heads
-        Dh = self.head_dim
-        inner = H * Dh
-        self.k_proj = nn.Linear(d, inner, bias=False)
-        self.v_proj = nn.Linear(d, inner, bias=False)
-        self.q_proj = nn.Linear(d, inner, bias=False)
-        self.b_proj = nn.Linear(d, H, bias=True)     # per-head beta (learning rate)
-        self.o_proj = nn.Linear(inner, d, bias=False)
-        nn.init.zeros_(self.o_proj.weight)            # start as identity (no-op)
-        # Causal depthwise short convolutions per Q/K/V (canonical per paper)
-        # padding=0 + explicit left-pad in forward ensures strict causality
-        self.q_conv = nn.Conv1d(inner, inner, conv_size, padding=0, groups=inner, bias=False)
-        self.k_conv = nn.Conv1d(inner, inner, conv_size, padding=0, groups=inner, bias=False)
-        self.v_conv = nn.Conv1d(inner, inner, conv_size, padding=0, groups=inner, bias=False)
-        self.norm = RMSNorm()
-
-    def _causal_conv(self, conv: nn.Conv1d, x: Tensor) -> Tensor:
-        """Left-pad then convolve: output[t] depends only on inputs[t-k+1..t]."""
-        T = x.size(1)
-        xT = F.pad(x.transpose(1, 2), (self._conv_size - 1, 0))  # [B, C, T+k-1]
-        return conv(xT).transpose(1, 2)                            # [B, T, C]
-
-    def forward(self, x: Tensor, state: Tensor | None) -> tuple[Tensor, Tensor]:
-        """
-        x:     [B, T, D]
-        state: [B, H, Dh, Dh] or None — carried from previous loop iteration
-        returns (x_out [B, T, D], new_state [B, H, Dh, Dh])
-        """
-        B, T, D = x.shape
-        H, Dh = self.n_heads, self.head_dim
-        # Project + causal short conv
-        q = self._causal_conv(self.q_conv, self.q_proj(x))  # [B, T, H*Dh]
-        k = self._causal_conv(self.k_conv, self.k_proj(x))
-        v = self._causal_conv(self.v_conv, self.v_proj(x))
-        beta = torch.sigmoid(self.b_proj(x))  # [B, T, H]
-        # L2-normalize Q/K (canonical qk_norm='l2')
-        q = F.normalize(q.reshape(B, T, H, Dh), dim=-1)   # [B, T, H, Dh]
-        k = F.normalize(k.reshape(B, T, H, Dh), dim=-1)
-        v = v.reshape(B, T, H, Dh)
-        # chunk_delta_rule requires q/k/v/beta to share dtype — mixed precision can diverge
-        dtype = x.dtype
-        q, k, v, beta = q.to(dtype), k.to(dtype), v.to(dtype), beta.to(dtype)
-        # Chunked CUDA delta rule — parallel over sequence, correct over loops
-        o, new_state = _fla_chunk_delta_rule(
-            q=q, k=k, v=v, beta=beta,
-            initial_state=state,
-            output_final_state=True,
-        )
-        y = o.reshape(B, T, H * Dh)
-        return self.norm(x + self.o_proj(y)), new_state
-
-
 # flat blocks (unique, U-Net enc/dec) + crawler blocks (shared, looped K times)
 # Compression: fewer unique blocks → same BPB → smaller artifact → freed budget
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1129,7 +912,6 @@ class CrawlerGPT(nn.Module):
         mlp_act: str = "relu_sq",
         mlp_leaky_slope: float = 0.5,
         inst_dim: int = 32,
-        delta_net_heads: int = 0,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
@@ -1207,16 +989,7 @@ class CrawlerGPT(nn.Module):
             self.loop_pos = None
             self.loop_inst_proj = None
             self.loop_inst_up = None
-        # DeltaNet memory — state carried between crawler loop iterations
-        # Uses canonical FLA chunk_delta_rule when available (CUDA parallel + short conv)
-        # Falls back to DeltaNetMemory (Python loop) if fla.ops not installed
-        if delta_net_heads > 0 and num_crawler_layers > 0:
-            if _HAS_FLA_OPS:
-                self.delta_net = CanonicalDeltaNet(model_dim, delta_net_heads)
-            else:
-                self.delta_net = DeltaNetMemory(model_dim, delta_net_heads)
-        else:
-            self.delta_net = None
+        self.delta_net = None
         # VE on crawler blocks
         self.ve_layer_indices = [int(x) for x in ve_layers.split(",") if x.strip()] if ve_enabled else []
         kv_dim = self._ve_target_dim
@@ -1381,7 +1154,6 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             mlp_act=args.mlp_act,
             mlp_leaky_slope=args.mlp_leaky_slope,
             inst_dim=args.inst_dim,
-            delta_net_heads=args.delta_net_heads,
         )
     else:
         model = GPT(
@@ -1396,8 +1168,6 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             logit_softcap=args.logit_softcap,
             rope_base=args.rope_base,
             qk_gain_init=args.qk_gain_init,
-            mtp_num_heads=args.mtp_num_heads,
-            mtp_loss_weight=args.mtp_loss_weight,
             bigram_vocab_size=args.bigram_vocab_size,
             bigram_dim=args.bigram_dim,
             xsa_last_n=args.xsa_last_n,
@@ -1528,237 +1298,6 @@ def _classify_param(name: str) -> str:
     if ".attn." in name or (".proj." in name and ".mlp." not in name):
         return "attn"
     return "other"
-# ---------------------------------------------------------------------------
-# GPTQ: Hessian-aware quantization with column-wise error compensation
-# ---------------------------------------------------------------------------
-def _find_best_row_scales(W: Tensor, clip_range: int = 31) -> Tensor:
-    """Find optimal per-row scales by searching percentile clipping thresholds."""
-    t32 = W.float()
-    best_s = t32.abs().amax(dim=1) / clip_range
-    best_s = best_s.clamp_min(1.0 / clip_range)
-    best_err = torch.full((t32.shape[0],), float('inf'))
-    for pct in [0.9990, 0.9995, 0.9999, 0.99999, 1.0]:
-        if pct < 1.0:
-            row_clip = torch.quantile(t32.abs(), pct, dim=1)
-        else:
-            row_clip = t32.abs().amax(dim=1)
-        s = (row_clip / clip_range).clamp_min(1.0 / clip_range)
-        q = torch.clamp(torch.round(t32 / s[:, None]), -clip_range, clip_range)
-        recon = q * s[:, None]
-        err = (t32 - recon).pow(2).mean(dim=1)
-        improved = err < best_err
-        best_s[improved] = s[improved]
-        best_err[improved] = err[improved]
-    return best_s
-def gptq_quantize_weight(W: Tensor, H: Tensor, clip_range: int = 31,
-                          block_size: int = 64, percdamp: float = 0.002) -> tuple[Tensor, Tensor]:
-    """GPTQ: quantize weight matrix W using Hessian H = X^T X for error compensation.
-    Uses pre-computed per-row scales and column reordering by Hessian diagonal.
-    Returns (quantized_int8, scale_fp16) in int6 range [-clip_range, clip_range]."""
-    W = W.float().clone()
-    rows, cols = W.shape
-    # Pre-compute optimal per-row scales from the original weight matrix
-    row_scale = _find_best_row_scales(W, clip_range)
-    H = H.float().clone()
-    damp = percdamp * H.diag().mean()
-    H.diagonal().add_(damp)
-    # Column reordering: process least-important columns first (ascending H_diag)
-    perm = torch.argsort(H.diag())
-    invperm = torch.argsort(perm)
-    W = W[:, perm]
-    H = H[perm][:, perm]
-    try:
-        L = torch.linalg.cholesky(H)
-        Hinv = torch.cholesky_inverse(L)
-    except torch._C._LinAlgError:
-        Hinv = torch.diag(1.0 / H.diag().clamp_min(1e-6))
-    Q = torch.zeros(rows, cols, dtype=torch.int8)
-    for i1 in range(0, cols, block_size):
-        i2 = min(i1 + block_size, cols)
-        W_block = W[:, i1:i2].clone()
-        Hinv_block = Hinv[i1:i2, i1:i2]
-        Err = torch.zeros_like(W_block)
-        for j in range(i2 - i1):
-            w_col = W_block[:, j]
-            h_inv_jj = Hinv_block[j, j].clamp_min(1e-8)
-            # Quantize using pre-computed per-row scales
-            q_col = torch.clamp(torch.round(w_col / row_scale), -clip_range, clip_range)
-            deq_col = q_col * row_scale
-            Q[:, i1 + j] = q_col.to(torch.int8)
-            err = (w_col - deq_col) / h_inv_jj
-            Err[:, j] = err
-            if j + 1 < i2 - i1:
-                W_block[:, j + 1:] -= err.unsqueeze(1) * Hinv_block[j, j + 1:].unsqueeze(0)
-        if i2 < cols:
-            W[:, i2:] -= Err @ Hinv[i1:i2, i2:]
-    # Undo column reordering
-    Q = Q[:, invperm]
-    return Q, row_scale.to(torch.float16)
-def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
-                   n_samples: int = 256, seq_len: int = 2048) -> dict[str, Tensor]:
-    """Collect Hessian H = X^T X for each linear layer using training data."""
-    hessians: dict[str, Tensor] = {}
-    n_seen: dict[str, int] = {}
-    hooks = []
-    def make_hook(name: str):
-        def hook_fn(module, inp, out):
-            x = inp[0].detach().float()
-            if x.ndim == 3:
-                x = x.reshape(-1, x.shape[-1])
-            if name not in hessians:
-                hessians[name] = torch.zeros(x.shape[1], x.shape[1], device=x.device, dtype=torch.float32)
-                n_seen[name] = 0
-            hessians[name].addmm_(x.t(), x)
-            n_seen[name] += x.shape[0]
-        return hook_fn
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Linear, CastedLinear)):
-            hooks.append(module.register_forward_hook(make_hook(name)))
-    stream = TokenStream(train_pattern)
-    model.eval()
-    with torch.no_grad():
-        for _ in range(n_samples):
-            tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
-            x = tokens[:-1].unsqueeze(0)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model.forward_logits(x)
-    for h in hooks:
-        h.remove()
-    for name in hessians:
-        hessians[name] /= max(n_seen[name], 1)
-    return hessians
-def gptq_calibrate_loop_aware(model: nn.Module, train_pattern: str, device: torch.device,
-                               n_samples: int = 256, seq_len: int = 2048) -> dict[str, Tensor]:
-    """Two-phase loop-aware GPTQ calibration for the crawler architecture.
-
-    The crawler's shared blocks are called crawler_loops times per forward pass.
-    Standard GPTQ calibration sees fp16 inter-loop activations, but after flat layers
-    are quantized the crawler receives drifted inputs — causing fixed-point unraveling.
-
-    Phase 1: Standard Hessian collection for ALL layers (flat layers already correct).
-    Phase 2: Temporarily patch flat_blocks with their GPTQ-quantized weights, then
-             re-collect Hessians for crawler_blocks / delta_net / loop_inst only.
-             The crawler now sees the actual quantized-flat activations it will face
-             at inference time, so GPTQ can compensate against the real input distribution.
-    Merge: flat layers keep Phase 1 Hessians; crawler layers get Phase 2 Hessians.
-    """
-    CRAWLER_PREFIXES = ("crawler_blocks.", "delta_net.", "loop_inst")
-    # Phase 1: standard calibration for all layers
-    print("gptq_loop_aware:phase1 collecting all-layer Hessians...", flush=True)
-    hessians_p1 = gptq_calibrate(model, train_pattern, device, n_samples, seq_len)
-    # Patch flat_blocks in-place with GPTQ-quantized weights so Phase 2 sees realistic activations
-    originals: dict[str, Tensor] = {}
-    patched_count = 0
-    for name, module in model.named_modules():
-        if not isinstance(module, (nn.Linear, CastedLinear)):
-            continue
-        if any(name.startswith(p) for p in CRAWLER_PREFIXES):
-            continue  # leave crawler layers at fp16 — they're what we're calibrating
-        if any(p in name for p in CONTROL_TENSOR_NAME_PATTERNS):
-            continue  # skip control tensors
-        if name not in hessians_p1:
-            continue
-        W = module.weight.data
-        if W.ndim != 2 or W.numel() <= 65536:
-            continue
-        H = hessians_p1[name].to(W.device)
-        q, scale = gptq_quantize_weight(W.float().cpu(), H.cpu())
-        originals[name] = W.clone()
-        module.weight.data = (q.float() * scale[:, None]).to(dtype=W.dtype, device=W.device)
-        patched_count += 1
-    print(f"gptq_loop_aware:patched {patched_count} flat layers with GPTQ weights", flush=True)
-    # Phase 2: collect crawler Hessians with quantized flat activations
-    print("gptq_loop_aware:phase2 collecting crawler Hessians with quantized-flat activations...", flush=True)
-    hessians_p2: dict[str, Tensor] = {}
-    n_seen_p2: dict[str, int] = {}
-    hooks_p2 = []
-    def make_hook_p2(name: str):
-        def hook_fn(module, inp, out):
-            x = inp[0].detach().float()
-            if x.ndim == 3:
-                x = x.reshape(-1, x.shape[-1])
-            if name not in hessians_p2:
-                hessians_p2[name] = torch.zeros(x.shape[1], x.shape[1], device=x.device, dtype=torch.float32)
-                n_seen_p2[name] = 0
-            hessians_p2[name].addmm_(x.t(), x)
-            n_seen_p2[name] += x.shape[0]
-        return hook_fn
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Linear, CastedLinear)) and any(name.startswith(p) for p in CRAWLER_PREFIXES):
-            hooks_p2.append(module.register_forward_hook(make_hook_p2(name)))
-    stream = TokenStream(train_pattern)
-    model.eval()
-    with torch.no_grad():
-        for _ in range(n_samples):
-            tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
-            x = tokens[:-1].unsqueeze(0)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model.forward_logits(x)
-    for h in hooks_p2:
-        h.remove()
-    for name in hessians_p2:
-        hessians_p2[name] /= max(n_seen_p2[name], 1)
-    print(f"gptq_loop_aware:phase2 collected {len(hessians_p2)} crawler Hessians", flush=True)
-    # Restore original flat layer weights
-    for name, module in model.named_modules():
-        if name in originals:
-            module.weight.data = originals[name]
-    print(f"gptq_loop_aware:restored {len(originals)} flat layer weights", flush=True)
-    # Merge: crawler gets Phase 2 Hessians, flat layers keep Phase 1
-    merged = {**hessians_p1}
-    merged.update(hessians_p2)
-    print(f"gptq_loop_aware:merged {len(merged)} Hessians ({len(hessians_p2)} crawler from phase2)", flush=True)
-    return merged
-def mixed_quantize_int6_gptq(state_dict: dict[str, Tensor], int6_cats: set[str],
-                              hessians: dict[str, Tensor],
-                              crawler_int8: bool = False) -> tuple[dict, dict]:
-    """Like mixed_quantize_int6 but uses GPTQ for int6 categories when Hessian available."""
-    result: dict[str, Tensor] = {}
-    meta: dict[str, object] = {}
-    gptq_count, naive_count = 0, 0
-    for name, tensor in state_dict.items():
-        t = tensor.detach().cpu().contiguous()
-        cat = _classify_param(name)
-        if not t.is_floating_point() or t.numel() <= 65536:
-            result[name] = t.to(torch.float16) if t.is_floating_point() else t
-            meta[name] = "passthrough"
-            continue
-        if any(p in name for p in CONTROL_TENSOR_NAME_PATTERNS):
-            result[name] = t.float()
-            meta[name] = "passthrough_ctrl"
-            continue
-        # Crawler reservoir: shared block used K times — give it int8 range (±127) for multi-context resilience
-        if crawler_int8 and name.startswith("crawler_blocks.") and t.is_floating_point() and t.numel() > 65536:
-            q, s = quantize_float_tensor(t)  # int8 ±127 — wider range for shared weights serving K loop contexts
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int8"}
-            continue
-        if cat in int6_cats and t.ndim == 2:
-            module_name = name.rsplit(".weight", 1)[0] if name.endswith(".weight") else name
-            H = hessians.get(module_name)
-            if H is not None and H.shape[0] == t.shape[1]:
-                q, s = gptq_quantize_weight(t, H.cpu())
-                gptq_count += 1
-            else:
-                q, s = quantize_int6_per_row(t)
-                naive_count += 1
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int6"}
-        elif cat in int6_cats and t.ndim >= 1:
-            q, s = quantize_int6_per_row(t)
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int6"}
-            naive_count += 1
-        else:
-            q, s = quantize_float_tensor(t)
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int8"}
-    print(f"gptq_quantize: {gptq_count} GPTQ layers, {naive_count} naive layers", flush=True)
-    return result, meta
 def quantize_int6_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tensor]:
     t32 = t.float()
     if t32.ndim == 2:
@@ -1780,11 +1319,6 @@ def quantize_int6_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tens
     q = torch.clamp(torch.round(t32 / scale.float()), -clip_range, clip_range).to(torch.int8)
     return q, scale
 def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str]):
-    num_layers_total = max(
-        (int(k.split(".")[1]) for k in state_dict if k.startswith("blocks.")),
-        default=0,
-    ) + 1
-    late_k_layers = set(range(num_layers_total - 2, num_layers_total))
     result: dict[str, Tensor] = {}
     meta: dict[str, object] = {}
     for name, tensor in state_dict.items():
@@ -1885,13 +1419,6 @@ def main() -> None:
     log0("=" * 100, console=False)
     log0(f"Running Python {sys.version}", console=False)
     log0(f"Running PyTorch {torch.__version__}", console=False)
-    if NITRUST_ENABLE:
-        if NITRUST_ACTIVE:
-            log0(f"nitrust:enabled backend=rust so_path={NITRUST_SO_PATH}")
-        else:
-            log0(f"nitrust:disabled_fallback reason={_NITRUST_IMPORT_ERROR}")
-    else:
-        log0("nitrust:disabled NITRUST_ENABLE=0")
     log0(
         subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False).stdout,
         console=False,
@@ -1942,8 +1469,6 @@ def main() -> None:
         for name, p in block_named_params
         if p.ndim == 2 and not any(pattern in name for pattern in CONTROL_TENSOR_NAME_PATTERNS)
     ]
-    if base_model.mtp_num_heads > 0:
-        matrix_params.extend([p for p in base_model.mtp_heads.parameters() if p.ndim == 2])
     if base_model.f1_corr_in is not None and base_model.f1_corr_out is not None:
         matrix_params.append(base_model.f1_corr_in.weight)
         matrix_params.append(base_model.f1_corr_out.weight)
@@ -2042,11 +1567,7 @@ def main() -> None:
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
-    # GPTQ calibration reads training data — it must complete within the wallclock budget.
-    # We stop the training loop early (by GPTQ_RESERVE_MS) so GPTQ runs before the cap.
-    _skip_gptq = int(os.environ.get("SKIP_GPTQ", "0"))
-    _gptq_reserve_ms = float(os.environ.get("GPTQ_RESERVE_MS", "30000")) if (max_wallclock_ms is not None and not _skip_gptq) else 0.0
-    effective_max_wallclock_ms = (max_wallclock_ms - _gptq_reserve_ms) if max_wallclock_ms is not None else None
+    effective_max_wallclock_ms = max_wallclock_ms
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
             return 1.0
@@ -2086,7 +1607,6 @@ def main() -> None:
     swa_count = 0
     ema_state = {name: t.detach().float().clone() for name, t in base_model.state_dict().items()}
     ema_decay = float(os.environ.get("EMA_DECAY", "0.997"))
-    ema_start_step = int(os.environ.get("EMA_START_STEP", "0"))
     training_time_ms = 0.0
     stop_after_step: int | None = None
     torch.cuda.synchronize()
@@ -2125,9 +1645,6 @@ def main() -> None:
             break
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         scale = lr_mul(step, elapsed_ms)
-        if args.late_qat_threshold > 0 and scale < args.late_qat_threshold and not CastedLinear._qat_enabled:
-            CastedLinear._qat_enabled = True
-            log0(f"late_qat:enabled step:{step} scale:{scale:.4f}")
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
@@ -2151,16 +1668,6 @@ def main() -> None:
         for opt in optimizers:
             opt.step()
         zero_grad_all()
-        # EMA update (late-start: re-initialize at ema_start_step, skip before it)
-        if step == ema_start_step and ema_start_step > 0:
-            with torch.no_grad():
-                for name, t in base_model.state_dict().items():
-                    ema_state[name].copy_(t.detach().float())
-            log0(f"ema:late-start re-initialized at step {step} decay={ema_decay}")
-        elif step > ema_start_step or ema_start_step == 0:
-            with torch.no_grad():
-                for name, t in base_model.state_dict().items():
-                    ema_state[name].mul_(ema_decay).add_(t.detach().float(), alpha=1.0 - ema_decay)
         step += 1
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         if args.swa_enabled and scale < 0.2 and step % args.swa_every == 0:
@@ -2192,25 +1699,7 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    # GPTQ calibration: reads training data — must complete within MAX_WALLCLOCK_SECONDS.
-    # Training loop stopped GPTQ_RESERVE_MS early so this runs inside the budget.
-    t_gptq_start = time.perf_counter()
-    _elapsed_at_gptq_ms = (t_gptq_start - t0) * 1000.0
-    log0(f"gptq:starting calibration at elapsed={_elapsed_at_gptq_ms:.0f}ms (budget={max_wallclock_ms:.0f}ms)")
-    skip_gptq = int(os.environ.get("SKIP_GPTQ", "0"))
-    if skip_gptq:
-        log0("gptq:SKIPPED (SKIP_GPTQ=1) — will use naive int6")
-        gptq_hessians = {}
-    elif int(os.environ.get("LOOP_AWARE_GPTQ", "0")):
-        log0("gptq:loop-aware 2-phase calibration...")
-        t_gptq = time.perf_counter()
-        gptq_hessians = gptq_calibrate_loop_aware(base_model, args.train_files, device, n_samples=256, seq_len=args.train_seq_len)
-        log0(f"gptq:loop-aware calibrated {len(gptq_hessians)} layers in {time.perf_counter()-t_gptq:.1f}s")
-    else:
-        log0("gptq:calibrating with training data...")
-        t_gptq = time.perf_counter()
-        gptq_hessians = gptq_calibrate(base_model, args.train_files, device, n_samples=256, seq_len=args.train_seq_len)
-        log0(f"gptq:calibrated {len(gptq_hessians)} layers in {time.perf_counter()-t_gptq:.1f}s")
+    log0("gptq:SKIPPED (SKIP_GPTQ=1) — using naive int6")
     if args.distill_enabled and args.distill_steps > 0:
         log0(
             f"distill:start steps:{args.distill_steps} lr_factor:{args.distill_lr_factor} "
@@ -2306,14 +1795,7 @@ def main() -> None:
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
     sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
-    # GPTQ quantization using Hessians collected during training phase (no training data access here)
-    if skip_gptq:
-        quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn", "aux"})
-    else:
-        quant_result, quant_meta = mixed_quantize_int6_gptq(
-            sd_cpu, {"mlp", "attn", "aux"}, gptq_hessians,
-            crawler_int8=args.crawler_quant_int8,
-        )
+    quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn", "aux"})
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
     quant_raw = quant_buf.getvalue()

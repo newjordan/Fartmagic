@@ -96,9 +96,11 @@ run_arm() {
     raw_bpb=$(grep -oP 'step:[0-9]+/[0-9]+ val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
     step_avg=$(grep -oP 'step_avg:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
 
-    RESULTS+=("${arm_id}|${label}|${cannon_type}|${step_avg}|${raw_bpb}")
     echo "  -> step_avg:${step_avg}ms  raw_bpb:${raw_bpb}"
+    echo "${arm_id}|${label}|${cannon_type}|${step_avg}|${raw_bpb}" >> "${RESULTS_FILE}"
 }
+
+RESULTS_FILE=$(mktemp)
 
 # ----------------------------------------------------------------
 # Link train_gpt.py from BW5 (same model, same base)
@@ -126,11 +128,11 @@ printf "%-10s %-30s %-10s %-10s %-12s\n" \
 printf "%-10s %-30s %-10s %-10s %-12s\n" \
     "---" "-----" "----" "--------" "-------"
 
-for r in "${RESULTS[@]}"; do
-    IFS='|' read -r arm label cannon step_avg raw <<< "${r}"
+while IFS='|' read -r arm label cannon step_avg raw; do
     printf "%-10s %-30s %-10s %-10s %-12s\n" \
         "${arm}" "${label}" "${cannon}" "${step_avg}" "${raw}"
-done
+done < "${RESULTS_FILE}"
+rm -f "${RESULTS_FILE}"
 
 echo ""
 echo "  Cannon promotes if any arm beats BWVC-00 control."

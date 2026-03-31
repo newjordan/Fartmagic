@@ -96,15 +96,17 @@ run_arm() {
     raw_bpb=$(grep -oP 'step:[0-9]+/[0-9]+ val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
     step_avg=$(grep -oP 'step_avg:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
     echo "  -> step_avg:${step_avg}ms  raw_bpb:${raw_bpb}"
-    echo "${arm_id}|${label}|${choke_dim}|${cannon_type}|${step_avg}|${raw_bpb}"
+    echo "${arm_id}|${label}|${choke_dim}|${cannon_type}|${step_avg}|${raw_bpb}" >> "${RESULTS_FILE}"
 }
+
+RESULTS_FILE=$(mktemp)
 
 if [[ ! -f "${SCRIPT_DIR}/train_gpt.py" ]]; then
     ln -s "${REPO_ROOT}/experiments/Bandit_Wagon_V/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
 fi
 
-CTRL=$(run_arm BWVPC-00 "control (flat + no cannon)"    0   flat    none)
-TEST=$(run_arm BWVPC-01 "pyramid + scalar cannon"       512 pyramid scalar)
+run_arm BWVPC-00 "control (flat + no cannon)" 0   flat    none
+run_arm BWVPC-01 "pyramid + scalar cannon"    512 pyramid scalar
 
 echo ""
 echo "================================================================"
@@ -113,10 +115,10 @@ echo "  seed=${SEED}  steps=${ABLATION_STEPS}"
 echo "================================================================"
 printf "%-12s %-30s %-8s %-10s %-10s %-12s\n" "ARM" "LABEL" "CHOKE" "CANNON" "STEP_AVG" "RAW_BPB"
 printf "%-12s %-30s %-8s %-10s %-10s %-12s\n" "---" "-----" "-----" "------" "--------" "-------"
-for r in "${CTRL}" "${TEST}"; do
-    IFS='|' read -r arm label choke cannon step_avg raw <<< "${r}"
+while IFS='|' read -r arm label choke cannon step_avg raw; do
     printf "%-12s %-30s %-8s %-10s %-10s %-12s\n" "${arm}" "${label}" "${choke}" "${cannon}" "${step_avg}ms" "${raw}"
-done
+done < "${RESULTS_FILE}"
+rm -f "${RESULTS_FILE}"
 echo ""
 echo "  Pass: BWVPC-01 raw_bpb < BWVPC-00 AND step_avg competitive"
 echo "  If passes → gate_8gpu.sh"

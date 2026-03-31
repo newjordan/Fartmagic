@@ -90,15 +90,17 @@ run_arm() {
     raw_bpb=$(grep -oP 'step:[0-9]+/[0-9]+ val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
     step_avg=$(grep -oP 'step_avg:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
     echo "  -> step_avg:${step_avg}ms  raw_bpb:${raw_bpb}"
-    echo "${arm_id}|${label}|${choke_dim}|${step_avg}|${raw_bpb}"
+    echo "${arm_id}|${label}|${choke_dim}|${step_avg}|${raw_bpb}" >> "${RESULTS_FILE}"
 }
+
+RESULTS_FILE=$(mktemp)
 
 if [[ ! -f "${SCRIPT_DIR}/train_gpt.py" ]]; then
     ln -s "${REPO_ROOT}/experiments/Bandit_Wagon_V/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
 fi
 
-CTRL=$(run_arm BWVP-00 "control (flat, CHOKE_DIM=0)"    0   flat)
-PYRA=$(run_arm BWVP-01 "pyramid (CHOKE_DIM=512)"        512 pyramid)
+run_arm BWVP-00 "control (flat, CHOKE_DIM=0)" 0   flat
+run_arm BWVP-01 "pyramid (CHOKE_DIM=512)"     512 pyramid
 
 echo ""
 echo "================================================================"
@@ -107,10 +109,10 @@ echo "  seed=${SEED}  steps=${ABLATION_STEPS}"
 echo "================================================================"
 printf "%-10s %-30s %-10s %-10s %-12s\n" "ARM" "LABEL" "CHOKE" "STEP_AVG" "RAW_BPB"
 printf "%-10s %-30s %-10s %-10s %-12s\n" "---" "-----" "-----" "--------" "-------"
-for r in "${CTRL}" "${PYRA}"; do
-    IFS='|' read -r arm label choke step_avg raw <<< "${r}"
+while IFS='|' read -r arm label choke step_avg raw; do
     printf "%-10s %-30s %-10s %-10s %-12s\n" "${arm}" "${label}" "${choke}" "${step_avg}ms" "${raw}"
-done
+done < "${RESULTS_FILE}"
+rm -f "${RESULTS_FILE}"
 echo ""
 echo "  Pass: pyramid raw_bpb < control. Also note step_avg cost."
 echo "  If step_avg cost > +5ms → pyramid too slow for 600s budget."

@@ -93,16 +93,18 @@ run_arm() {
     local step_avg
     step_avg=$(grep -oP 'step_avg:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
     echo "  -> step_avg: ${step_avg}ms"
-    echo "${arm_id}|${label}|${cannon_type}|${step_avg}"
+    echo "${arm_id}|${label}|${cannon_type}|${step_avg}" >> "${RESULTS_FILE}"
 }
+
+RESULTS_FILE=$(mktemp)
 
 # Link train_gpt.py from BW5
 if [[ ! -f "${SCRIPT_DIR}/train_gpt.py" ]]; then
     ln -s "${REPO_ROOT}/experiments/Bandit_Wagon_V/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
 fi
 
-CTRL=$(run_arm BWVC-00 "control (no cannon)" none)
-SCAL=$(run_arm BWVC-01 "scalar cannon (3 params)" scalar)
+run_arm BWVC-00 "control (no cannon)" none
+run_arm BWVC-01 "scalar cannon (3 params)" scalar
 
 echo ""
 echo "================================================================"
@@ -111,10 +113,10 @@ echo "  BW5 full run baseline: ${BW5_BASELINE_STEP_AVG}ms/step"
 echo "================================================================"
 printf "%-10s %-28s %-10s %-12s\n" "ARM" "LABEL" "TYPE" "STEP_AVG"
 printf "%-10s %-28s %-10s %-12s\n" "---" "-----" "----" "--------"
-for r in "${CTRL}" "${SCAL}"; do
-    IFS='|' read -r arm label cannon step_avg <<< "${r}"
+while IFS='|' read -r arm label cannon step_avg; do
     printf "%-10s %-28s %-10s %-12s\n" "${arm}" "${label}" "${cannon}" "${step_avg}ms"
-done
+done < "${RESULTS_FILE}"
+rm -f "${RESULTS_FILE}"
 echo ""
 echo "  Pass: scalar step_avg < control step_avg"
 echo "  If speed holds → proceed to Bandit_Wagon_V_PyramidCannon"

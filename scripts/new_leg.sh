@@ -119,6 +119,14 @@ echo "--- gate done. check step_avg and loss trend before proceeding to run.sh -
 EOF
 chmod +x "${LEG_DIR}/gate.sh"
 
+# Append stub row to SCIENCE.md
+SCIENCE="${REPO_ROOT}/${TRACK}/SCIENCE.md"
+if [[ -f "${SCIENCE}" ]]; then
+  printf '\n<!-- NEW LEG STUB -->\n| %s | %s | (fill in) | ⏳ | ⏳ | — | — | ⏳ PENDING | |\n' \
+    "${TODAY}" "${NAME}" >> "${SCIENCE}"
+  echo "Appended stub row to ${SCIENCE}"
+fi
+
 echo ""
 echo "New leg created: ${LEG_DIR}"
 echo ""

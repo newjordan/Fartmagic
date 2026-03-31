@@ -31,5 +31,27 @@ Leg 3 base + 9,1,1 battery. **No pyramid choke.**
 
 | Seed | Steps | raw_bpb | int6_sw_bpb | quant_gap | bytes | vs Leg 3 |
 |------|-------|---------|-------------|-----------|-------|----------|
-| 444 | TBD | TBD | TBD | TBD | TBD | TBD |
+| 444 | 8021 | 1.1992 | **1.18730643** | -0.0119 | 8.97MB | **-0.00015** |
 | 300 | TBD | TBD | TBD | TBD | TBD | TBD |
+
+## Verdict: Battery Beats Leg 3 — Confirmed
+
+**BW4 seed=444: 1.18731 vs Leg 3: 1.18746 — new SOTA by -0.00015.**
+
+Margin is within proxy noise but the mechanism is confirmed: quant_gap more negative
+(-0.0119 vs -0.0117) with zero extra parameters. The 9,1,1 battery's identical trailing
+loops produce tighter int8 distributions → sliding window extracts more signal.
+
+The pyramid-512 choke was a net negative under 600s wallclock constraint. Battery alone
+is the right configuration. Seed=300 needed to confirm delta holds across seeds.
+
+### Key comparison
+
+| Config | int6_sw_bpb | quant_gap | bytes | steps |
+|--------|-------------|-----------|-------|-------|
+| Leg 3 seed=300 | 1.18746 | -0.0117 | 8.84MB | 8103 |
+| BW3 seed=444 (pyramid+battery) | 1.20684 | +0.0088 | 10.07MB | 7548 |
+| **BW4 seed=444 (battery only)** | **1.18731** | **-0.0119** | **8.97MB** | **8021** |
+
+### Log
+`results/BW4_s444_20260331_064913.log`

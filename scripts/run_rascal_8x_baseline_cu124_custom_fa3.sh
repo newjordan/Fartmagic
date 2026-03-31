@@ -10,30 +10,47 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-: "${BASE_PYTHON:=python3}"
+: "${BASE_PYTHON:=}"
 : "${VENV_DIR:=.venv-cu124}"
 : "${REBUILD_VENV:=1}"
 : "${NPROC_PER_NODE:=8}"
 : "${SEED:=444}"
 : "${MAX_WALLCLOCK_SECONDS:=600}"
 
-echo "[preflight] locating custom FA3 module from base python: ${BASE_PYTHON}"
-FA3_DIR="$("${BASE_PYTHON}" - <<'PY'
+echo "[preflight] locating custom FA3 module from a non-venv python"
+if [ -n "${BASE_PYTHON}" ]; then
+  candidates=("${BASE_PYTHON}")
+else
+  candidates=(
+    "/usr/bin/python3"
+    "/opt/conda/bin/python3"
+    "/usr/local/bin/python3"
+  )
+fi
+
+FA3_BASE_PYTHON=""
+FA3_DIR=""
+for p in "${candidates[@]}"; do
+  [ -x "${p}" ] || continue
+  if out="$("${p}" - <<'PY' 2>/dev/null
 import inspect
 import os
-import sys
-try:
-    import flash_attn_interface
-except Exception as e:
-    print(f"ERROR:{e}")
-    sys.exit(2)
+import flash_attn_interface
 print(os.path.dirname(inspect.getfile(flash_attn_interface)))
 PY
-)"
-if [[ "${FA3_DIR}" == ERROR:* ]]; then
-  echo "FATAL: base python cannot import flash_attn_interface (${FA3_DIR#ERROR:})"
+)"; then
+    FA3_BASE_PYTHON="${p}"
+    FA3_DIR="${out}"
+    break
+  fi
+done
+
+if [ -z "${FA3_BASE_PYTHON}" ]; then
+  echo "FATAL: could not find a base python with flash_attn_interface."
+  echo "Hint: pass BASE_PYTHON=/path/to/python3 that can import flash_attn_interface."
   exit 1
 fi
+echo "[preflight] FA3 base python: ${FA3_BASE_PYTHON}"
 echo "[preflight] FA3_DIR=${FA3_DIR}"
 
 if [ "${REBUILD_VENV}" = "1" ]; then
@@ -44,7 +61,7 @@ fi
 
 if [ ! -d "${VENV_DIR}" ]; then
   echo "[setup] creating ${VENV_DIR}"
-  "${BASE_PYTHON}" -m venv "${VENV_DIR}"
+  "${FA3_BASE_PYTHON}" -m venv "${VENV_DIR}"
 fi
 
 source "${VENV_DIR}/bin/activate"
@@ -80,4 +97,3 @@ NPROC_PER_NODE="${NPROC_PER_NODE}" \
 SEED="${SEED}" \
 MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS}" \
 bash scripts/run_rascal_8x_baseline_locked.sh
-

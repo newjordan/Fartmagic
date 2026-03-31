@@ -45,12 +45,23 @@ What is clear: the combined pair passes and the quality signal is real.
 
 ## Gate: 8×H100, 2000 steps, seed=444
 
-*Run after 1GPU gate passes. Results below when complete.*
-
-| ARM | step_avg | val_bpb | int6_rt_bpb | int6_sw_bpb | size_bytes |
+| ARM | step_avg | raw_bpb | int6_rt_bpb | int6_sw_bpb | size_bytes |
 |-----|----------|---------|-------------|-------------|------------|
-| BWVPC-00 control (flat+none) | | | | | |
-| BWVPC-01 pyramid+scalar cannon | | | | | |
-| delta | | | | | |
+| BWVPC-00 control (flat+none) | 74.40ms | 1.3069 | 1.31209610 | 1.28787686 | 9,415,826 |
+| BWVPC-01 pyramid+scalar cannon | 79.33ms | 1.3283 | 1.34492218 | 1.32227987 | 10,408,358 |
+| delta | +4.93ms | **+0.0214** | **+0.02283** | **+0.03440** | +992,532 |
 
-## Verdict: PENDING
+Train loss crossover: pyramid+cannon wins at step 500 (2.4767 vs 2.4926) but falls behind by step 1000 (2.3639 vs 2.3598) and keeps diverging to step 2000 (2.1825 vs 2.1370).
+
+## Verdict: DOES NOT PROMOTE
+
+**Hard failure.** int6_sw_bpb regression of +0.03440 at 2000 steps is decisive.
+
+**Root cause:** 1.57M cold choke params are a training burden that compounds over time.
+The 1GPU 500-step proxy captured early structural advantage only — proxy was badly misleading here.
+
+**Pyramid concept notes for future:**
+- Smaller choke dim (128 or 256) — less cold param burden
+- Warm initialization of bottleneck weights
+- Dedicated LR schedule for choke layers
+- Or: investigate whether pyramid helps only at very long training runs (>>8000 steps)

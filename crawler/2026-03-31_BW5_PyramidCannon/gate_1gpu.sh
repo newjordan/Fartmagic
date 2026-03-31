@@ -14,7 +14,7 @@ set -euo pipefail
 #    - Bandit_Wagon_V_Pyramid gate confirms pyramid quality signal
 #
 #  Usage:
-#    bash experiments/Bandit_Wagon_V_PyramidCannon/gate_1gpu.sh
+#    bash crawler/2026-03-31_BW5_PyramidCannon/gate_1gpu.sh
 # ================================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

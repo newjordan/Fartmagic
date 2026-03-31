@@ -171,9 +171,13 @@ snapshot_download('sproos/parameter-golf-tokenizers',
     echo "  Tokenizer downloaded"
 fi
 
-# Dataset shards
-TRAIN_COUNT=$(ls "${WORKSPACE}/data/datasets/fineweb10B_sp1024/fineweb_train_"*.bin 2>/dev/null | wc -l)
-VAL_COUNT=$(ls "${WORKSPACE}/data/datasets/fineweb10B_sp1024/fineweb_val_"*.bin 2>/dev/null | wc -l)
+# Dataset shards — use nullglob array so unmatched glob = 0, not a crash
+shopt -s nullglob
+_train=("${WORKSPACE}/data/datasets/fineweb10B_sp1024/fineweb_train_"*.bin)
+_val=("${WORKSPACE}/data/datasets/fineweb10B_sp1024/fineweb_val_"*.bin)
+TRAIN_COUNT=${#_train[@]}
+VAL_COUNT=${#_val[@]}
+shopt -u nullglob
 
 if [ "$TRAIN_COUNT" -ge 10 ]; then
     echo "  Already have $TRAIN_COUNT train / $VAL_COUNT val shards"

@@ -20,19 +20,25 @@
 |------|-------------|-------|-------------|-------|----------|-----------|---------|----------|-------|
 | baseline | | — | | — | | | | | |
 | rope_32 | | | | | | | | | |
+| bigram_3072 | | | | | | | | | |
 | bigram_4096 | | | | | | | | | |
 | qat_early | | | | | | | | | |
 | qat_late | | | | | | | | | |
 | swa_dense | | | | | | | | | |
+| gptq | | | | | | | | | |
+| warmdown_4k | | | | | | | | | |
 
 ---
 
 ## Decision
 
-- [ ] rope_32 signal validated
+- [ ] gptq signal validated (biggest expected gain)
+- [ ] bigram_3072 signal validated
 - [ ] bigram_4096 size gate check
+- [ ] rope_32 signal validated
 - [ ] qat_early signal validated
 - [ ] qat_late signal validated
 - [ ] swa_dense signal validated
+- [ ] warmdown_4k signal validated
 
 **Outcome:** Pending.

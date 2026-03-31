@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Arch+Schedule sweep — 6 cases vs Rascal II baseline.
+Arch+Schedule sweep — 9 cases vs Rascal II baseline.
 All cases: MAX_WALLCLOCK_SECONDS=600, NPROC=4, seed=444.
 QAT and SWA both fire on 4xGPU within 600s (~2650s and ~2800s respectively).
 
 Cases (one variable vs baseline each):
   baseline     — control (exact sota_now.sh env)
   rope_32      — ROPE_DIMS 16→32
+  bigram_3072  — BIGRAM_VOCAB_SIZE 2048→3072  (competition target)
   bigram_4096  — BIGRAM_VOCAB_SIZE 2048→4096  (watch size gate)
   qat_early    — LATE_QAT_THRESHOLD 0.15→0.25 (QAT fires earlier, ~2420 steps)
   qat_late     — LATE_QAT_THRESHOLD 0.15→0.05 (QAT fires later, ~3120 steps)
   swa_dense    — SWA_EVERY 50→10 (more snapshots)
+  gptq         — SKIP_GPTQ=0 (full Hessian GPTQ, training-data calib, 30s reserve)
+  warmdown_4k  — WARMDOWN_ITERS 3500→4000
 
 Key metrics:
   post_ema_bpb      — float32 model quality (POST_EMA_DIAGNOSTIC=1)
@@ -53,6 +56,11 @@ CASES = [
         note="ROPE_DIMS 16→32 — more positional coverage",
     ),
     Case(
+        name="bigram_3072",
+        env={"BIGRAM_VOCAB_SIZE": "3072"},
+        note="BIGRAM_VOCAB_SIZE 2048→3072 — competition target (PR #1019 uses 3072)",
+    ),
+    Case(
         name="bigram_4096",
         env={"BIGRAM_VOCAB_SIZE": "4096"},
         note="BIGRAM_VOCAB_SIZE 2048→4096 — WATCH SIZE GATE",
@@ -71,6 +79,16 @@ CASES = [
         name="swa_dense",
         env={"SWA_EVERY": "10"},
         note="SWA_EVERY 50→10 — more weight snapshots",
+    ),
+    Case(
+        name="gptq",
+        env={"SKIP_GPTQ": "0"},
+        note="SKIP_GPTQ 1→0 — full Hessian GPTQ, 30s reserve (~170 fewer steps on 4xGPU)",
+    ),
+    Case(
+        name="warmdown_4k",
+        env={"WARMDOWN_ITERS": "4000"},
+        note="WARMDOWN_ITERS 3500→4000 — longer warmdown, matches competition leaders",
     ),
 ]
 

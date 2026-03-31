@@ -64,10 +64,16 @@ Winning arm → 2000-step gate → if beats BW2-00 proxy by ≥0.008 → 8×H100
 
 | ID | CRAWLER_MLP_LEAKY_SLOPE | Raw val_bpb | INT6_SW_BPB | Quant gap | Delta |
 |----|:-----------------------:|:-----------:|:-----------:|:---------:|:-----:|
-| BW3-00 | 0.5 | TBD | TBD | TBD | control |
-| BW3-01 | 0.0 | TBD | TBD | TBD | TBD |
-| BW3-02 | 0.25 | TBD | TBD | TBD | TBD |
-| BW3-03 | 0.75 | TBD | TBD | TBD | TBD |
-| BW3-04 | 1.0 | TBD | TBD | TBD | TBD |
+| BW3-00 | 0.5 | 1.4509 | 1.55702 | 0.1061 | control |
+| BW3-01 | 0.0 | 1.4504 | 1.55741 | 0.1070 | +0.00039 ❌ |
+| BW3-02 | 0.25 | 1.4525 | 1.56116 | 0.1087 | +0.00413 ❌ |
+| BW3-03 | 0.75 | 1.4526 | **1.55637** | **0.1038** | **−0.00065** |
+| BW3-04 | 1.0 | 1.4524 | 1.55656 | 0.1042 | −0.00046 |
 
-Reference: BW2-00 (shared slope=0.5, XSA=11) → 1.52365
+**VERDICT: Not promotable. Slope is insensitive — stay at 0.5.**
+No arm cleared ≥0.005. Marginal directional signal: higher slope (0.75) slightly helps
+because negative gradient carries cross-loop corrections. Pure relu_sq (0.0) is worst.
+See ablation_results_2026-03-30.md for full analysis.
+
+Reference: BW2-00 (shared slope=0.5, XSA=11, flash_attn pod) → 1.52365
+This session (no flash_attn): control BW3-00 → 1.55702

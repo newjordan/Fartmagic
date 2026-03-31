@@ -85,6 +85,49 @@ def visible_gpu_count() -> int:
     return len([x for x in raw.split(",") if x.strip()])
 
 
+def _prepend_env_path(env: dict[str, str], key: str, path: str) -> None:
+    existing = env.get(key, "").strip()
+    if not existing:
+        env[key] = path
+        return
+    parts = [p for p in existing.split(":") if p]
+    if path not in parts:
+        env[key] = f"{path}:{existing}"
+
+
+def configure_fa3_env(env: dict[str, str], repo_root: Path) -> None:
+    # Hopper FA3 python bindings in repo
+    hopper_path = repo_root / "flash-attention" / "hopper"
+    if hopper_path.is_dir():
+        _prepend_env_path(env, "PYTHONPATH", str(hopper_path))
+
+    # CUDA runtime path needed by flash_attn_interface -> flash_attn_3._C
+    py_ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    cudart_path = (
+        Path(sys.prefix) / "lib" / py_ver / "site-packages" / "nvidia" / "cuda_runtime" / "lib"
+    )
+    if (cudart_path / "libcudart.so.12").is_file():
+        _prepend_env_path(env, "LD_LIBRARY_PATH", str(cudart_path))
+
+
+def check_fa3(env: dict[str, str]) -> tuple[bool, str]:
+    code = (
+        "import flash_attn_interface as f; "
+        "import torch; "
+        "print('FA3_OK', f.__file__, 'torch', torch.__version__, 'cuda', torch.version.cuda)"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    output = (proc.stdout or "").strip()
+    return proc.returncode == 0, output
+
+
 def main() -> None:
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
@@ -106,6 +149,7 @@ def main() -> None:
     env["DATA_PATH"] = str(data_path)
     env["TOKENIZER_PATH"] = str(tokenizer_path)
     env["SEED"] = str(args.seed)
+    configure_fa3_env(env, repo_root)
 
     if args.mode == "smoke":
         env.update(SMOKE_OVERRIDES)
@@ -149,6 +193,18 @@ def main() -> None:
     print("TRIGRAM=0 NGRAM_EVAL_ORDER=0 CUBRIC_CADENCE=0 MTP_NUM_HEADS=0")
     print("SKIP_GPTQ=1 (matches submitted Rascal II path)")
     print("============================================================")
+
+    ok_fa3, fa3_msg = check_fa3(env)
+    if ok_fa3:
+        print(fa3_msg)
+    else:
+        print("ERROR: FA3 preflight failed.")
+        if fa3_msg:
+            print(fa3_msg)
+        raise SystemExit(
+            "Aborting launch: FA3 is required for race mode. "
+            "Fix FA3 import/libcudart and rerun."
+        )
 
     if args.nproc_per_node < 1:
         raise SystemExit("ERROR: --nproc-per-node must be >= 1")

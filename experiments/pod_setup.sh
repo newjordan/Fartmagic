@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+export PIP_ROOT_USER_ACTION=ignore   # suppress "running as root" pip warning
 # =============================================================================
 # POD SETUP — the only script you ever run on a pod
 #

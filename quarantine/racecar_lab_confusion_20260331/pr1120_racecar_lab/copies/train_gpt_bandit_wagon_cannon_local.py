@@ -39,14 +39,6 @@ except ImportError:
             v2 = v2.repeat_interleave(rep, dim=1)
         out = torch.nn.functional.scaled_dot_product_attention(q2, k2, v2, is_causal=causal)
         return out.transpose(1, 2)
-# Canonical FLA delta rule kernel — replaces Python token loop in DeltaNetMemory
-# chunk_delta_rule: parallelized over sequence chunks on CUDA (arxiv 2406.06484)
-try:
-    from fla.ops.delta_rule import chunk_delta_rule as _fla_chunk_delta_rule
-    _HAS_FLA_OPS = True
-except ImportError:
-    _fla_chunk_delta_rule = None
-    _HAS_FLA_OPS = False
 class Hyperparameters:
     data_path = os.environ.get("DATA_PATH", "./data/datasets/fineweb10B_sp1024")
     train_files = os.path.join(data_path, "fineweb_train_*.bin")
@@ -73,6 +65,18 @@ class Hyperparameters:
     mlp_mult = float(os.environ.get("MLP_MULT", 3.0))
     mlp_act = os.environ.get("MLP_ACT", "relu_sq").lower()
     mlp_leaky_slope = float(os.environ.get("MLP_LEAKY_SLOPE", 0.5))
+    crawler_mlp_leaky_slope = float(os.environ.get("CRAWLER_MLP_LEAKY_SLOPE", 0.5))
+    crawler_mlp_choke_dim = int(os.environ.get("CRAWLER_MLP_CHOKE_DIM", 0))
+    crawler_mlp_choke_shape = os.environ.get("CRAWLER_MLP_CHOKE_SHAPE", "flat")
+    crawler_mlp_choke_groups = int(os.environ.get("CRAWLER_MLP_CHOKE_GROUPS", 8))
+    crawler_loop_smear = bool(int(os.environ.get("CRAWLER_LOOP_SMEAR", 0)))
+    crawler_tap_dim = int(os.environ.get("CRAWLER_TAP_DIM", 0))
+    crawler_tap_loop_specific = bool(int(os.environ.get("CRAWLER_TAP_LOOP_SPECIFIC", 1)))
+    crawler_tap_layers = os.environ.get("CRAWLER_TAP_LAYERS", "all")
+    crawler_loop_rope_scales = tuple(
+        int(x) for x in os.environ.get("CRAWLER_LOOP_ROPE_SCALES", "1,1,1").split(",") if x.strip()
+    )
+    crawler_cannon_type = os.environ.get("CRAWLER_CANNON_TYPE", "none").lower()
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
@@ -91,8 +95,6 @@ class Hyperparameters:
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.3))
     eval_stride = int(os.environ.get("EVAL_STRIDE", 64))
-    mtp_num_heads = int(os.environ.get("MTP_NUM_HEADS", 0))
-    mtp_loss_weight = float(os.environ.get("MTP_LOSS_WEIGHT", 0.2))
     muon_beta2 = float(os.environ.get("MUON_BETA2", 0.95))
     swa_enabled = bool(int(os.environ.get("SWA_ENABLED", "1")))
     swa_every = int(os.environ.get("SWA_EVERY", 50))  # tighter: collect more recent checkpoints
@@ -105,7 +107,6 @@ class Hyperparameters:
     rope_dims = int(os.environ.get("ROPE_DIMS", 16))
     ln_scale = bool(int(os.environ.get("LN_SCALE", "1")))
     dtg_enabled = bool(int(os.environ.get("DTG_ENABLED", "0")))
-    late_qat_threshold = float(os.environ.get("LATE_QAT_THRESHOLD", 0.5))
     ve_enabled = bool(int(os.environ.get("VE_ENABLED", "1")))
     ve_dim = int(os.environ.get("VE_DIM", 128))
     ve_layers = os.environ.get("VE_LAYERS", "9,10")
@@ -120,23 +121,6 @@ class Hyperparameters:
     distill_temperature = float(os.environ.get("DISTILL_TEMPERATURE", 1.5))
     distill_alpha = float(os.environ.get("DISTILL_ALPHA", 0.60))
     distill_kl_clip = float(os.environ.get("DISTILL_KL_CLIP", 10.0))
-    # Optional legal score-first hashed n-gram interpolation at eval time.
-    # Multi-order backoff (2..max_order) with entropy-adaptive alpha.
-    # Alpha depends only on model entropy (no target/label access).
-    ngram_eval_order = int(os.environ.get("NGRAM_EVAL_ORDER", 0))  # 0=off, max order for backoff
-    ngram_eval_min_order = int(os.environ.get("NGRAM_EVAL_MIN_ORDER", 2))  # min order for backoff
-    ngram_eval_alpha = float(os.environ.get("NGRAM_EVAL_ALPHA", 0.30))  # base alpha (or fixed if adaptive off)
-    ngram_eval_adaptive = bool(int(os.environ.get("NGRAM_EVAL_ADAPTIVE", "1")))  # entropy-adaptive alpha
-    ngram_eval_alpha_min = float(os.environ.get("NGRAM_EVAL_ALPHA_MIN", 0.05))  # alpha floor (confident model)
-    ngram_eval_alpha_max = float(os.environ.get("NGRAM_EVAL_ALPHA_MAX", 0.60))  # alpha ceiling (uncertain model)
-    ngram_eval_entropy_center = float(os.environ.get("NGRAM_EVAL_ENTROPY_CENTER", 4.0))  # sigmoid center
-    ngram_eval_entropy_scale = float(os.environ.get("NGRAM_EVAL_ENTROPY_SCALE", 2.0))  # sigmoid steepness
-    ngram_eval_min_count = int(os.environ.get("NGRAM_EVAL_MIN_COUNT", 2))
-    ngram_eval_buckets = int(os.environ.get("NGRAM_EVAL_BUCKETS", 4_194_304))
-    ngram_eval_max_seconds = float(os.environ.get("NGRAM_EVAL_MAX_SECONDS", 0.0))
-    ngram_entropy_shift = bool(int(os.environ.get("NGRAM_ENTROPY_SHIFT", "0")))  # per-order center shift
-    ngram_order_mults_str = os.environ.get("NGRAM_ORDER_MULTS", "")  # fixed per-order multipliers (comma-sep)
-    cubric_cadence = int(os.environ.get("CUBRIC_CADENCE", 0))
     # F-Wing: Frugendorff crawler architecture (USE_CRAWLER=1 to activate)
     use_crawler = bool(int(os.environ.get("USE_CRAWLER", "0")))
     num_flat_layers = int(os.environ.get("NUM_FLAT_LAYERS", 4))    # unique blocks, run once
@@ -145,10 +129,6 @@ class Hyperparameters:
     crawler_mlp_mult = float(os.environ.get("CRAWLER_MLP_MULT", 4.0))  # MLP width multiplier for crawler
     inst_dim = int(os.environ.get("INST_DIM", "32"))          # instruction bottleneck dim per loop (0=disabled, use legacy loop_pos)
     crawler_quant_int8 = bool(int(os.environ.get("CRAWLER_QUANT_INT8", "0")))  # use int8 for shared crawler block (multi-context quant resilience)
-    delta_net_heads = int(os.environ.get("DELTA_NET_HEADS", "0"))              # DeltaNet heads in crawler (0=disabled); state carried between loops
-    # Purple-1: Dirichlet-Multinomial smoothing (PR #900 — replaces linear alpha)
-    ngram_dirichlet = bool(int(os.environ.get("NGRAM_DIRICHLET", "0")))
-    ngram_dirichlet_conc = float(os.environ.get("NGRAM_DIRICHLET_CONC", "5.0"))
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
     phrase_cache_enabled = bool(int(os.environ.get("PHRASE_CACHE", "0")))
     phrase_buckets = int(os.environ.get("PHRASE_BUCKETS", 4_194_304))
@@ -157,21 +137,6 @@ class Hyperparameters:
     phrase_min_count = int(os.environ.get("PHRASE_MIN_COUNT", "1"))
     # Purple-1: regime tracker (PR #880 — scales cache trust for repetitive vs novel text)
     regime_tracker_enabled = bool(int(os.environ.get("REGIME_TRACKER", "0")))
-    # Artifact ngram: training corpus oracle (disabled by default — legality pending)
-    artifact_ngram = bool(int(os.environ.get("ARTIFACT_NGRAM", "0")))
-    artifact_ngram_max_shards = int(os.environ.get("ARTIFACT_NGRAM_MAX_SHARDS", "2"))
-    # Learned mixer head: train a tiny linear head to predict per-token expert weights
-    mixer_enabled = bool(int(os.environ.get("MIXER_ENABLED", "0")))
-    mixer_n_orders = int(os.environ.get("MIXER_N_ORDERS", 11))  # n-gram orders 2..12
-    mixer_loss_weight = float(os.environ.get("MIXER_LOSS_WEIGHT", 0.1))
-    mixer_neural_floor = float(os.environ.get("MIXER_NEURAL_FLOOR", 0.05))
-    mixer_buckets = int(os.environ.get("MIXER_BUCKETS", 8_388_608))  # 8M for training oracle
-    mixer_prefill_max_shards = int(os.environ.get("MIXER_PREFILL_MAX_SHARDS", 80))
-    mixer_prefill_max_seconds = float(os.environ.get("MIXER_PREFILL_MAX_SECONDS", 0.0))  # 0 = unlimited
-    mixer_prefill_min_shards = int(os.environ.get("MIXER_PREFILL_MIN_SHARDS", 1))
-    mixer_prefill_tokens_per_shard = int(os.environ.get("MIXER_PREFILL_TOKENS_PER_SHARD", 0))  # 0 = full shard
-    mixer_gpu_mode = bool(int(os.environ.get("MIXER_GPU_MODE", "1")))  # GPU oracle/prefill on CUDA
-    mixer_prefill_pos_chunk = int(os.environ.get("MIXER_PREFILL_POS_CHUNK", 1_000_000))
     compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
     compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
     # Workaround for torch.compile + DDP higher-order-op backend issue on H100 runs.
@@ -183,27 +148,6 @@ def maybe_torch_compile(obj, args: Hyperparameters):
     if not args.compile_enabled:
         return obj
     return torch.compile(obj, dynamic=False, fullgraph=args.compile_fullgraph)
-class TrainNgramTracker:
-    """Complementary training: track bigram stats, downweight tokens n-grams can predict."""
-    def __init__(self, vocab_size: int, device: torch.device, complement_alpha: float = 0.5):
-        self.V = vocab_size
-        self.alpha = complement_alpha
-        self.bi_counts = torch.zeros(vocab_size, vocab_size, device=device, dtype=torch.float32)
-        self.bi_totals = torch.zeros(vocab_size, device=device, dtype=torch.float32)
-    @torch.no_grad()
-    def update(self, x: Tensor, y: Tensor):
-        xf = x.reshape(-1)
-        yf = y.reshape(-1)
-        ones = torch.ones(xf.numel(), device=xf.device, dtype=torch.float32)
-        self.bi_counts.reshape(-1).scatter_add_(0, xf * self.V + yf, ones)
-        self.bi_totals.scatter_add_(0, xf, ones)
-    def get_weights(self, x: Tensor, y: Tensor) -> Tensor:
-        xf = x.reshape(-1)
-        yf = y.reshape(-1)
-        total = self.bi_totals[xf]
-        count = self.bi_counts.reshape(-1)[xf * self.V + yf]
-        ngram_prob = count / (total + 1)
-        return (1.0 - self.alpha * ngram_prob).clamp(min=0.1)
 def zeropower_via_newtonschulz5(G: Tensor, steps: int = 10, eps: float = 1e-7) -> Tensor:
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16()
@@ -631,7 +575,8 @@ class CausalSelfAttention(nn.Module):
         vn = F.normalize(v, dim=-1).unsqueeze(-2)    # [B, T, Hkv, 1, D] — broadcast ready
         proj = (y_g * vn).sum(dim=-1, keepdim=True) * vn
         return (y_g - proj).reshape(B, T, H, D)
-    def forward(self, x: Tensor, v_embed: Tensor | None = None) -> Tensor:
+    def forward(self, x: Tensor, v_embed: Tensor | None = None,
+                cos_sin: tuple | None = None) -> Tensor:
         bsz, seqlen, dim = x.shape
         q = self.c_q(x).reshape(bsz, seqlen, self.num_heads, self.head_dim)
         k = self.c_k(x).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim)
@@ -641,7 +586,7 @@ class CausalSelfAttention(nn.Module):
         v = v.reshape(bsz, seqlen, self.num_kv_heads, self.head_dim)
         q = F.rms_norm(q, (q.size(-1),))
         k = F.rms_norm(k, (k.size(-1),))
-        cos, sin = self.rotary(seqlen, x.device, q.dtype)
+        cos, sin = cos_sin if cos_sin is not None else self.rotary(seqlen, x.device, q.dtype)
         q = apply_rotary_emb(q, cos, sin, self.rope_dims)
         k = apply_rotary_emb(k, cos, sin, self.rope_dims)
         q = q * self.q_gain.to(dtype=q.dtype)[None, None, :, None]
@@ -662,6 +607,19 @@ class SmearGate(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         g = torch.sigmoid(self.gate.to(dtype=x.dtype))[None, None, :]
         x_prev = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
+        return (1 - g) * x + g * x_prev
+class LoopSmearGate(nn.Module):
+    """Learnable blend between current loop output and previous loop output.
+    Applied at each loop boundary in _run_crawler to damp depth-accumulated
+    quantization error. Loop 0 smears with the encoder output (stable anchor).
+    gate init=zeros → sigmoid(0)=0.5 blend (matches SmearGate convention).
+    ~512 learned scalars, no matmuls.
+    """
+    def __init__(self, dim: int):
+        super().__init__()
+        self.gate = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
+    def forward(self, x: Tensor, x_prev: Tensor) -> Tensor:
+        g = torch.sigmoid(self.gate.to(dtype=x.dtype))[None, None, :]
         return (1 - g) * x + g * x_prev
 class BigramHashEmbedding(nn.Module):
     def __init__(self, bigram_vocab_size: int, bigram_dim: int, model_dim: int):
@@ -712,13 +670,131 @@ class MLP(nn.Module):
         self.mlp_leaky_slope = mlp_leaky_slope
         if self.mlp_act not in {"relu_sq", "leaky_relu_sq"}:
             raise ValueError(f"Unsupported MLP_ACT '{self.mlp_act}'. Use 'relu_sq' or 'leaky_relu_sq'.")
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, loop_idx: int | None = None) -> Tensor:
         x = self.fc(x)
         if self.mlp_act == "leaky_relu_sq":
             x = F.leaky_relu(x, negative_slope=self.mlp_leaky_slope)
         else:
             x = F.relu(x)
         return self.proj(x.square())
+class CrawlerMLP(nn.Module):
+    """Per-loop shaped bottleneck MLP for the crawler block.
+
+    Shapes (CRAWLER_MLP_CHOKE_SHAPE):
+      flat:        512→3072→act→[choke_dim per-loop]→act→512
+      pyramid:     512→3072→act→512(shared)→[choke_dim per-loop]→act→512 (no bypass)
+      pyramid_res: pyramid + free residual — stage1 output (512) is the bypass
+      grouped:     512→3072→act→grouped-[choke_dim per-loop]→act→512 (block-diagonal down)
+      residual:    512→3072→act→{bypass(shared)→512} + {[choke_dim per-loop]→act→512}
+    """
+    def __init__(self, dim: int, crawler_mlp_mult: float, choke_dim: int, crawler_loops: int,
+                 mlp_act: str = "relu_sq", mlp_leaky_slope: float = 0.5,
+                 choke_shape: str = "flat", choke_groups: int = 8):
+        super().__init__()
+        hidden = int(crawler_mlp_mult * dim)
+        self.fc = CastedLinear(dim, hidden, bias=False)
+        self.shape = choke_shape
+        self.choke_dim = choke_dim
+        self.choke_groups = choke_groups
+        self.mlp_act = mlp_act
+        self.mlp_leaky_slope = mlp_leaky_slope
+        self.hidden = hidden
+        self.dim = dim
+
+        if choke_shape == "flat":
+            self.choke_down = nn.ModuleList([
+                CastedLinear(hidden, choke_dim, bias=False) for _ in range(crawler_loops)
+            ])
+            self.choke_up = nn.ModuleList([
+                CastedLinear(choke_dim, dim, bias=False) for _ in range(crawler_loops)
+            ])
+            for up in self.choke_up:
+                up._zero_init = True
+
+        elif choke_shape in ("pyramid", "pyramid_res"):
+            # Stage 1: shared expensive compression 3072→dim
+            self.stage1 = CastedLinear(hidden, dim, bias=False)
+            # Stage 2: per-loop cheap routing dim→choke_dim→dim
+            self.choke_down = nn.ModuleList([
+                CastedLinear(dim, choke_dim, bias=False) for _ in range(crawler_loops)
+            ])
+            self.choke_up = nn.ModuleList([
+                CastedLinear(choke_dim, dim, bias=False) for _ in range(crawler_loops)
+            ])
+            for up in self.choke_up:
+                up._zero_init = True
+            # pyramid_res: stage1 NOT zero-init — provides immediate signal as bypass
+
+        elif choke_shape == "grouped":
+            assert hidden % choke_groups == 0, f"hidden {hidden} not divisible by groups {choke_groups}"
+            assert choke_dim % choke_groups == 0, f"choke_dim {choke_dim} not divisible by groups {choke_groups}"
+            self.group_in = hidden // choke_groups
+            self.group_out = choke_dim // choke_groups
+            # Per-loop block-diagonal down: [G, group_in, group_out] per loop
+            self.group_w = nn.ParameterList([
+                nn.Parameter(torch.empty(choke_groups, self.group_in, self.group_out))
+                for _ in range(crawler_loops)
+            ])
+            for w in self.group_w:
+                nn.init.normal_(w, std=0.02)
+            self.choke_up = nn.ModuleList([
+                CastedLinear(choke_dim, dim, bias=False) for _ in range(crawler_loops)
+            ])
+            for up in self.choke_up:
+                up._zero_init = True
+
+        elif choke_shape == "residual":
+            # Shared bypass (like original MLP proj) + per-loop delta
+            self.bypass = CastedLinear(hidden, dim, bias=False)
+            self.bypass._zero_init = True  # zero-init: both paths start at zero
+            self.choke_down = nn.ModuleList([
+                CastedLinear(hidden, choke_dim, bias=False) for _ in range(crawler_loops)
+            ])
+            self.choke_up = nn.ModuleList([
+                CastedLinear(choke_dim, dim, bias=False) for _ in range(crawler_loops)
+            ])
+            for up in self.choke_up:
+                up._zero_init = True
+
+        else:
+            raise ValueError(f"Unknown choke_shape: {choke_shape!r}. Use flat/pyramid/pyramid_res/grouped/residual")
+
+    def _act(self, x: Tensor) -> Tensor:
+        if self.mlp_act == "leaky_relu_sq":
+            return F.leaky_relu(x, negative_slope=self.mlp_leaky_slope).square()
+        return F.relu(x).square()
+
+    def forward(self, x: Tensor, loop_idx: int = 0) -> Tensor:
+        h = self._act(self.fc(x))  # [B, T, hidden] — shared across all shapes
+
+        if self.shape == "flat":
+            c = self._act(self.choke_down[loop_idx](h))
+            return self.choke_up[loop_idx](c)
+
+        elif self.shape == "pyramid":
+            m = self._act(self.stage1(h))                # [B, T, dim], shared stage
+            c = self._act(self.choke_down[loop_idx](m))  # [B, T, choke_dim], per-loop
+            return self.choke_up[loop_idx](c)            # no bypass
+
+        elif self.shape == "pyramid_res":
+            m = self._act(self.stage1(h))                # [B, T, dim], shared — IS the bypass
+            delta = self.choke_up[loop_idx](self._act(self.choke_down[loop_idx](m)))
+            return m + delta                             # free residual, zero extra params
+
+        elif self.shape == "grouped":
+            B, T, _ = h.shape
+            h_r = h.reshape(B * T, self.choke_groups, self.group_in)
+            w = self.group_w[loop_idx].to(h.dtype)       # [G, group_in, group_out]
+            c_r = torch.einsum('bgi,gio->bgo', h_r, w)   # [B*T, G, group_out]
+            c = self._act(c_r.reshape(B, T, self.choke_dim))
+            return self.choke_up[loop_idx](c)
+
+        elif self.shape == "residual":
+            bypass = self.bypass(h)                       # [B, T, dim], shared
+            c = self._act(self.choke_down[loop_idx](h))
+            delta = self.choke_up[loop_idx](c)
+            return bypass + delta                         # shared bypass + per-loop delta
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -733,12 +809,22 @@ class Block(nn.Module):
         dtg: bool = False,
         mlp_act: str = "relu_sq",
         mlp_leaky_slope: float = 0.5,
+        crawler_choke_dim: int = 0,
+        crawler_loops: int = 1,
+        crawler_choke_shape: str = "flat",
+        crawler_choke_groups: int = 8,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
         self.mlp_norm = RMSNorm()
         self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
-        self.mlp = MLP(dim, mlp_mult, mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
+        if crawler_choke_dim > 0:
+            self.mlp = CrawlerMLP(dim, mlp_mult, crawler_choke_dim, crawler_loops,
+                                  mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
+                                  choke_shape=crawler_choke_shape,
+                                  choke_groups=crawler_choke_groups)
+        else:
+            self.mlp = MLP(dim, mlp_mult, mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
@@ -749,234 +835,19 @@ class Block(nn.Module):
             nn.init.constant_(self.dtg_gate.bias, 2.0)
         else:
             self.dtg_gate = None
-    def forward(self, x: Tensor, x0: Tensor, v_embed: Tensor | None = None) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor, v_embed: Tensor | None = None,
+                loop_idx: int | None = None, cos_sin: tuple | None = None) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x_in = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
-        attn_out = self.attn(self.attn_norm(x_in) * self.ln_scale_factor, v_embed=v_embed)
+        attn_out = self.attn(self.attn_norm(x_in) * self.ln_scale_factor, v_embed=v_embed, cos_sin=cos_sin)
         x_out = x_in + self.attn_scale.to(dtype=x_in.dtype)[None, None, :] * attn_out
-        x_out = x_out + self.mlp_scale.to(dtype=x_out.dtype)[None, None, :] * self.mlp(self.mlp_norm(x_out) * self.ln_scale_factor)
+        mlp_in = self.mlp_norm(x_out) * self.ln_scale_factor
+        mlp_out = self.mlp(mlp_in, loop_idx) if loop_idx is not None else self.mlp(mlp_in)
+        x_out = x_out + self.mlp_scale.to(dtype=x_out.dtype)[None, None, :] * mlp_out
         if self.dtg_gate is not None:
             gate = torch.sigmoid(self.dtg_gate(x_in.detach()))
             x_out = x_in + gate * (x_out - x_in)
         return x_out
-# 12 primes for XOR hashing — shared between training oracle and eval tables
-NGRAM_PRIMES = np.array(
-    [np.uint64(36313), np.uint64(27191), np.uint64(51647), np.uint64(81929),
-     np.uint64(131071), np.uint64(174763), np.uint64(233017), np.uint64(283721),
-     np.uint64(347237), np.uint64(401519), np.uint64(479909), np.uint64(541267)],
-    dtype=np.uint64,
-)
-
-class TrainNgramOracle:
-    """Training-time n-gram oracle: prefilled from training data, frozen during training.
-    Used to supervise the learned mixer head — NOT used at eval time."""
-    def __init__(self, buckets: int, min_order: int = 2, max_order: int = 12, min_count: int = 2):
-        self.buckets = buckets
-        self.min_order = min_order
-        self.max_order = max_order
-        self.min_count = min_count
-        self.mask = np.uint64(buckets - 1)
-        self.primes = NGRAM_PRIMES
-        self.n_orders = max_order - min_order + 1
-        self.ctx_tables = {n: np.zeros(buckets, dtype=np.uint32) for n in range(min_order, max_order + 1)}
-        self.full_tables = {n: np.zeros(buckets, dtype=np.uint32) for n in range(min_order, max_order + 1)}
-        self.total_tokens = 0
-
-    def prefill_shard(self, filepath: str, max_tokens: int = 0) -> int:
-        """Load a training shard and update hash tables. Returns token count."""
-        count = int(max_tokens) if max_tokens and max_tokens > 0 else -1
-        raw = np.fromfile(filepath, dtype=np.uint16, count=count)
-        t = raw.astype(np.uint64)
-        n = len(t)
-        self.total_tokens += n
-        for order in range(self.min_order, self.max_order + 1):
-            if n < order:
-                continue
-            ctx_width = order - 1
-            length = n - order + 1
-            ctx_hash = np.zeros(length, dtype=np.uint64)
-            for k in range(ctx_width):
-                ctx_hash ^= t[k:k + length] * self.primes[k % len(self.primes)]
-            ctx_key = (ctx_hash & self.mask).astype(np.int64)
-            tgt = t[order - 1:order - 1 + length]
-            full_key = ((ctx_hash ^ (tgt * self.primes[ctx_width % len(self.primes)])) & self.mask).astype(np.int64)
-            self.ctx_tables[order] += np.bincount(ctx_key, minlength=self.buckets).astype(np.uint32)
-            self.full_tables[order] += np.bincount(full_key, minlength=self.buckets).astype(np.uint32)
-        return n
-
-    def get_ngram_probs(self, x_batch: Tensor, y_batch: Tensor) -> tuple[Tensor, Tensor]:
-        """Get per-order n-gram probabilities for a training batch.
-        Returns (order_p, order_valid) both shaped (bsz, seq_len, n_orders).
-        order_p[..., i] is probability from order (min_order+i).
-        order_valid[..., i] is True where ctx_count >= min_count."""
-        x_np = x_batch.cpu().numpy().astype(np.uint64)
-        y_np = y_batch.cpu().numpy().astype(np.uint64)
-        bsz, slen = x_np.shape
-        order_p = np.full((bsz, slen, self.n_orders), 1.0 / 1024.0, dtype=np.float32)
-        order_valid = np.zeros((bsz, slen, self.n_orders), dtype=np.bool_)
-        for oi, order in enumerate(range(self.min_order, self.max_order + 1)):
-            ctx_width = order - 1
-            if slen < ctx_width:
-                continue
-            # Build context hash from x_batch (context tokens)
-            # For order n, context is x[pos-cw+1:pos+1], target is y[pos]
-            # x_batch[b, j] is input at position j, y_batch[b, j] is target at position j
-            # Context for position j: tokens at positions j-cw+1 .. j (= x[j-cw+1], ..., x[j])
-            # But x_batch is the input sequence, where x[j] predicts y[j]
-            # For n-gram: we need the last (order-1) input tokens as context, and y[j] as target
-            ctx_hash = np.zeros((bsz, slen), dtype=np.uint64)
-            for k in range(ctx_width):
-                shift = ctx_width - 1 - k
-                if shift > 0:
-                    ctx_hash[:, shift:] ^= x_np[:, :slen - shift] * self.primes[k % len(self.primes)]
-                else:
-                    ctx_hash ^= x_np * self.primes[k % len(self.primes)]
-            ctx_key = (ctx_hash & self.mask).astype(np.int64)
-            full_key = ((ctx_hash ^ (y_np * self.primes[ctx_width % len(self.primes)])) & self.mask).astype(np.int64)
-            ctx_c = self.ctx_tables[order][ctx_key.ravel()].astype(np.float32).reshape(bsz, slen)
-            full_c = self.full_tables[order][full_key.ravel()].astype(np.float32).reshape(bsz, slen)
-            p = np.minimum(full_c, ctx_c) / np.maximum(ctx_c, 1.0)
-            p = np.clip(p, 0.0, 1.0)
-            valid = ctx_c >= self.min_count
-            if ctx_width > 0:
-                valid[:, :ctx_width] = False
-            order_p[:, :, oi] = np.where(valid, p, order_p[:, :, oi])
-            order_valid[:, :, oi] = valid
-        return (
-            torch.from_numpy(order_p),
-            torch.from_numpy(order_valid),
-        )
-
-
-class TrainNgramOracleGPU:
-    """GPU-native training-time n-gram oracle for mixer supervision."""
-    def __init__(
-        self,
-        buckets: int,
-        min_order: int = 2,
-        max_order: int = 12,
-        min_count: int = 2,
-        device: torch.device | None = None,
-        pos_chunk: int = 1_000_000,
-    ):
-        if device is None:
-            raise ValueError("TrainNgramOracleGPU requires an explicit CUDA device")
-        self.device = device
-        self.buckets = buckets
-        self.min_order = min_order
-        self.max_order = max_order
-        self.min_count = min_count
-        self.n_orders = max_order - min_order + 1
-        self.pos_chunk = max(1, int(pos_chunk))
-        self.total_tokens = 0
-        self.mask = int(buckets - 1)
-        self.mask_t = torch.tensor(self.mask, device=device, dtype=torch.int64)
-        self.primes = torch.tensor(NGRAM_PRIMES.astype(np.int64), device=device, dtype=torch.int64)
-        self.ctx_tables = {n: torch.zeros(buckets, device=device, dtype=torch.int64) for n in range(min_order, max_order + 1)}
-        self.full_tables = {n: torch.zeros(buckets, device=device, dtype=torch.int64) for n in range(min_order, max_order + 1)}
-
-    def prefill_shard(self, filepath: str, max_tokens: int = 0) -> int:
-        count = int(max_tokens) if max_tokens and max_tokens > 0 else -1
-        raw = np.fromfile(filepath, dtype=np.uint16, count=count)
-        if raw.size == 0:
-            return 0
-        t = torch.from_numpy(raw.astype(np.int64, copy=False)).to(device=self.device, dtype=torch.int64)
-        n = int(t.numel())
-        self.total_tokens += n
-        npr = int(self.primes.numel())
-
-        for order in range(self.min_order, self.max_order + 1):
-            if n < order:
-                continue
-            ctx_width = order - 1
-            length = n - order + 1
-            p_ctx = self.primes[ctx_width % npr]
-            for pos0 in range(0, length, self.pos_chunk):
-                m = min(self.pos_chunk, length - pos0)
-                ctx_hash = torch.zeros(m, device=self.device, dtype=torch.int64)
-                for k in range(ctx_width):
-                    tok = t[k + pos0 : k + pos0 + m]
-                    ctx_hash.bitwise_xor_(tok * self.primes[k % npr])
-                ctx_key = torch.bitwise_and(ctx_hash, self.mask_t)
-                tgt = t[order - 1 + pos0 : order - 1 + pos0 + m]
-                full_key = torch.bitwise_and(torch.bitwise_xor(ctx_hash, tgt * p_ctx), self.mask_t)
-                self.ctx_tables[order].add_(torch.bincount(ctx_key, minlength=self.buckets))
-                self.full_tables[order].add_(torch.bincount(full_key, minlength=self.buckets))
-        return n
-
-    def get_ngram_probs(self, x_batch: Tensor, y_batch: Tensor) -> tuple[Tensor, Tensor]:
-        x = x_batch.to(device=self.device, dtype=torch.int64, non_blocking=True)
-        y = y_batch.to(device=self.device, dtype=torch.int64, non_blocking=True)
-        bsz, slen = x.shape
-        order_p = torch.full((bsz, slen, self.n_orders), 1.0 / 1024.0, device=self.device, dtype=torch.float32)
-        order_valid = torch.zeros((bsz, slen, self.n_orders), device=self.device, dtype=torch.bool)
-        npr = int(self.primes.numel())
-
-        for oi, order in enumerate(range(self.min_order, self.max_order + 1)):
-            ctx_width = order - 1
-            if slen < ctx_width:
-                continue
-            ctx_hash = torch.zeros((bsz, slen), device=self.device, dtype=torch.int64)
-            for k in range(ctx_width):
-                shift = ctx_width - 1 - k
-                p = self.primes[k % npr]
-                if shift > 0:
-                    ctx_hash[:, shift:].bitwise_xor_(x[:, :slen - shift] * p)
-                else:
-                    ctx_hash.bitwise_xor_(x * p)
-            ctx_key = torch.bitwise_and(ctx_hash, self.mask_t)
-            full_key = torch.bitwise_and(
-                torch.bitwise_xor(ctx_hash, y * self.primes[ctx_width % npr]),
-                self.mask_t,
-            )
-            ctx_c = self.ctx_tables[order].gather(0, ctx_key.reshape(-1)).reshape(bsz, slen).to(dtype=torch.float32)
-            full_c = self.full_tables[order].gather(0, full_key.reshape(-1)).reshape(bsz, slen).to(dtype=torch.float32)
-            p = torch.minimum(full_c, ctx_c) / torch.maximum(ctx_c, torch.ones_like(ctx_c))
-            p = p.clamp_(0.0, 1.0)
-            valid = ctx_c >= float(self.min_count)
-            if ctx_width > 0:
-                valid[:, :ctx_width] = False
-            order_p[:, :, oi] = torch.where(valid, p, order_p[:, :, oi])
-            order_valid[:, :, oi] = valid
-        return order_p, order_valid
-
-
-def broadcast_train_mixer_tables(train_mixer: TrainNgramOracle, rank: int, device: torch.device):
-    """Broadcast rank-0 prefilled mixer tables to all ranks via NCCL."""
-    if not (dist.is_available() and dist.is_initialized()):
-        return
-    if rank == 0:
-        meta = torch.tensor([train_mixer.total_tokens], device=device, dtype=torch.int64)
-    else:
-        meta = torch.zeros(1, device=device, dtype=torch.int64)
-    dist.broadcast(meta, src=0)
-    train_mixer.total_tokens = int(meta.item())
-
-    for order in range(train_mixer.min_order, train_mixer.max_order + 1):
-        if rank == 0:
-            ctx_src = train_mixer.ctx_tables[order].view(np.int32)
-            full_src = train_mixer.full_tables[order].view(np.int32)
-            ctx_t = torch.from_numpy(ctx_src).to(device=device, dtype=torch.int32, non_blocking=True)
-            full_t = torch.from_numpy(full_src).to(device=device, dtype=torch.int32, non_blocking=True)
-        else:
-            ctx_t = torch.empty(train_mixer.buckets, device=device, dtype=torch.int32)
-            full_t = torch.empty(train_mixer.buckets, device=device, dtype=torch.int32)
-        dist.broadcast(ctx_t, src=0)
-        dist.broadcast(full_t, src=0)
-        train_mixer.ctx_tables[order] = ctx_t.cpu().numpy().view(np.uint32).copy()
-        train_mixer.full_tables[order] = full_t.cpu().numpy().view(np.uint32).copy()
-
-
-def all_reduce_train_mixer_tables_gpu(train_mixer: TrainNgramOracleGPU, device: torch.device):
-    """All-reduce GPU-resident mixer tables across ranks."""
-    if not (dist.is_available() and dist.is_initialized()):
-        return
-    total = torch.tensor([train_mixer.total_tokens], device=device, dtype=torch.int64)
-    dist.all_reduce(total, op=dist.ReduceOp.SUM)
-    train_mixer.total_tokens = int(total.item())
-    for order in range(train_mixer.min_order, train_mixer.max_order + 1):
-        dist.all_reduce(train_mixer.ctx_tables[order], op=dist.ReduceOp.SUM)
-        dist.all_reduce(train_mixer.full_tables[order], op=dist.ReduceOp.SUM)
 
 class GPT(nn.Module):
     def __init__(
@@ -992,8 +863,6 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
-        mtp_num_heads: int = 0,
-        mtp_loss_weight: float = 0.1,
         bigram_vocab_size: int = 0,
         bigram_dim: int = 128,
         xsa_last_n: int = 0,
@@ -1007,9 +876,6 @@ class GPT(nn.Module):
         mlp_leaky_slope: float = 0.5,
         f1_corr_rank: int = 0,
         f1_corr_scale_init: float = 0.10,
-        mixer_n_experts: int = 0,
-        mixer_loss_weight: float = 0.1,
-        mixer_neural_floor: float = 0.05,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)  # kv_dim for value projection
@@ -1018,8 +884,6 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
-        self.mtp_num_heads = mtp_num_heads
-        self.mtp_loss_weight = mtp_loss_weight
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim) if bigram_vocab_size > 0 else None
         self.smear = SmearGate(model_dim)
@@ -1065,11 +929,7 @@ class GPT(nn.Module):
         self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
         if self.lm_head is not None:
             self.lm_head._zero_init = True
-        self.mtp_heads = nn.ModuleList(
-            [CastedLinear(model_dim, vocab_size, bias=False) for _ in range(mtp_num_heads)]
-        )
-        for head in self.mtp_heads:
-            head._zero_init = True
+        self.mtp_heads = nn.ModuleList()
         # Low-rank correction path for extra capacity under size budget.
         self.f1_corr_rank = f1_corr_rank
         if f1_corr_rank > 0:
@@ -1081,24 +941,10 @@ class GPT(nn.Module):
             self.f1_corr_in = None
             self.f1_corr_out = None
             self.f1_corr_scale = None
-        # Learned mixer head: predicts per-token expert weights for n-gram blending
-        self.mixer_n_experts = mixer_n_experts
-        self.mixer_loss_weight = mixer_loss_weight
-        self.mixer_neural_floor = mixer_neural_floor
-        if mixer_n_experts > 0:
-            self.alpha_head = nn.Linear(model_dim, mixer_n_experts, bias=True)
-        else:
-            self.alpha_head = None
         if xsa_last_n > 0:
             for i in range(max(0, num_layers - xsa_last_n), num_layers):
                 self.blocks[i].attn.use_xsa = True
         self._init_weights()
-        # Special init for alpha_head: zeros + bias[0]=2.0 (favor neural initially)
-        if self.alpha_head is not None:
-            nn.init.zeros_(self.alpha_head.weight)
-            nn.init.zeros_(self.alpha_head.bias)
-            with torch.no_grad():
-                self.alpha_head.bias[0] = 2.0
     def _init_weights(self) -> None:
         if self.tie_embeddings:
             nn.init.normal_(self.tok_emb.weight, mean=0.0, std=self.tied_embed_init_std)
@@ -1121,8 +967,7 @@ class GPT(nn.Module):
         ve_base = ve_cache['ve'] if ve_cache is not None else self.ve_shared(input_ids)
         ve_idx = self.ve_layer_indices.index(layer_idx)
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
-    def forward(self, input_ids: Tensor, target_ids: Tensor,
-                ngram_expert_p: Tensor | None = None, ngram_valid_mask: Tensor | None = None) -> Tensor:
+    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
@@ -1155,53 +1000,7 @@ class GPT(nn.Module):
             corr_proj = self.f1_corr_out(corr_hidden)
             logits_proj = logits_proj + self.f1_corr_scale.to(dtype=logits_proj.dtype) * corr_proj
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
-        if hasattr(self, '_ngram_tracker') and self._ngram_tracker is not None and self.training:
-            per_tok_loss = F.cross_entropy(logits.float(), targets, reduction="none")
-            weights = self._ngram_tracker.get_weights(input_ids, target_ids)
-            main_loss = (per_tok_loss * weights).mean()
-        else:
-            main_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
-        if self.training and self.mtp_num_heads > 0 and self.mtp_loss_weight > 0.0:
-            _, seqlen, dim = x.shape
-            mtp_loss_sum = x.new_zeros(())
-            mtp_loss_count = 0
-            for k, mtp_head in enumerate(self.mtp_heads):
-                valid_t = seqlen - (k + 1)
-                if valid_t <= 0:
-                    continue
-                mtp_hidden = x[:, :valid_t, :].reshape(-1, dim)
-                mtp_targets = target_ids[:, k + 1 :].reshape(-1)
-                mtp_logits_proj = mtp_head(mtp_hidden)
-                mtp_logits = self.logit_softcap * torch.tanh(mtp_logits_proj / self.logit_softcap)
-                mtp_loss_sum = mtp_loss_sum + F.cross_entropy(mtp_logits.float(), mtp_targets, reduction="mean")
-                mtp_loss_count += 1
-            if mtp_loss_count > 0:
-                main_loss = main_loss + self.mtp_loss_weight * (mtp_loss_sum / mtp_loss_count)
-        # Mixer loss: train alpha_head to blend neural + n-gram experts
-        if (self.training and self.alpha_head is not None and self.mixer_loss_weight > 0
-                and ngram_expert_p is not None and ngram_valid_mask is not None):
-            alpha_raw = self.alpha_head(x_flat.float())  # (N, n_experts)
-            # Neural probability for the correct target token
-            with torch.no_grad():
-                neural_p = F.softmax(logits.float(), dim=-1).gather(1, targets.unsqueeze(1)).squeeze(1)
-            # Stack experts: [neural, order2, order3, ..., orderN]
-            ngram_p_flat = ngram_expert_p.reshape(-1, ngram_expert_p.size(-1))  # (N, n_orders)
-            ngram_v_flat = ngram_valid_mask.reshape(-1, ngram_valid_mask.size(-1))  # (N, n_orders)
-            expert_p = torch.cat([neural_p.unsqueeze(1), ngram_p_flat.to(dtype=neural_p.dtype)], dim=1)
-            full_mask = torch.cat([
-                torch.ones(targets.size(0), 1, device=targets.device, dtype=torch.bool),
-                ngram_v_flat.to(device=targets.device),
-            ], dim=1)
-            gate = alpha_raw.masked_fill(~full_mask, -1e9)
-            weights = F.softmax(gate, dim=-1)
-            # Neural floor: ensure ≥ mixer_neural_floor for neural expert
-            nf = self.mixer_neural_floor
-            neural_w = nf + (1.0 - nf) * weights[:, :1]
-            other_w = (1.0 - nf) * weights[:, 1:]
-            weights = torch.cat([neural_w, other_w], dim=1)
-            mixed_p = (weights * expert_p.clamp(min=1e-12)).sum(dim=1)
-            mixer_loss = -torch.log(mixed_p.clamp(min=1e-12)).mean()
-            main_loss = main_loss + self.mixer_loss_weight * mixer_loss
+        main_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
         return main_loss
     def forward_logits(self, input_ids: Tensor) -> Tensor:
         """Return logits (bsz, seq_len, vocab) without computing loss."""
@@ -1233,172 +1032,11 @@ class GPT(nn.Module):
             corr_proj = self.f1_corr_out(corr_hidden)
             logits_proj = logits_proj + self.f1_corr_scale.to(dtype=logits_proj.dtype) * corr_proj
         return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
-    def forward_logits_and_alpha(self, input_ids: Tensor) -> tuple[Tensor, Tensor | None]:
-        """Return (logits, alpha_raw) — alpha_raw is gate logits for mixer head."""
-        x = self.tok_emb(input_ids)
-        if self.bigram is not None:
-            x = x + self.bigram(input_ids)
-        x = F.rms_norm(x, (x.size(-1),))
-        x = self.smear(x)
-        x0 = x
-        skips: list[Tensor] = []
-        ve_cache: dict = {}
-        for i in range(self.num_encoder_layers):
-            ve = self._get_ve(i, input_ids, ve_cache)
-            x = self.blocks[i](x, x0, v_embed=ve)
-            skips.append(x)
-        for i in range(self.num_decoder_layers):
-            bi = self.num_encoder_layers + i
-            if skips:
-                x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            ve = self._get_ve(bi, input_ids, ve_cache)
-            x = self.blocks[bi](x, x0, v_embed=ve)
-        x = self.final_norm(x)
-        if self.tie_embeddings:
-            logits_proj = F.linear(x, self.tok_emb.weight)
-        else:
-            logits_proj = self.lm_head(x)
-        if self.f1_corr_in is not None and self.f1_corr_out is not None and self.f1_corr_scale is not None:
-            corr_hidden = F.silu(self.f1_corr_in(x))
-            corr_proj = self.f1_corr_out(corr_hidden)
-            logits_proj = logits_proj + self.f1_corr_scale.to(dtype=logits_proj.dtype) * corr_proj
-        logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
-        alpha_raw = self.alpha_head(x.float()) if self.alpha_head is not None else None
-        return logits, alpha_raw
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # F-Wing: Frugendorff Crawler GPT
 # ──────────────────────────────────────────────────────────────────────────────
-# DeltaNet associative memory — delta rule update, state carried between loops
-# Update rule: S_t += β_t * outer(v_t - S_t @ k_t, k_t)   (error correction)
-# The state S accumulates pattern associations across crawler loop iterations,
-# giving each loop genuine new information rather than repeating the same pass.
-# ──────────────────────────────────────────────────────────────────────────────
-class DeltaNetMemory(nn.Module):
-    """Delta-rule associative memory for the FX-Wing crawler reservoir.
-
-    State S (shape [B, H, Dh, Dh]) is carried between crawler loop iterations.
-    Each pass corrects prediction errors, progressively refining associations.
-    Output projection is zero-initialized so it starts as a residual no-op.
-    """
-    def __init__(self, model_dim: int, n_heads: int):
-        super().__init__()
-        assert model_dim % n_heads == 0
-        self.n_heads = n_heads
-        self.head_dim = model_dim // n_heads
-        d = model_dim
-        Dh = self.head_dim
-        H = n_heads
-        self.k_proj = nn.Linear(d, H * Dh, bias=False)
-        self.v_proj = nn.Linear(d, H * Dh, bias=False)
-        self.q_proj = nn.Linear(d, H * Dh, bias=False)
-        self.b_proj = nn.Linear(d, H, bias=True)   # per-head beta (learning rate)
-        self.o_proj = nn.Linear(H * Dh, d, bias=False)
-        self.norm   = RMSNorm()
-        nn.init.zeros_(self.o_proj.weight)          # start as identity (no-op)
-
-    @torch.compiler.disable  # T-loop unrolled by dynamo → OOM; run in eager instead
-    def forward(self, x: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
-        """
-        x:     [B, T, D]
-        state: [B, H, Dh, Dh]  — carried from previous loop iteration
-        returns (x_out [B, T, D], new_state [B, H, Dh, Dh])
-        """
-        B, T, D = x.shape
-        H, Dh = self.n_heads, self.head_dim
-        k = F.normalize(self.k_proj(x).reshape(B, T, H, Dh), dim=-1)   # [B,T,H,Dh]
-        v = self.v_proj(x).reshape(B, T, H, Dh)                          # [B,T,H,Dh]
-        q = F.normalize(self.q_proj(x).reshape(B, T, H, Dh), dim=-1)   # [B,T,H,Dh]
-        beta = torch.sigmoid(self.b_proj(x))                              # [B,T,H]
-        # Sequential delta rule — process each token, carry state forward
-        S = state  # [B, H, Dh, Dh]
-        outs: list[Tensor] = []
-        for t in range(T):
-            k_t  = k[:, t]           # [B, H, Dh]
-            v_t  = v[:, t]
-            q_t  = q[:, t]
-            b_t  = beta[:, t, :, None, None]  # [B, H, 1, 1]
-            # Read: y = S @ q
-            y_t  = torch.einsum("bhij,bhj->bhi", S, q_t)       # [B, H, Dh]
-            # Delta rule write: S += β * outer(v - S@k, k)
-            pred = torch.einsum("bhij,bhj->bhi", S, k_t)       # [B, H, Dh]
-            S    = S + b_t * torch.einsum("bhi,bhj->bhij", v_t - pred, k_t)
-            outs.append(y_t)
-        y = torch.stack(outs, dim=1).reshape(B, T, H * Dh)     # [B, T, H*Dh]
-        return self.norm(x + self.o_proj(y)), S
-
-
-class CanonicalDeltaNet(nn.Module):
-    """Delta rule associative memory using FLA's chunk_delta_rule CUDA kernel.
-
-    Replaces DeltaNetMemory's Python token-by-token loop with the parallelized
-    chunk implementation from flash-linear-attention (arxiv 2406.06484).
-    Adds causal short convolutions on Q/K/V — proven quality gain from the paper.
-
-    State API is identical to DeltaNetMemory: forward(x, state) -> (x_out, new_state)
-    so _run_crawler state threading requires no changes.
-    Output projection is zero-initialized so it starts as a residual no-op.
-    """
-    def __init__(self, model_dim: int, n_heads: int, conv_size: int = 4):
-        super().__init__()
-        assert model_dim % n_heads == 0
-        self.n_heads = n_heads
-        self.head_dim = model_dim // n_heads
-        self._conv_size = conv_size
-        d = model_dim
-        H = n_heads
-        Dh = self.head_dim
-        inner = H * Dh
-        self.k_proj = nn.Linear(d, inner, bias=False)
-        self.v_proj = nn.Linear(d, inner, bias=False)
-        self.q_proj = nn.Linear(d, inner, bias=False)
-        self.b_proj = nn.Linear(d, H, bias=True)     # per-head beta (learning rate)
-        self.o_proj = nn.Linear(inner, d, bias=False)
-        nn.init.zeros_(self.o_proj.weight)            # start as identity (no-op)
-        # Causal depthwise short convolutions per Q/K/V (canonical per paper)
-        # padding=0 + explicit left-pad in forward ensures strict causality
-        self.q_conv = nn.Conv1d(inner, inner, conv_size, padding=0, groups=inner, bias=False)
-        self.k_conv = nn.Conv1d(inner, inner, conv_size, padding=0, groups=inner, bias=False)
-        self.v_conv = nn.Conv1d(inner, inner, conv_size, padding=0, groups=inner, bias=False)
-        self.norm = RMSNorm()
-
-    def _causal_conv(self, conv: nn.Conv1d, x: Tensor) -> Tensor:
-        """Left-pad then convolve: output[t] depends only on inputs[t-k+1..t]."""
-        T = x.size(1)
-        xT = F.pad(x.transpose(1, 2), (self._conv_size - 1, 0))  # [B, C, T+k-1]
-        return conv(xT).transpose(1, 2)                            # [B, T, C]
-
-    def forward(self, x: Tensor, state: Tensor | None) -> tuple[Tensor, Tensor]:
-        """
-        x:     [B, T, D]
-        state: [B, H, Dh, Dh] or None — carried from previous loop iteration
-        returns (x_out [B, T, D], new_state [B, H, Dh, Dh])
-        """
-        B, T, D = x.shape
-        H, Dh = self.n_heads, self.head_dim
-        # Project + causal short conv
-        q = self._causal_conv(self.q_conv, self.q_proj(x))  # [B, T, H*Dh]
-        k = self._causal_conv(self.k_conv, self.k_proj(x))
-        v = self._causal_conv(self.v_conv, self.v_proj(x))
-        beta = torch.sigmoid(self.b_proj(x))  # [B, T, H]
-        # L2-normalize Q/K (canonical qk_norm='l2')
-        q = F.normalize(q.reshape(B, T, H, Dh), dim=-1)   # [B, T, H, Dh]
-        k = F.normalize(k.reshape(B, T, H, Dh), dim=-1)
-        v = v.reshape(B, T, H, Dh)
-        # chunk_delta_rule requires q/k/v/beta to share dtype — mixed precision can diverge
-        dtype = x.dtype
-        q, k, v, beta = q.to(dtype), k.to(dtype), v.to(dtype), beta.to(dtype)
-        # Chunked CUDA delta rule — parallel over sequence, correct over loops
-        o, new_state = _fla_chunk_delta_rule(
-            q=q, k=k, v=v, beta=beta,
-            initial_state=state,
-            output_final_state=True,
-        )
-        y = o.reshape(B, T, H * Dh)
-        return self.norm(x + self.o_proj(y)), new_state
-
-
 # flat blocks (unique, U-Net enc/dec) + crawler blocks (shared, looped K times)
 # Compression: fewer unique blocks → same BPB → smaller artifact → freed budget
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1430,11 +1068,17 @@ class CrawlerGPT(nn.Module):
         ve_layers: str = "0",
         mlp_act: str = "relu_sq",
         mlp_leaky_slope: float = 0.5,
-        mixer_n_experts: int = 0,
-        mixer_loss_weight: float = 0.1,
-        mixer_neural_floor: float = 0.05,
+        crawler_mlp_leaky_slope: float = 0.5,
+        crawler_mlp_choke_dim: int = 0,
+        crawler_mlp_choke_shape: str = "flat",
+        crawler_mlp_choke_groups: int = 8,
+        crawler_loop_smear: bool = False,
+        crawler_tap_dim: int = 0,
+        crawler_tap_loop_specific: bool = True,
+        crawler_tap_layers: str = "all",
+        crawler_loop_rope_scales: tuple = (1, 1, 1),
+        crawler_cannon_type: str = "none",
         inst_dim: int = 32,
-        delta_net_heads: int = 0,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
@@ -1447,9 +1091,6 @@ class CrawlerGPT(nn.Module):
         self.num_crawler_layers = num_crawler_layers
         self.crawler_loops = crawler_loops
         self.inst_dim = inst_dim
-        self.mixer_n_experts = mixer_n_experts
-        self.mixer_loss_weight = mixer_loss_weight
-        self.mixer_neural_floor = mixer_neural_floor
         # Compatibility stubs
         self.mtp_num_heads = 0
         self.mtp_loss_weight = 0.0
@@ -1476,7 +1117,10 @@ class CrawlerGPT(nn.Module):
         self.crawler_blocks = nn.ModuleList([
             Block(model_dim, num_heads, num_kv_heads, crawler_mlp_mult, rope_base, qk_gain_init,
                   layer_idx=num_flat_layers + i, ln_scale=ln_scale, dtg=False,
-                  mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
+                  mlp_act=mlp_act, mlp_leaky_slope=crawler_mlp_leaky_slope,
+                  crawler_choke_dim=crawler_mlp_choke_dim, crawler_loops=crawler_loops,
+                  crawler_choke_shape=crawler_mlp_choke_shape,
+                  crawler_choke_groups=crawler_mlp_choke_groups)
             for i in range(num_crawler_layers)
         ])
         if rope_dims > 0:
@@ -1515,16 +1159,73 @@ class CrawlerGPT(nn.Module):
             self.loop_pos = None
             self.loop_inst_proj = None
             self.loop_inst_up = None
-        # DeltaNet memory — state carried between crawler loop iterations
-        # Uses canonical FLA chunk_delta_rule when available (CUDA parallel + short conv)
-        # Falls back to DeltaNetMemory (Python loop) if fla.ops not installed
-        if delta_net_heads > 0 and num_crawler_layers > 0:
-            if _HAS_FLA_OPS:
-                self.delta_net = CanonicalDeltaNet(model_dim, delta_net_heads)
-            else:
-                self.delta_net = DeltaNetMemory(model_dim, delta_net_heads)
+        self.delta_net = None
+        # Loop smear gate: blends each loop output with previous loop output
+        self.loop_smear = LoopSmearGate(model_dim) if (num_crawler_layers > 0 and crawler_loop_smear) else None
+        # Per-loop RoPE scale: scale > 1 → lower effective frequencies → wider attention range.
+        # loop_rope_scales=(1,3,9): loop 0 is local, loop 1 is 3× wider, loop 2 is 9× wider.
+        # Implemented by dividing inv_freq by scale before computing cos/sin per loop.
+        self.loop_rope_scales = (
+            crawler_loop_rope_scales
+            if any(s != 1 for s in crawler_loop_rope_scales)
+            else None
+        )
+        # Cannon: per-loop output calibration — controls what each loop fires into the residual.
+        # Applied to the delta (loop_out - loop_in) so cannon[loop]=1.0 is no-op at init.
+        # scalar: 1 learnable gain per loop (3 params total)
+        # channel: per-channel gain vector (3×dim params)
+        # rmsnorm: RMSNorm on the delta before residual addition
+        self.cannon_type = crawler_cannon_type
+        if crawler_cannon_type == "scalar" and num_crawler_layers > 0:
+            self.cannon = nn.ParameterList([
+                nn.Parameter(torch.ones(1)) for _ in range(crawler_loops)
+            ])
+        elif crawler_cannon_type == "channel" and num_crawler_layers > 0:
+            self.cannon = nn.ParameterList([
+                nn.Parameter(torch.ones(model_dim)) for _ in range(crawler_loops)
+            ])
+        elif crawler_cannon_type == "rmsnorm" and num_crawler_layers > 0:
+            self.cannon = nn.ModuleList([
+                nn.RMSNorm(model_dim) for _ in range(crawler_loops)
+            ])
         else:
-            self.delta_net = None
+            self.cannon = None
+            self.cannon_type = "none"
+        # Encoder tap: per-loop gated access to frozen intermediate encoder representations.
+        # Taps are projected once per forward pass; each loop injects via its own up-projection.
+        # loop_tap_up zero-init → warm start near current behavior.
+        if crawler_tap_dim > 0 and num_crawler_layers > 0:
+            if crawler_tap_layers == "all":
+                self.tap_layer_indices = list(range(self.flat_encoder_layers))
+            elif crawler_tap_layers == "deep":
+                self.tap_layer_indices = [self.flat_encoder_layers - 1]
+            elif crawler_tap_layers == "shallow":
+                self.tap_layer_indices = [0]
+            else:
+                self.tap_layer_indices = [int(i) for i in crawler_tap_layers.split(",") if i.strip()]
+            n_tap = len(self.tap_layer_indices)
+            tap_total_dim = crawler_tap_dim * n_tap
+            self.tap_proj = nn.ModuleList([
+                CastedLinear(model_dim, crawler_tap_dim, bias=False)
+                for _ in range(n_tap)
+            ])
+            if crawler_tap_loop_specific:
+                self.loop_tap_up = nn.ModuleList([
+                    CastedLinear(tap_total_dim, model_dim, bias=False)
+                    for _ in range(crawler_loops)
+                ])
+                for up in self.loop_tap_up:
+                    up._zero_init = True
+                self.shared_tap_up = None
+            else:
+                self.shared_tap_up = CastedLinear(tap_total_dim, model_dim, bias=False)
+                self.shared_tap_up._zero_init = True
+                self.loop_tap_up = None
+        else:
+            self.tap_layer_indices = []
+            self.tap_proj = None
+            self.loop_tap_up = None
+            self.shared_tap_up = None
         # VE on crawler blocks
         self.ve_layer_indices = [int(x) for x in ve_layers.split(",") if x.strip()] if ve_enabled else []
         kv_dim = self._ve_target_dim
@@ -1545,11 +1246,6 @@ class CrawlerGPT(nn.Module):
         self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
         if self.lm_head is not None:
             self.lm_head._zero_init = True
-        # Learned mixer head
-        if mixer_n_experts > 0:
-            self.alpha_head = nn.Linear(model_dim, mixer_n_experts, bias=True)
-        else:
-            self.alpha_head = None
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -1565,12 +1261,6 @@ class CrawlerGPT(nn.Module):
                     if ".proj." in name or name.endswith(".proj"):
                         with torch.no_grad():
                             module.weight.mul_(1.0 / math.sqrt(2 * total_layers))
-        if self.alpha_head is not None:
-            nn.init.zeros_(self.alpha_head.weight)
-            nn.init.zeros_(self.alpha_head.bias)
-            if self.mixer_n_experts > 0:
-                self.alpha_head.bias[0] = 2.0
-
     def _get_crawler_ve(self, crawler_idx: int, input_ids: Tensor, ve_cache: dict) -> Tensor | None:
         if self.ve_shared is None or crawler_idx not in self.ve_layer_indices:
             return None
@@ -1595,22 +1285,37 @@ class CrawlerGPT(nn.Module):
             x = self.flat_blocks[bi](x, x0)
         return x
 
-    def _run_crawler(self, x: Tensor, x0: Tensor, input_ids: Tensor, ve_cache: dict) -> Tensor:
+    def _run_crawler(self, x: Tensor, x0: Tensor, input_ids: Tensor, ve_cache: dict,
+                     enc_outputs: list | None = None) -> Tensor:
         # FLOW instructions: recompute from current x at each loop (not static x_enc pre-plan).
         # This makes each loop's instruction respond to what the previous loop produced,
         # reducing gradient conflict and activation distribution drift across loops.
+        x_prev_loop = x  # encoder output = stable anchor for loop 0 smear
 
-        # DeltaNet state — initialized to zero, carried across loop iterations
-        if self.delta_net is not None:
-            B, T, D = x.shape
-            delta_state = torch.zeros(
-                B, self.delta_net.n_heads, self.delta_net.head_dim, self.delta_net.head_dim,
-                device=x.device, dtype=x.dtype,
-            )
-        else:
-            delta_state = None
+        # Pre-compute per-loop cos/sin for RoPE battery (scale > 1 → wider attention range)
+        loop_cos_sin: list | None = None
+        if self.loop_rope_scales is not None:
+            seqlen = x.size(1)
+            rotary = self.crawler_blocks[0].attn.rotary
+            inv_freq = rotary.inv_freq.to(device=x.device, dtype=torch.float32)
+            t = torch.arange(seqlen, device=x.device, dtype=torch.float32)
+            loop_cos_sin = []
+            for scale in self.loop_rope_scales:
+                inv_freq_scaled = inv_freq / scale  # divide → lower freq → wider range
+                freqs = torch.outer(t, inv_freq_scaled)
+                cos = freqs.cos()[None, :, None, :].to(dtype=x.dtype)
+                sin = freqs.sin()[None, :, None, :].to(dtype=x.dtype)
+                loop_cos_sin.append((cos, sin))
+
+        # Compute encoder taps once (frozen encoder representations — no error accumulation)
+        tap_signal = None
+        if self.tap_proj is not None and enc_outputs is not None:
+            tap_parts = [self.tap_proj[i](enc_outputs[enc_idx])
+                         for i, enc_idx in enumerate(self.tap_layer_indices)]
+            tap_signal = torch.cat(tap_parts, dim=-1)  # [B, T, tap_dim * n_tap]
 
         for loop in range(self.crawler_loops):
+            x_before_loop = x  # save for cannon delta
             if self.loop_inst_proj is not None:
                 # Flow: project CURRENT x through shared bottleneck, expand with loop-specific up
                 inst_k = self.loop_inst_up[loop](self.loop_inst_proj(x))  # [B, T, model_dim]
@@ -1619,13 +1324,38 @@ class CrawlerGPT(nn.Module):
                 x_loop = x + self.loop_pos[loop]
             else:
                 x_loop = x
+            # Tap injection: stable encoder signal into each loop
+            if tap_signal is not None:
+                if self.loop_tap_up is not None:
+                    x_loop = x_loop + self.loop_tap_up[loop](tap_signal)
+                else:
+                    x_loop = x_loop + self.shared_tap_up(tap_signal)
+            lcs = loop_cos_sin[loop] if loop_cos_sin is not None else None
             for ci, block in enumerate(self.crawler_blocks):
                 ve = self._get_crawler_ve(ci, input_ids, ve_cache)
-                x_loop = block(x_loop, x0, v_embed=ve)
-            # DeltaNet: correct prediction errors, carry refined state to next loop
+                x_loop = block(x_loop, x0, v_embed=ve, loop_idx=loop, cos_sin=lcs)
+            # DeltaNet: causal within-loop associative memory; state NOT carried between loops.
+            # Cross-loop carry violates causality: final state from loop N encodes all positions
+            # 0..T-1, leaking future token information into loop N+1 at every position t < T-1.
+            # Fix: each loop starts from zero initial state — chunk_delta_rule is causal within
+            # a single call (processes tokens 0..T-1 left-to-right).
             if self.delta_net is not None:
-                x_loop, delta_state = self.delta_net(x_loop, delta_state)
-            x = x_loop
+                x_loop, _ = self.delta_net(x_loop, None)
+            if self.loop_smear is not None:
+                x_loop = self.loop_smear(x_loop, x_prev_loop)
+            x_prev_loop = x_loop
+            # Cannon: calibrate each loop's contribution to the residual stream.
+            # Operates on the delta so init (ones/identity) is a no-op.
+            if self.cannon is not None:
+                delta = x_loop - x_before_loop
+                if self.cannon_type in ("scalar", "channel"):
+                    x = x_before_loop + self.cannon[loop] * delta
+                elif self.cannon_type == "rmsnorm":
+                    x = x_before_loop + self.cannon[loop](delta)
+                else:
+                    x = x_loop
+            else:
+                x = x_loop
         return x
 
     def _compute_logits(self, x: Tensor) -> Tensor:
@@ -1635,9 +1365,7 @@ class CrawlerGPT(nn.Module):
             logits_proj = self.lm_head(x)
         return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
 
-    def forward(self, input_ids: Tensor, target_ids: Tensor,
-                ngram_expert_p: Tensor | None = None,
-                ngram_valid_mask: Tensor | None = None) -> Tensor:
+    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
@@ -1647,40 +1375,13 @@ class CrawlerGPT(nn.Module):
         x, skips = self._run_encoder(x, x0)
         ve_cache: dict = {}
         if self.num_crawler_layers > 0:
-            x = self._run_crawler(x, x0, input_ids, ve_cache)
+            x = self._run_crawler(x, x0, input_ids, ve_cache, enc_outputs=skips)
         x = self._run_decoder(x, x0, skips)
         x = self.final_norm(x)
         x_flat = x.reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
         logits = self._compute_logits(x_flat)
-        if hasattr(self, '_ngram_tracker') and self._ngram_tracker is not None and self.training:
-            per_tok_loss = F.cross_entropy(logits.float(), targets, reduction="none")
-            weights = self._ngram_tracker.get_weights(input_ids, target_ids)
-            main_loss = (per_tok_loss * weights).mean()
-        else:
-            main_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
-        # Mixer loss
-        if (self.training and self.alpha_head is not None and self.mixer_loss_weight > 0
-                and ngram_expert_p is not None and ngram_valid_mask is not None):
-            alpha_raw = self.alpha_head(x_flat.float())
-            with torch.no_grad():
-                neural_p = F.softmax(logits.float(), dim=-1).gather(1, targets.unsqueeze(1)).squeeze(1)
-            ngram_p_flat = ngram_expert_p.reshape(-1, ngram_expert_p.size(-1))
-            ngram_v_flat = ngram_valid_mask.reshape(-1, ngram_valid_mask.size(-1))
-            expert_p = torch.cat([neural_p.unsqueeze(1), ngram_p_flat.to(dtype=neural_p.dtype)], dim=1)
-            full_mask = torch.cat([
-                torch.ones(targets.size(0), 1, device=targets.device, dtype=torch.bool),
-                ngram_v_flat.to(device=targets.device),
-            ], dim=1)
-            gate = alpha_raw.masked_fill(~full_mask, -1e9)
-            weights_gate = F.softmax(gate, dim=-1)
-            nf = self.mixer_neural_floor
-            neural_w = nf + (1.0 - nf) * weights_gate[:, :1]
-            other_w = (1.0 - nf) * weights_gate[:, 1:]
-            weights_gate = torch.cat([neural_w, other_w], dim=1)
-            mixed_p = (weights_gate * expert_p.clamp(min=1e-12)).sum(dim=1)
-            mixer_loss = -torch.log(mixed_p.clamp(min=1e-12)).mean()
-            main_loss = main_loss + self.mixer_loss_weight * mixer_loss
+        main_loss = F.cross_entropy(logits.float(), targets, reduction="mean")
         return main_loss
 
     def forward_logits(self, input_ids: Tensor) -> Tensor:
@@ -1693,27 +1394,10 @@ class CrawlerGPT(nn.Module):
         x, skips = self._run_encoder(x, x0)
         ve_cache: dict = {}
         if self.num_crawler_layers > 0:
-            x = self._run_crawler(x, x0, input_ids, ve_cache)
+            x = self._run_crawler(x, x0, input_ids, ve_cache, enc_outputs=skips)
         x = self._run_decoder(x, x0, skips)
         x = self.final_norm(x)
         return self._compute_logits(x)
-
-    def forward_logits_and_alpha(self, input_ids: Tensor) -> tuple[Tensor, Tensor | None]:
-        x = self.tok_emb(input_ids)
-        if self.bigram is not None:
-            x = x + self.bigram(input_ids)
-        x = F.rms_norm(x, (x.size(-1),))
-        x = self.smear(x)
-        x0 = x
-        x, skips = self._run_encoder(x, x0)
-        ve_cache: dict = {}
-        if self.num_crawler_layers > 0:
-            x = self._run_crawler(x, x0, input_ids, ve_cache)
-        x = self._run_decoder(x, x0, skips)
-        x = self.final_norm(x)
-        logits = self._compute_logits(x)
-        alpha_raw = self.alpha_head(x.float()) if self.alpha_head is not None else None
-        return logits, alpha_raw
 
 
 def _get_block_named_params(model: nn.Module) -> list:
@@ -1725,7 +1409,6 @@ def _get_block_named_params(model: nn.Module) -> list:
 
 def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
     """Instantiate GPT or CrawlerGPT based on USE_CRAWLER env var."""
-    mixer_n_experts = (1 + args.mixer_n_orders) if args.mixer_enabled else 0
     if args.use_crawler:
         model = CrawlerGPT(
             vocab_size=args.vocab_size,
@@ -1752,11 +1435,17 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             ve_layers=args.ve_layers,
             mlp_act=args.mlp_act,
             mlp_leaky_slope=args.mlp_leaky_slope,
-            mixer_n_experts=mixer_n_experts,
-            mixer_loss_weight=args.mixer_loss_weight,
-            mixer_neural_floor=args.mixer_neural_floor,
+            crawler_mlp_leaky_slope=args.crawler_mlp_leaky_slope,
+            crawler_mlp_choke_dim=args.crawler_mlp_choke_dim,
+            crawler_mlp_choke_shape=args.crawler_mlp_choke_shape,
+            crawler_mlp_choke_groups=args.crawler_mlp_choke_groups,
+            crawler_loop_smear=args.crawler_loop_smear,
+            crawler_tap_dim=args.crawler_tap_dim,
+            crawler_tap_loop_specific=args.crawler_tap_loop_specific,
+            crawler_tap_layers=args.crawler_tap_layers,
+            crawler_loop_rope_scales=args.crawler_loop_rope_scales,
+            crawler_cannon_type=args.crawler_cannon_type,
             inst_dim=args.inst_dim,
-            delta_net_heads=args.delta_net_heads,
         )
     else:
         model = GPT(
@@ -1771,8 +1460,6 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             logit_softcap=args.logit_softcap,
             rope_base=args.rope_base,
             qk_gain_init=args.qk_gain_init,
-            mtp_num_heads=args.mtp_num_heads,
-            mtp_loss_weight=args.mtp_loss_weight,
             bigram_vocab_size=args.bigram_vocab_size,
             bigram_dim=args.bigram_dim,
             xsa_last_n=args.xsa_last_n,
@@ -1786,9 +1473,6 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             mlp_leaky_slope=args.mlp_leaky_slope,
             f1_corr_rank=args.f1_corr_rank,
             f1_corr_scale_init=args.f1_corr_scale_init,
-            mixer_n_experts=mixer_n_experts,
-            mixer_loss_weight=args.mixer_loss_weight,
-            mixer_neural_floor=args.mixer_neural_floor,
         )
     return model.to(device).bfloat16()
 
@@ -1896,547 +1580,6 @@ class RegimeTracker:
         return base_c / self.mult
 
 
-def _build_training_ngram_oracle(
-    data_path: str,
-    min_order: int,
-    max_order: int,
-    buckets: int,
-    max_shards: int = 2,
-) -> dict:
-    """Build n-gram count tables from training shards (PR #931 idea).
-
-    Uses identical XOR hash scheme as eval tables so they seed the eval cache.
-    Small buckets (e.g. 131072) give a warm prior even with collisions --
-    any prior beats a cold-start empty table.
-    """
-    primes = np.array(
-        [np.uint64(36313), np.uint64(27191), np.uint64(51647), np.uint64(81929),
-         np.uint64(131071), np.uint64(174763), np.uint64(233017)],
-        dtype=np.uint64,
-    )
-    mask = np.uint64(buckets - 1)
-    ctx_tbl = {n: np.zeros(buckets, dtype=np.uint32) for n in range(min_order, max_order + 1)}
-    full_tbl = {n: np.zeros(buckets, dtype=np.uint32) for n in range(min_order, max_order + 1)}
-    train_files = sorted(glob.glob(os.path.join(data_path, "fineweb_train_*.bin")))[:max_shards]
-    total_toks = 0
-    t0 = time.perf_counter()
-    for fpath in train_files:
-        header = np.fromfile(fpath, dtype="<i4", count=256)
-        if header.size < 256 or int(header[0]) != 20240520:
-            print(f"oracle:skipping_bad_shard {fpath}", flush=True)
-            continue
-        num_tokens = int(header[2])
-        tokens_np = np.fromfile(fpath, dtype="<u2", count=num_tokens,
-                                offset=256 * 4).astype(np.int64)
-        chunk_sz = 2_000_000
-        for start in range(0, len(tokens_np) - max_order, chunk_sz):
-            end = min(start + chunk_sz + max_order, len(tokens_np))
-            _ngram_bulk_update(tokens_np, start, end, ctx_tbl, full_tbl,
-                               min_order, max_order, primes, mask)
-        total_toks += num_tokens
-        print(f"oracle:shard_done path={fpath} toks={num_tokens} "
-              f"cumulative={total_toks} elapsed={time.perf_counter()-t0:.1f}s", flush=True)
-    print(f"oracle:build_complete total_toks={total_toks} buckets={buckets} "
-          f"orders={min_order}-{max_order} elapsed={time.perf_counter()-t0:.1f}s", flush=True)
-    return {"ctx_tables": ctx_tbl, "full_tables": full_tbl,
-            "buckets": buckets, "min_order": min_order, "max_order": max_order,
-            "total_tokens": total_toks}
-
-
-def _ngram_bulk_update(val_np, start, end, ctx_tables, full_tables,
-                       min_order, max_order, primes, mask):
-    """Bulk update n-gram tables with a contiguous range of tokens.
-    All ranks call this with the SAME token range -> identical tables everywhere."""
-    t = val_np[start:end].astype(np.uint64)
-    n = len(t)
-    for order in range(min_order, max_order + 1):
-        if n < order:
-            continue
-        ctx_width = order - 1
-        ctx_hash = np.zeros(n - order + 1, dtype=np.uint64)
-        for k in range(ctx_width):
-            ctx_hash ^= t[k:n - order + 1 + k] * primes[k % len(primes)]
-        ctx_key = (ctx_hash & mask).astype(np.int64)
-        tgt = t[order - 1:]
-        full_key = ((ctx_hash ^ (tgt * primes[ctx_width % len(primes)])) & mask).astype(np.int64)
-        ctx_tables[order] += np.bincount(ctx_key, minlength=len(ctx_tables[order])).astype(np.uint32)
-        full_tables[order] += np.bincount(full_key, minlength=len(full_tables[order])).astype(np.uint32)
-
-def eval_val_sliding_hashed_ngram(
-    args: Hyperparameters,
-    base_model: nn.Module,
-    rank: int,
-    world_size: int,
-    device: torch.device,
-    val_tokens: Tensor,
-    base_bytes_lut: Tensor,
-    has_leading_space_lut: Tensor,
-    is_boundary_token_lut: Tensor,
-    stride: int,
-    order: int,
-    alpha: float,
-    min_count: int,
-    buckets: int,
-    max_seconds: float = 0.0,
-    batch_seqs: int = 128,
-    eval_seq_len: int | None = None,
-    oracle_state: dict | None = None,
-) -> tuple[float, float, float]:
-    """Score-first sliding eval with chunk-based SHARED n-gram tables + cubric.
-
-    Key design: all ranks share identical n-gram tables via bulk chunk updates.
-    Each chunk's windows are distributed across ranks for scoring, then ALL ranks
-    update tables with the same contiguous token range. Every rank sees the full
-    n-gram picture (not 1/world_size like per-segment updates).
-
-    Legal: entire chunk scored before its tokens update the tables.
-    """
-    min_order = max(args.ngram_eval_min_order, 2)
-    max_order = max(order, min_order)
-    adaptive = args.ngram_eval_adaptive
-    alpha_min = args.ngram_eval_alpha_min
-    alpha_max = args.ngram_eval_alpha_max
-    ent_center = args.ngram_eval_entropy_center
-    ent_scale = args.ngram_eval_entropy_scale
-
-    # Parse fixed per-order multipliers (PR #809 style)
-    _fixed_order_mults = None
-    if args.ngram_order_mults_str:
-        _fixed_order_mults = np.array([float(x) for x in args.ngram_order_mults_str.split(",")], dtype=np.float64)
-
-    seq_len = eval_seq_len or args.train_seq_len
-    total_tokens = val_tokens.numel() - 1
-
-    # Build all windows and total scored tokens
-    all_window_starts = [ws for ws in range(0, total_tokens, stride) if min(ws + seq_len, total_tokens) - ws >= 1]
-    total_scored_tokens = 0.0
-    for ws in all_window_starts:
-        end = min(ws + seq_len, total_tokens)
-        wlen = end - ws
-        s = 0 if ws == 0 else max(wlen - stride, 0)
-        total_scored_tokens += float(max(wlen - s, 0))
-
-    # Group windows into chunks by scored position -- all ranks share this grouping
-    chunk_tokens = int(os.environ.get("NGRAM_CHUNK_TOKENS", "1048576"))  # 1M default
-    num_chunks = (total_tokens + chunk_tokens - 1) // chunk_tokens
-    chunk_windows: list[list[int]] = [[] for _ in range(num_chunks)]
-    for ws in all_window_starts:
-        end = min(ws + seq_len, total_tokens)
-        wlen = end - ws
-        s = 0 if ws == 0 else max(wlen - stride, 0)
-        scored_start = ws + s
-        ci = min(scored_start // chunk_tokens, num_chunks - 1)
-        chunk_windows[ci].append(ws)
-
-    val_np = val_tokens.numpy()
-    ctx_tables = {n: np.zeros((buckets,), dtype=np.uint32) for n in range(min_order, max_order + 1)}
-    full_tables = {n: np.zeros((buckets,), dtype=np.uint32) for n in range(min_order, max_order + 1)}
-    mask = np.uint64(buckets - 1)
-    primes = NGRAM_PRIMES
-
-    # Purple-1 (PR #931): seed tables from pre-built training oracle if provided
-    if oracle_state is not None and oracle_state.get("buckets") == buckets:
-        for n in range(min_order, max_order + 1):
-            if n in oracle_state["ctx_tables"]:
-                ctx_tables[n][:] = oracle_state["ctx_tables"][n]
-                full_tables[n][:] = oracle_state["full_tables"][n]
-        if rank == 0:
-            print(f"oracle:seeded_eval_tables from {oracle_state.get('total_tokens', 0)} "
-                  f"training tokens buckets={buckets}", flush=True)
-    elif oracle_state is not None and rank == 0:
-        print(f"oracle:bucket_mismatch oracle_buckets={oracle_state.get('buckets')} "
-              f"eval_buckets={buckets} (no seeding)", flush=True)
-
-    loss_sum = 0.0
-    token_count = 0.0
-    byte_count = 0.0
-
-    # Cubric 3D: per (order × entropy_bin × count_bin) adaptive alpha scaling
-    _NUM_ENT_BINS = 3  # low / mid / high entropy
-    _NUM_CNT_BINS = 3  # low / mid / high count
-    _ENT_EDGES = np.array([ent_center - 1.0, ent_center + 1.0])  # [2.0, 4.0] for center=3.0
-    _CNT_EDGES = np.array([5.0, 50.0])  # low=<5, mid=5-50, high=>50 context count
-    _TOTAL_CELLS = _NUM_ENT_BINS * _NUM_CNT_BINS  # 9 cells per order = 54 total
-    _cc = getattr(args, 'cubric_cadence', 0); _con = _cc > 0; _cfired = 0
-    if _con:
-        # Warm-start: proven converged values from 4+ runs (orders 2-7)
-        # All 9 cells per order get the same warm-start, 3D cubric refines from there
-        _WARM = {2: 0.45, 3: 0.30, 4: 0.45, 5: 1.88, 6: 2.00, 7: 2.00, 8: 2.00, 9: 2.00}
-        _c_alpha_mult = {n: [_WARM.get(n, 1.0)] * _TOTAL_CELLS for n in range(min_order, max_order + 1)}
-        _c_hits = {n: [0] * _TOTAL_CELLS for n in range(min_order, max_order + 1)}
-        _c_beats = {n: [0] * _TOTAL_CELLS for n in range(min_order, max_order + 1)}
-
-    # Phrase cache (PR #880 / PR #900): variable-length suffix matching, score-first
-    # 48 distinct primes — one per context position up to max probe length
-    _PHRASE_PRIMES = np.array([
-        np.uint64(36313),   np.uint64(27191),   np.uint64(51647),   np.uint64(81929),
-        np.uint64(131071),  np.uint64(174763),  np.uint64(233017),  np.uint64(295759),
-        np.uint64(393241),  np.uint64(524287),  np.uint64(655373),  np.uint64(786433),
-        np.uint64(917503),  np.uint64(1048583), np.uint64(1179649), np.uint64(1310723),
-        np.uint64(1441793), np.uint64(1572869), np.uint64(1703939), np.uint64(1835009),
-        np.uint64(1966081), np.uint64(2097169), np.uint64(2228231), np.uint64(2359297),
-        np.uint64(2490373), np.uint64(2621447), np.uint64(2752519), np.uint64(2883593),
-        np.uint64(3014657), np.uint64(3145739), np.uint64(3276803), np.uint64(3407873),
-        np.uint64(3538951), np.uint64(3670021), np.uint64(3801089), np.uint64(3932161),
-        np.uint64(4063241), np.uint64(4194319), np.uint64(4325399), np.uint64(4456481),
-        np.uint64(4587569), np.uint64(4718609), np.uint64(4849681), np.uint64(4980751),
-        np.uint64(5111809), np.uint64(5242883), np.uint64(5373961), np.uint64(5505047),
-    ], dtype=np.uint64)
-    _use_phrase = getattr(args, 'phrase_cache_enabled', False)
-    _phrase_probes = (
-        [int(x) for x in args.phrase_probe_lengths_str.split(",") if x.strip()]
-        if _use_phrase and getattr(args, 'phrase_probe_lengths_str', '') else []
-    )
-    _pb = int(getattr(args, 'phrase_buckets', 4_194_304))
-    _pm = np.uint64(_pb - 1)
-    _pmc = int(getattr(args, 'phrase_min_count', 1))
-    _ph_ctx  = [np.zeros(_pb, dtype=np.uint32) for _ in _phrase_probes]
-    _ph_full = [np.zeros(_pb, dtype=np.uint32) for _ in _phrase_probes]
-    _regime = RegimeTracker() if getattr(args, 'regime_tracker_enabled', False) else None
-    if _use_phrase and rank == 0:
-        print(f"phrase_cache:probes={_phrase_probes} buckets={_pb} "
-              f"conc={getattr(args, 'phrase_concentration', 2.0)} "
-              f"regime={_regime is not None}", flush=True)
-
-    base_model.eval()
-    _use_learned_alpha = (hasattr(base_model, 'alpha_head') and base_model.alpha_head is not None)
-    if _use_learned_alpha:
-        _compiled_la = maybe_torch_compile(base_model.forward_logits_and_alpha, args)
-    compiled_logits = maybe_torch_compile(base_model.forward_logits, args)
-    t0 = time.perf_counter()
-    deadline = (t0 + max_seconds) if max_seconds > 0.0 else None
-    cutoff_hit = False
-
-    if rank == 0:
-        print(f"ngram_eval:chunks={num_chunks} chunk_tokens={chunk_tokens} "
-              f"windows={len(all_window_starts)} shared_tables=True", flush=True)
-
-    with torch.inference_mode():
-        for ci in range(num_chunks):
-            if deadline is not None and time.perf_counter() >= deadline:
-                cutoff_hit = True
-                break
-
-            windows = chunk_windows[ci]
-            if not windows:
-                continue
-
-            # Distribute this chunk's windows across ranks
-            my_s = (len(windows) * rank) // world_size
-            my_e = (len(windows) * (rank + 1)) // world_size
-            my_windows = windows[my_s:my_e]
-
-            # --- Phase 1: SCORE this chunk's windows ---
-            for bi in range(0, len(my_windows), batch_seqs):
-                batch_ws = my_windows[bi:bi + batch_seqs]
-                bsz = len(batch_ws)
-                x_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
-                y_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
-                wlens: list[int] = []
-                for i, ws in enumerate(batch_ws):
-                    end = min(ws + seq_len, total_tokens)
-                    wlen = end - ws
-                    wlens.append(wlen)
-                    chunk = val_tokens[ws:end + 1].to(dtype=torch.int64, device=device)
-                    x_batch[i, :wlen] = chunk[:-1]
-                    y_batch[i, :wlen] = chunk[1:]
-
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    if _use_learned_alpha:
-                        logits, alpha_raw_batch = _compiled_la(x_batch)
-                    else:
-                        logits = compiled_logits(x_batch)
-                        alpha_raw_batch = None
-                logits_f = logits.float()
-                nll = F.cross_entropy(
-                    logits_f.reshape(-1, logits_f.size(-1)),
-                    y_batch.reshape(-1),
-                    reduction="none",
-                ).reshape(bsz, seq_len)
-
-                for i, ws in enumerate(batch_ws):
-                    wlen = wlens[i]
-                    s = 0 if ws == 0 else max(wlen - stride, 0)
-                    seg_len = wlen - s
-                    if seg_len <= 0:
-                        continue
-
-                    seg_nll = nll[i, s:wlen].to(torch.float64).cpu().numpy()
-                    seg_model_p = np.exp(-seg_nll)
-
-                    if not _use_learned_alpha and adaptive:
-                        log_probs = F.log_softmax(logits_f[i, s:wlen], dim=-1)
-                        probs_a = log_probs.exp()
-                        entropy = -(probs_a * log_probs).sum(dim=-1).cpu().numpy()
-                        sig = 1.0 / (1.0 + np.exp(-ent_scale * (entropy - ent_center)))
-                        per_token_alpha = alpha_min + (alpha_max - alpha_min) * sig
-                        # Bin entropy for 2D cubric: 0=low, 1=mid, 2=high
-                        _ent_bins = np.digitize(entropy, _ENT_EDGES).astype(np.int32)
-                    elif not _use_learned_alpha:
-                        per_token_alpha = np.full(seg_len, alpha)
-                        _ent_bins = np.ones(seg_len, dtype=np.int32)  # all mid
-
-                    global_j = np.arange(ws + s + 1, ws + wlen + 1, dtype=np.int64)
-                    tgt_np = val_np[global_j].astype(np.uint64)
-
-                    if _use_learned_alpha:
-                        # Learned mixer: get per-order probs and blend with learned weights
-                        n_orders = max_order - min_order + 1
-                        order_p = np.full((seg_len, n_orders), 1.0 / 1024.0, dtype=np.float64)
-                        order_valid = np.zeros((seg_len, n_orders), dtype=np.bool_)
-                        for oi, n in enumerate(range(min_order, max_order + 1)):
-                            ctx_width = n - 1
-                            valid = global_j >= ctx_width
-                            if not valid.any():
-                                continue
-                            v_idx = np.nonzero(valid)[0]
-                            jv = global_j[v_idx]
-                            ctx_hash = np.zeros(len(jv), dtype=np.uint64)
-                            for k in range(ctx_width):
-                                tok = val_np[jv - (ctx_width - k)].astype(np.uint64)
-                                ctx_hash ^= tok * primes[k % len(primes)]
-                            ctx_key = (ctx_hash & mask).astype(np.int64)
-                            full_key = ((ctx_hash ^ (tgt_np[v_idx] * primes[ctx_width % len(primes)])) & mask).astype(np.int64)
-                            ctx_c = ctx_tables[n][ctx_key].astype(np.float64)
-                            full_c = full_tables[n][full_key].astype(np.float64)
-                            has_data = ctx_c >= float(min_count)
-                            if has_data.any():
-                                p = np.minimum(full_c[has_data], ctx_c[has_data]) / np.maximum(ctx_c[has_data], 1.0)
-                                hit_idx = v_idx[has_data]
-                                order_p[hit_idx, oi] = np.clip(p, 0.0, 1.0)
-                                order_valid[hit_idx, oi] = True
-                        # Build expert_p: [neural_p, order2_p, ..., orderN_p]
-                        expert_p = np.concatenate([seg_model_p[:, None], order_p], axis=1)  # (seg_len, 1+n_orders)
-                        # Get learned alpha weights for this segment
-                        seg_alpha = alpha_raw_batch[i, s:wlen].float().cpu().numpy()  # (seg_len, n_experts)
-                        # Masked softmax
-                        full_mask = np.concatenate([
-                            np.ones((seg_len, 1), dtype=np.bool_),
-                            order_valid,
-                        ], axis=1)
-                        seg_alpha_masked = np.where(full_mask, seg_alpha, -1e9)
-                        # Softmax
-                        seg_alpha_masked -= seg_alpha_masked.max(axis=1, keepdims=True)
-                        exp_a = np.exp(seg_alpha_masked)
-                        weights = exp_a / exp_a.sum(axis=1, keepdims=True)
-                        # Neural floor
-                        nf = getattr(base_model, 'mixer_neural_floor', 0.05)
-                        weights[:, 0] = nf + (1.0 - nf) * weights[:, 0]
-                        weights[:, 1:] = (1.0 - nf) * weights[:, 1:]
-                        # Renormalize
-                        weights /= weights.sum(axis=1, keepdims=True)
-                        # Blend
-                        seg_model_p = np.clip((weights * expert_p).sum(axis=1), 1e-12, 1.0)
-                    else:
-                        # Backoff: highest matching order wins
-                        p_ng = np.zeros(seg_len, dtype=np.float64)
-                        ng_matched = np.zeros(seg_len, dtype=np.bool_)
-                        _ng_ord = np.zeros(seg_len, dtype=np.int32)
-                        _ng_ctx_count = np.zeros(seg_len, dtype=np.float64)
-                        for n in range(max_order, min_order - 1, -1):
-                            ctx_width = n - 1
-                            valid = (global_j >= ctx_width) & (~ng_matched)
-                            if not valid.any():
-                                continue
-                            v_idx = np.nonzero(valid)[0]
-                            jv = global_j[v_idx]
-                            ctx_hash = np.zeros(len(jv), dtype=np.uint64)
-                            for k in range(ctx_width):
-                                tok = val_np[jv - (ctx_width - k)].astype(np.uint64)
-                                ctx_hash ^= tok * primes[k % len(primes)]
-                            ctx_key = (ctx_hash & mask).astype(np.int64)
-                            full_key = ((ctx_hash ^ (tgt_np[v_idx] * primes[ctx_width % len(primes)])) & mask).astype(np.int64)
-                            ctx_counts = ctx_tables[n][ctx_key].astype(np.float64)
-                            full_counts = full_tables[n][full_key].astype(np.float64)
-                            has_data = ctx_counts >= float(min_count)
-                            if has_data.any():
-                                p = np.minimum(full_counts, ctx_counts) / np.maximum(ctx_counts, 1.0)
-                                p = np.clip(p, 0.0, 1.0)
-                                hit_idx = v_idx[has_data]
-                                p_ng[hit_idx] = p[has_data]
-                                ng_matched[hit_idx] = True
-                                _ng_ord[hit_idx] = n
-                                _ng_ctx_count[hit_idx] = ctx_counts[has_data]
-
-                        # Mix where n-gram matched
-                        if ng_matched.any():
-                            m_idx = np.nonzero(ng_matched)[0]
-                            if getattr(args, 'ngram_dirichlet', False):
-                                # Purple-1 (PR #900): Dirichlet-Multinomial smoothing.
-                                # p = (ng_count + c * neural_p) / (ctx_count + c)
-                                c = getattr(args, 'ngram_dirichlet_conc', 5.0)
-                                seg_model_p[m_idx] = (
-                                    p_ng[m_idx] * _ng_ctx_count[m_idx] + c * seg_model_p[m_idx]
-                                ) / (_ng_ctx_count[m_idx] + c)
-                            else:
-                                # Existing path: entropy-adaptive alpha + cubric / order multipliers
-                                if adaptive and args.ngram_entropy_shift:
-                                    matched_ords = _ng_ord[m_idx].astype(np.float64)
-                                    shifted_centers = ent_center - 0.25 * (matched_ords - float(min_order))
-                                    shifted_sig = 1.0 / (1.0 + np.exp(-ent_scale * (entropy[m_idx] - shifted_centers)))
-                                    per_token_alpha[m_idx] = alpha_min + (alpha_max - alpha_min) * shifted_sig
-                                if _fixed_order_mults is not None:
-                                    a = per_token_alpha[m_idx].copy()
-                                    mult_indices = _ng_ord[m_idx] - min_order
-                                    mult_indices = np.clip(mult_indices, 0, len(_fixed_order_mults) - 1)
-                                    a *= _fixed_order_mults[mult_indices]
-                                    np.clip(a, 0.0, 0.95, out=a)
-                                elif _con:
-                                    a = per_token_alpha[m_idx].copy()
-                                    m_ent_bins = _ent_bins[m_idx]
-                                    m_cnt_bins = np.digitize(_ng_ctx_count[m_idx], _CNT_EDGES).astype(np.int32)
-                                    for n in range(min_order, max_order + 1):
-                                        om = _ng_ord[m_idx] == n
-                                        if not om.any():
-                                            continue
-                                        for eb in range(_NUM_ENT_BINS):
-                                            for cb in range(_NUM_CNT_BINS):
-                                                cell = eb * _NUM_CNT_BINS + cb
-                                                mask_ecb = om & (m_ent_bins == eb) & (m_cnt_bins == cb)
-                                                if mask_ecb.any():
-                                                    _c_hits[n][cell] += int(mask_ecb.sum())
-                                                    _c_beats[n][cell] += int((p_ng[m_idx[mask_ecb]] > seg_model_p[m_idx[mask_ecb]]).sum())
-                                                    a[mask_ecb] *= _c_alpha_mult[n][cell]
-                                    np.clip(a, 0.0, 0.95, out=a)
-                                else:
-                                    a = per_token_alpha[m_idx]
-                                seg_model_p[m_idx] = (1.0 - a) * seg_model_p[m_idx] + a * p_ng[m_idx]
-
-                    # Phrase cache: variable-length suffix lookup + Dirichlet blend (PR #880/900)
-                    # Applied after n-gram mixing, still within score-first protocol.
-                    if _use_phrase and _phrase_probes:
-                        base_pc = getattr(args, 'phrase_concentration', 2.0)
-                        eff_c = (_regime.effective_concentration(base_pc)
-                                 if _regime is not None else base_pc)
-                        _regime_matches = 0
-                        for pi, pl in enumerate(_phrase_probes):
-                            eligible = global_j >= pl
-                            if not eligible.any():
-                                continue
-                            ei = np.where(eligible)[0]
-                            gj = global_j[ei]
-                            tgt_u = val_np[gj].astype(np.uint64)
-                            ph = np.zeros(len(gj), dtype=np.uint64)
-                            for k in range(pl):
-                                ph ^= val_np[gj - pl + k].astype(np.uint64) * _PHRASE_PRIMES[k % len(_PHRASE_PRIMES)]
-                            ck = (ph & _pm).astype(np.int64)
-                            fk = ((ph ^ (tgt_u * _PHRASE_PRIMES[pl % len(_PHRASE_PRIMES)])) & _pm).astype(np.int64)
-                            cc = _ph_ctx[pi][ck].astype(np.float64)
-                            fc = _ph_full[pi][fk].astype(np.float64)
-                            has_ctx = cc >= _pmc
-                            if not has_ctx.any():
-                                continue
-                            ui = ei[has_ctx]
-                            # Dirichlet: p = (count + c * neural) / (ctx + c)
-                            seg_model_p[ui] = (
-                                np.minimum(fc[has_ctx], cc[has_ctx]) + eff_c * seg_model_p[ui]
-                            ) / (cc[has_ctx] + eff_c)
-                            _regime_matches += int(has_ctx.sum())
-                        seg_model_p = np.clip(seg_model_p, 1e-12, 1.0)
-                        if _regime is not None:
-                            _regime.update(_regime_matches, seg_len, val_np[global_j])
-
-                    seg_nll = -np.log(np.clip(seg_model_p, 1e-12, 1.0))
-                    loss_sum += float(seg_nll.sum())
-                    token_count += float(seg_len)
-                    tgt = y_batch[i, s:wlen]
-                    prev = x_batch[i, s:wlen]
-                    tb = base_bytes_lut[tgt].to(torch.float64)
-                    tb += (has_leading_space_lut[tgt] & ~is_boundary_token_lut[prev]).to(torch.float64)
-                    byte_count += float(tb.sum().item())
-
-            # --- Phase 2: SHARED UPDATE -- all ranks update with same chunk tokens ---
-            chunk_start = ci * chunk_tokens
-            chunk_end = min((ci + 1) * chunk_tokens, total_tokens)
-            _ngram_bulk_update(val_np, chunk_start, chunk_end + 1,
-                               ctx_tables, full_tables, min_order, max_order,
-                               primes, mask)
-
-            # Phase 2b: score-first phrase table update (same chunk range)
-            if _use_phrase and _phrase_probes:
-                for pi, pl in enumerate(_phrase_probes):
-                    first = max(chunk_start, pl)
-                    if first > chunk_end:
-                        continue
-                    positions = np.arange(first, chunk_end + 1, dtype=np.int64)
-                    tgt_u = val_np[positions].astype(np.uint64)
-                    ph = np.zeros(len(positions), dtype=np.uint64)
-                    for k in range(pl):
-                        ph ^= val_np[positions - pl + k].astype(np.uint64) * _PHRASE_PRIMES[k % len(_PHRASE_PRIMES)]
-                    ck = (ph & _pm).astype(np.int64)
-                    fk = ((ph ^ (tgt_u * _PHRASE_PRIMES[pl % len(_PHRASE_PRIMES)])) & _pm).astype(np.int64)
-                    _ph_ctx[pi]  += np.bincount(ck, minlength=_pb).astype(np.uint32)
-                    _ph_full[pi] += np.bincount(fk, minlength=_pb).astype(np.uint32)
-
-            # Cubric 2D c-step: adapt per (order × entropy_bin)
-            if _con:
-                # Collect all (order, ent_bin, cnt_bin) cells with enough data
-                all_rates = []
-                for n in range(min_order, max_order + 1):
-                    for cell in range(_TOTAL_CELLS):
-                        if _c_hits[n][cell] >= 8:
-                            all_rates.append(_c_beats[n][cell] / _c_hits[n][cell])
-                if len(all_rates) >= 4:
-                    avg_rate = sum(all_rates) / len(all_rates)
-                    for n in range(min_order, max_order + 1):
-                        for cell in range(_TOTAL_CELLS):
-                            if _c_hits[n][cell] >= 8:
-                                rate = _c_beats[n][cell] / _c_hits[n][cell]
-                                if rate > avg_rate + 0.05:
-                                    _c_alpha_mult[n][cell] = min(_c_alpha_mult[n][cell] * 1.03, 2.0)
-                                elif rate < avg_rate - 0.05:
-                                    _c_alpha_mult[n][cell] = max(_c_alpha_mult[n][cell] * 0.97, 0.3)
-                _cfired += 1
-                if rank == 0 and _cfired % 8 == 0:
-                    parts = []
-                    for n in range(min_order, max_order + 1):
-                        m = _c_alpha_mult[n]
-                        avg_m = sum(m) / len(m)
-                        parts.append(f"o{n}:avg={avg_m:.2f}")
-                    print(f"cubric3d:step={_cfired} {' '.join(parts)}", flush=True)
-                _c_hits = {n: [0] * _TOTAL_CELLS for n in range(min_order, max_order + 1)}
-                _c_beats = {n: [0] * _TOTAL_CELLS for n in range(min_order, max_order + 1)}
-
-            # Progress
-            if rank == 0 and (ci % 10 == 0 or ci == num_chunks - 1 or ci < 3):
-                elapsed = time.perf_counter() - t0
-                cur_bpb = (loss_sum / max(token_count, 1.0)) / math.log(2.0) * (token_count / max(byte_count, 1.0)) if token_count > 0 else 0.0
-                print(
-                    f"ngram_eval:chunk [{ci+1}/{num_chunks}] bpb={cur_bpb:.6f} t={elapsed:.0f}s",
-                    flush=True,
-                )
-
-    # All-reduce across ranks
-    _loss = torch.tensor(loss_sum, device=device, dtype=torch.float64)
-    _toks = torch.tensor(token_count, device=device, dtype=torch.float64)
-    _bytes = torch.tensor(byte_count, device=device, dtype=torch.float64)
-    if dist.is_available() and dist.is_initialized():
-        dist.all_reduce(_loss, op=dist.ReduceOp.SUM)
-        dist.all_reduce(_toks, op=dist.ReduceOp.SUM)
-        dist.all_reduce(_bytes, op=dist.ReduceOp.SUM)
-    loss_sum = _loss.item()
-    token_count = _toks.item()
-    byte_count = _bytes.item()
-
-    coverage = token_count / max(total_scored_tokens, 1.0)
-    if cutoff_hit:
-        elapsed = time.perf_counter() - t0
-        print(
-            f"ngram_eval:cutoff max_seconds={max_seconds:.1f} "
-            f"coverage={coverage*100:.2f}% elapsed={elapsed:.0f}s",
-            flush=True,
-        )
-
-    if _con and rank == 0:
-        print(f"cubric3d:final c_steps={_cfired} cells={_TOTAL_CELLS}x{max_order-min_order+1}={_TOTAL_CELLS*(max_order-min_order+1)}", flush=True)
-        for n in range(min_order, max_order + 1):
-            m = _c_alpha_mult[n]
-            row = " ".join(f"{m[cell]:.2f}" for cell in range(_TOTAL_CELLS))
-            print(f"  o{n}: [{row}]", flush=True)
-    val_loss = loss_sum / max(token_count, 1.0)
-    val_bpb = val_loss / math.log(2.0) * (token_count / max(byte_count, 1.0))
-    base_model.train()
-    return val_loss, val_bpb, coverage
 def _classify_param(name: str) -> str:
     if "tok_emb" in name or "lm_head" in name:
         return "embed"
@@ -2447,155 +1590,6 @@ def _classify_param(name: str) -> str:
     if ".attn." in name or (".proj." in name and ".mlp." not in name):
         return "attn"
     return "other"
-# ---------------------------------------------------------------------------
-# GPTQ: Hessian-aware quantization with column-wise error compensation
-# ---------------------------------------------------------------------------
-def _find_best_row_scales(W: Tensor, clip_range: int = 31) -> Tensor:
-    """Find optimal per-row scales by searching percentile clipping thresholds."""
-    t32 = W.float()
-    best_s = t32.abs().amax(dim=1) / clip_range
-    best_s = best_s.clamp_min(1.0 / clip_range)
-    best_err = torch.full((t32.shape[0],), float('inf'))
-    for pct in [0.9990, 0.9995, 0.9999, 0.99999, 1.0]:
-        if pct < 1.0:
-            row_clip = torch.quantile(t32.abs(), pct, dim=1)
-        else:
-            row_clip = t32.abs().amax(dim=1)
-        s = (row_clip / clip_range).clamp_min(1.0 / clip_range)
-        q = torch.clamp(torch.round(t32 / s[:, None]), -clip_range, clip_range)
-        recon = q * s[:, None]
-        err = (t32 - recon).pow(2).mean(dim=1)
-        improved = err < best_err
-        best_s[improved] = s[improved]
-        best_err[improved] = err[improved]
-    return best_s
-def gptq_quantize_weight(W: Tensor, H: Tensor, clip_range: int = 31,
-                          block_size: int = 64, percdamp: float = 0.002) -> tuple[Tensor, Tensor]:
-    """GPTQ: quantize weight matrix W using Hessian H = X^T X for error compensation.
-    Uses pre-computed per-row scales and column reordering by Hessian diagonal.
-    Returns (quantized_int8, scale_fp16) in int6 range [-clip_range, clip_range]."""
-    W = W.float().clone()
-    rows, cols = W.shape
-    # Pre-compute optimal per-row scales from the original weight matrix
-    row_scale = _find_best_row_scales(W, clip_range)
-    H = H.float().clone()
-    damp = percdamp * H.diag().mean()
-    H.diagonal().add_(damp)
-    # Column reordering: process least-important columns first (ascending H_diag)
-    perm = torch.argsort(H.diag())
-    invperm = torch.argsort(perm)
-    W = W[:, perm]
-    H = H[perm][:, perm]
-    try:
-        L = torch.linalg.cholesky(H)
-        Hinv = torch.cholesky_inverse(L)
-    except torch._C._LinAlgError:
-        Hinv = torch.diag(1.0 / H.diag().clamp_min(1e-6))
-    Q = torch.zeros(rows, cols, dtype=torch.int8)
-    for i1 in range(0, cols, block_size):
-        i2 = min(i1 + block_size, cols)
-        W_block = W[:, i1:i2].clone()
-        Hinv_block = Hinv[i1:i2, i1:i2]
-        Err = torch.zeros_like(W_block)
-        for j in range(i2 - i1):
-            w_col = W_block[:, j]
-            h_inv_jj = Hinv_block[j, j].clamp_min(1e-8)
-            # Quantize using pre-computed per-row scales
-            q_col = torch.clamp(torch.round(w_col / row_scale), -clip_range, clip_range)
-            deq_col = q_col * row_scale
-            Q[:, i1 + j] = q_col.to(torch.int8)
-            err = (w_col - deq_col) / h_inv_jj
-            Err[:, j] = err
-            if j + 1 < i2 - i1:
-                W_block[:, j + 1:] -= err.unsqueeze(1) * Hinv_block[j, j + 1:].unsqueeze(0)
-        if i2 < cols:
-            W[:, i2:] -= Err @ Hinv[i1:i2, i2:]
-    # Undo column reordering
-    Q = Q[:, invperm]
-    return Q, row_scale.to(torch.float16)
-def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
-                   n_samples: int = 256, seq_len: int = 2048) -> dict[str, Tensor]:
-    """Collect Hessian H = X^T X for each linear layer using training data."""
-    hessians: dict[str, Tensor] = {}
-    n_seen: dict[str, int] = {}
-    hooks = []
-    def make_hook(name: str):
-        def hook_fn(module, inp, out):
-            x = inp[0].detach().float()
-            if x.ndim == 3:
-                x = x.reshape(-1, x.shape[-1])
-            if name not in hessians:
-                hessians[name] = torch.zeros(x.shape[1], x.shape[1], device=x.device, dtype=torch.float32)
-                n_seen[name] = 0
-            hessians[name].addmm_(x.t(), x)
-            n_seen[name] += x.shape[0]
-        return hook_fn
-    for name, module in model.named_modules():
-        if isinstance(module, (nn.Linear, CastedLinear)):
-            hooks.append(module.register_forward_hook(make_hook(name)))
-    stream = TokenStream(train_pattern)
-    model.eval()
-    with torch.no_grad():
-        for _ in range(n_samples):
-            tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
-            x = tokens[:-1].unsqueeze(0)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model.forward_logits(x)
-    for h in hooks:
-        h.remove()
-    for name in hessians:
-        hessians[name] /= max(n_seen[name], 1)
-    return hessians
-def mixed_quantize_int6_gptq(state_dict: dict[str, Tensor], int6_cats: set[str],
-                              hessians: dict[str, Tensor],
-                              crawler_int8: bool = False) -> tuple[dict, dict]:
-    """Like mixed_quantize_int6 but uses GPTQ for int6 categories when Hessian available."""
-    result: dict[str, Tensor] = {}
-    meta: dict[str, object] = {}
-    gptq_count, naive_count = 0, 0
-    for name, tensor in state_dict.items():
-        t = tensor.detach().cpu().contiguous()
-        cat = _classify_param(name)
-        if not t.is_floating_point() or t.numel() <= 65536:
-            result[name] = t.to(torch.float16) if t.is_floating_point() else t
-            meta[name] = "passthrough"
-            continue
-        if any(p in name for p in CONTROL_TENSOR_NAME_PATTERNS):
-            result[name] = t.float()
-            meta[name] = "passthrough_ctrl"
-            continue
-        # Crawler reservoir: shared block used K times — give it int8 range (±127) for multi-context resilience
-        if crawler_int8 and name.startswith("crawler_blocks.") and t.is_floating_point() and t.numel() > 65536:
-            q, s = quantize_float_tensor(t)  # int8 ±127 — wider range for shared weights serving K loop contexts
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int8"}
-            continue
-        if cat in int6_cats and t.ndim == 2:
-            module_name = name.rsplit(".weight", 1)[0] if name.endswith(".weight") else name
-            H = hessians.get(module_name)
-            if H is not None and H.shape[0] == t.shape[1]:
-                q, s = gptq_quantize_weight(t, H.cpu())
-                gptq_count += 1
-            else:
-                q, s = quantize_int6_per_row(t)
-                naive_count += 1
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int6"}
-        elif cat in int6_cats and t.ndim >= 1:
-            q, s = quantize_int6_per_row(t)
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int6"}
-            naive_count += 1
-        else:
-            q, s = quantize_float_tensor(t)
-            result[name + ".q"] = q
-            result[name + ".scale"] = s
-            meta[name] = {"type": "int8"}
-    print(f"gptq_quantize: {gptq_count} GPTQ layers, {naive_count} naive layers", flush=True)
-    return result, meta
 def quantize_int6_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tensor]:
     t32 = t.float()
     if t32.ndim == 2:
@@ -2617,11 +1611,6 @@ def quantize_int6_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tens
     q = torch.clamp(torch.round(t32 / scale.float()), -clip_range, clip_range).to(torch.int8)
     return q, scale
 def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str]):
-    num_layers_total = max(
-        (int(k.split(".")[1]) for k in state_dict if k.startswith("blocks.")),
-        default=0,
-    ) + 1
-    late_k_layers = set(range(num_layers_total - 2, num_layers_total))
     result: dict[str, Tensor] = {}
     meta: dict[str, object] = {}
     for name, tensor in state_dict.items():
@@ -2755,118 +1744,6 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
-    # Complementary training: downweight tokens predictable by bigrams
-    complement_alpha = float(os.environ.get("COMPLEMENT_ALPHA", "0"))
-    if complement_alpha > 0:
-        tracker = TrainNgramTracker(args.vocab_size, device, complement_alpha=complement_alpha)
-        base_model._ngram_tracker = tracker
-        log0(f"complementary_training:alpha={complement_alpha}")
-    else:
-        base_model._ngram_tracker = None
-    # Learned mixer: prefill training-data n-gram oracle
-    train_mixer: TrainNgramOracle | TrainNgramOracleGPU | None = None
-    if args.mixer_enabled:
-        mixer_max_order = args.ngram_eval_min_order + args.mixer_n_orders - 1
-        use_gpu_mixer = args.mixer_gpu_mode and device.type == "cuda"
-        if use_gpu_mixer:
-            train_mixer = TrainNgramOracleGPU(
-                buckets=args.mixer_buckets,
-                min_order=args.ngram_eval_min_order,
-                max_order=mixer_max_order,
-                min_count=args.ngram_eval_min_count,
-                device=device,
-                pos_chunk=args.mixer_prefill_pos_chunk,
-            )
-        else:
-            train_mixer = TrainNgramOracle(
-                buckets=args.mixer_buckets,
-                min_order=args.ngram_eval_min_order,
-                max_order=mixer_max_order,
-                min_count=args.ngram_eval_min_count,
-            )
-        train_files = sorted(glob.glob(args.train_files))[:args.mixer_prefill_max_shards]
-        prefill_cap_s = max(0.0, args.mixer_prefill_max_seconds)
-        prefill_min_shards = max(1, args.mixer_prefill_min_shards)
-        tokens_per_shard = max(0, args.mixer_prefill_tokens_per_shard)
-        if distributed and use_gpu_mixer:
-            prefill_mode = "sharded+allreduce-gpu"
-        elif distributed:
-            prefill_mode = "rank0+broadcast"
-        else:
-            prefill_mode = "single-rank"
-        log0(
-            "mixer:prefill "
-            f"mode={prefill_mode} shards<= {len(train_files)} tokens_per_shard={tokens_per_shard or 'full'} "
-            f"orders={args.ngram_eval_min_order}..{mixer_max_order} buckets={args.mixer_buckets} "
-            f"max_seconds={prefill_cap_s if prefill_cap_s > 0 else 'unlimited'}"
-        )
-
-        if distributed and use_gpu_mixer:
-            my_train_files = train_files[rank::world_size]
-        elif distributed:
-            my_train_files = train_files if rank == 0 else []
-        else:
-            my_train_files = train_files
-
-        local_prefilled_shards = 0
-        local_prefill_s = 0.0
-        t_prefill = time.perf_counter()
-        for fi, f in enumerate(my_train_files):
-            train_mixer.prefill_shard(f, max_tokens=tokens_per_shard)
-            local_prefilled_shards += 1
-            if (fi + 1) % 5 == 0 or fi == 0 or fi + 1 == len(my_train_files):
-                elapsed = time.perf_counter() - t_prefill
-                toks_per_s = train_mixer.total_tokens / max(elapsed, 1e-9)
-                if rank == 0:
-                    print(
-                        f"  mixer:prefill rank={rank} {fi+1}/{len(my_train_files)} shards, "
-                        f"{train_mixer.total_tokens:,} tokens, {toks_per_s/1e6:.2f}M tok/s",
-                        flush=True,
-                    )
-            if prefill_cap_s > 0.0 and local_prefilled_shards >= prefill_min_shards:
-                elapsed = time.perf_counter() - t_prefill
-                if elapsed >= prefill_cap_s:
-                    if rank == 0:
-                        print(
-                            f"  mixer:prefill cutoff rank={rank} at {local_prefilled_shards} shards "
-                            f"after {elapsed:.1f}s (cap={prefill_cap_s:.1f}s)",
-                            flush=True,
-                        )
-                    break
-        local_prefill_s = time.perf_counter() - t_prefill
-
-        if distributed:
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            t_sync = time.perf_counter()
-            if use_gpu_mixer:
-                all_reduce_train_mixer_tables_gpu(train_mixer, device)
-            else:
-                broadcast_train_mixer_tables(train_mixer, rank, device)
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            sync_s = time.perf_counter() - t_sync
-
-            shards_t = torch.tensor([local_prefilled_shards], device=device, dtype=torch.int64)
-            prefill_s_t = torch.tensor([local_prefill_s], device=device, dtype=torch.float64)
-            if use_gpu_mixer:
-                dist.all_reduce(shards_t, op=dist.ReduceOp.SUM)
-                dist.all_reduce(prefill_s_t, op=dist.ReduceOp.MAX)
-            else:
-                dist.broadcast(shards_t, src=0)
-                dist.broadcast(prefill_s_t, src=0)
-            total_prefilled_shards = int(shards_t.item())
-            prefill_s = float(prefill_s_t.item())
-            log0(
-                f"mixer:prefilled {train_mixer.total_tokens:,} tokens from {total_prefilled_shards} shards "
-                f"in {prefill_s:.1f}s, sync:{sync_s:.1f}s mode={prefill_mode}"
-            )
-        else:
-            prefill_s = local_prefill_s
-            log0(
-                f"mixer:prefilled {train_mixer.total_tokens:,} tokens from {local_prefilled_shards} shards "
-                f"in {prefill_s:.1f}s mode={prefill_mode}"
-            )
     compiled_model = maybe_torch_compile(base_model, args)
     model: nn.Module = (
         DDP(
@@ -2884,8 +1761,6 @@ def main() -> None:
         for name, p in block_named_params
         if p.ndim == 2 and not any(pattern in name for pattern in CONTROL_TENSOR_NAME_PATTERNS)
     ]
-    if base_model.mtp_num_heads > 0:
-        matrix_params.extend([p for p in base_model.mtp_heads.parameters() if p.ndim == 2])
     if base_model.f1_corr_in is not None and base_model.f1_corr_out is not None:
         matrix_params.append(base_model.f1_corr_in.weight)
         matrix_params.append(base_model.f1_corr_out.weight)
@@ -2901,8 +1776,6 @@ def main() -> None:
         scalar_params.append(base_model.bigram.scale)
     if base_model.f1_corr_scale is not None:
         scalar_params.append(base_model.f1_corr_scale)
-    if base_model.alpha_head is not None:
-        scalar_params.extend(list(base_model.alpha_head.parameters()))
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
     tok_params = [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr}]
     if base_model.bigram is not None:
@@ -2964,7 +1837,7 @@ def main() -> None:
         f"f1_corr:rank={args.f1_corr_rank} params={f1_corr_params} "
         f"est_int6_bytes~{est_corr_int6_bytes}"
     )
-    log0(f"mlp_act:{args.mlp_act} mlp_leaky_slope:{args.mlp_leaky_slope}")
+    log0(f"mlp_act:{args.mlp_act} mlp_leaky_slope:{args.mlp_leaky_slope} crawler_mlp_leaky_slope:{args.crawler_mlp_leaky_slope} crawler_mlp_choke_dim:{args.crawler_mlp_choke_dim} choke_shape:{args.crawler_mlp_choke_shape} choke_groups:{args.crawler_mlp_choke_groups} crawler_loop_smear:{args.crawler_loop_smear} crawler_tap_dim:{args.crawler_tap_dim} crawler_tap_loop_specific:{args.crawler_tap_loop_specific} crawler_tap_layers:{args.crawler_tap_layers} crawler_loop_rope_scales:{args.crawler_loop_rope_scales} crawler_cannon_type:{args.crawler_cannon_type}")
     log0(f"XSA:last_{args.xsa_last_n} world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0(f"num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads} embed_lr:{token_lr} matrix_lr:{args.matrix_lr}")
     log0(
@@ -2981,16 +1854,12 @@ def main() -> None:
     )
     log0(f"ddp:find_unused_parameters={int(args.ddp_find_unused_parameters)}")
     log0(f"seed:{args.seed}")
-    if args.ngram_eval_order >= 2:
-        log0(
-            f"ngram_eval:order={args.ngram_eval_order} alpha={args.ngram_eval_alpha} "
-            f"min_count={args.ngram_eval_min_count} buckets={args.ngram_eval_buckets}"
-        )
     train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
     def zero_grad_all() -> None:
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
+    effective_max_wallclock_ms = max_wallclock_ms
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
             return 1.0
@@ -3011,13 +1880,8 @@ def main() -> None:
                 if distributed:
                     model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
                 x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-                _mx_p, _mx_v = None, None
-                if train_mixer is not None:
-                    _mx_p_raw, _mx_v_raw = train_mixer.get_ngram_probs(x, y)
-                    _mx_p = _mx_p_raw.to(device=device, dtype=torch.bfloat16, non_blocking=True)
-                    _mx_v = _mx_v_raw.to(device=device, non_blocking=True)
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    warmup_loss = model(x, y, ngram_expert_p=_mx_p, ngram_valid_mask=_mx_v)
+                    warmup_loss = model(x, y)
                 (warmup_loss * grad_scale).backward()
             for opt in optimizers:
                 opt.step()
@@ -3034,7 +1898,7 @@ def main() -> None:
     swa_state: dict[str, Tensor] | None = None
     swa_count = 0
     ema_state = {name: t.detach().float().clone() for name, t in base_model.state_dict().items()}
-    ema_decay = 0.997
+    ema_decay = float(os.environ.get("EMA_DECAY", "0.997"))
     training_time_ms = 0.0
     stop_after_step: int | None = None
     torch.cuda.synchronize()
@@ -3073,27 +1937,16 @@ def main() -> None:
             break
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         scale = lr_mul(step, elapsed_ms)
-        if args.late_qat_threshold > 0 and scale < args.late_qat_threshold and not CastedLinear._qat_enabled:
-            CastedLinear._qat_enabled = True
-            log0(f"late_qat:enabled step:{step} scale:{scale:.4f}")
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-            # Mixer: get n-gram probs from training oracle (CPU or GPU path).
-            _mx_p, _mx_v = None, None
-            if train_mixer is not None:
-                _mx_p_raw, _mx_v_raw = train_mixer.get_ngram_probs(x, y)
-                _mx_p = _mx_p_raw.to(device=device, dtype=torch.bfloat16, non_blocking=True)
-                _mx_v = _mx_v_raw.to(device=device, non_blocking=True)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                loss = model(x, y, ngram_expert_p=_mx_p, ngram_valid_mask=_mx_v)
+                loss = model(x, y)
             train_loss += loss.detach()
             loss.backward()
-            if base_model._ngram_tracker is not None:
-                base_model._ngram_tracker.update(x, y)
         train_loss /= grad_accum_steps
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
@@ -3107,10 +1960,6 @@ def main() -> None:
         for opt in optimizers:
             opt.step()
         zero_grad_all()
-        # EMA update
-        with torch.no_grad():
-            for name, t in base_model.state_dict().items():
-                ema_state[name].mul_(ema_decay).add_(t.detach().float(), alpha=1.0 - ema_decay)
         step += 1
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         if args.swa_enabled and scale < 0.2 and step % args.swa_every == 0:
@@ -3131,8 +1980,8 @@ def main() -> None:
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
             )
-        reached_cap = max_wallclock_ms is not None and approx_training_time_ms >= max_wallclock_ms
-        if distributed and max_wallclock_ms is not None:
+        reached_cap = effective_max_wallclock_ms is not None and approx_training_time_ms >= effective_max_wallclock_ms
+        if distributed and effective_max_wallclock_ms is not None:
             reached_cap_tensor = torch.tensor(int(reached_cap), device=device)
             dist.all_reduce(reached_cap_tensor, op=dist.ReduceOp.MAX)
             reached_cap = bool(reached_cap_tensor.item())
@@ -3142,12 +1991,7 @@ def main() -> None:
         f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
-    # GPTQ calibration: collect Hessians from training data DURING training phase
-    # (must happen before training ends to comply with eval-time data access rules)
-    log0("gptq:calibrating with training data...")
-    t_gptq = time.perf_counter()
-    gptq_hessians = gptq_calibrate(base_model, args.train_files, device, n_samples=256, seq_len=args.train_seq_len)
-    log0(f"gptq:calibrated {len(gptq_hessians)} layers in {time.perf_counter()-t_gptq:.1f}s")
+    log0("gptq:SKIPPED (SKIP_GPTQ=1) — using naive int6")
     if args.distill_enabled and args.distill_steps > 0:
         log0(
             f"distill:start steps:{args.distill_steps} lr_factor:{args.distill_lr_factor} "
@@ -3212,10 +2056,14 @@ def main() -> None:
         torch.cuda.empty_cache()
         log0("distill:done")
     # Apply EMA weights (better than SWA alone per PR#401)
-    log0("ema:applying EMA weights")
-    current_state = base_model.state_dict()
-    avg_state = {name: t.to(dtype=current_state[name].dtype) for name, t in ema_state.items()}
-    base_model.load_state_dict(avg_state, strict=True)
+    skip_ema = int(os.environ.get("SKIP_EMA", "0"))
+    if skip_ema:
+        log0("ema:SKIPPED (SKIP_EMA=1) — using live model weights")
+    else:
+        log0("ema:applying EMA weights")
+        current_state = base_model.state_dict()
+        avg_state = {name: t.to(dtype=current_state[name].dtype) for name, t in ema_state.items()}
+        base_model.load_state_dict(avg_state, strict=True)
     torch.cuda.synchronize()
     t_diag = time.perf_counter()
     diag_val_loss, diag_val_bpb = eval_val(
@@ -3239,11 +2087,7 @@ def main() -> None:
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
     sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
-    # GPTQ quantization using Hessians collected during training phase (no training data access here)
-    quant_result, quant_meta = mixed_quantize_int6_gptq(
-        sd_cpu, {"mlp", "attn", "aux"}, gptq_hessians,
-        crawler_int8=args.crawler_quant_int8,
-    )
+    quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn", "aux"})
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
     quant_raw = quant_buf.getvalue()
@@ -3302,67 +2146,6 @@ def main() -> None:
         )
         log0(f"final_int6_sliding_window_exact val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}")
         log0(f"final_int8_zlib_roundtrip_exact val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}")
-        if args.ngram_eval_order >= 2:
-            if distributed:
-                dist.barrier()
-            # Purple-1 (PR #931): build training oracle on rank 0 and seed eval tables
-            _oracle_state: dict | None = None
-            if master_process and getattr(args, 'artifact_ngram', False):
-                log0("oracle:building_training_ngram_tables ...")
-                _t_oracle = time.perf_counter()
-                _oracle_state = _build_training_ngram_oracle(
-                    data_path=args.data_path,
-                    min_order=max(args.ngram_eval_min_order, 2),
-                    max_order=args.ngram_eval_order,
-                    buckets=args.ngram_eval_buckets,
-                    max_shards=getattr(args, 'artifact_ngram_max_shards', 2),
-                )
-                log0(f"oracle:done elapsed={time.perf_counter()-_t_oracle:.1f}s "
-                     f"total_tokens={_oracle_state['total_tokens']}")
-            torch.cuda.synchronize()
-            t_ng = time.perf_counter()
-            ng_loss, ng_bpb, ng_coverage = eval_val_sliding_hashed_ngram(
-                args,
-                eval_model,
-                rank,
-                world_size,
-                device,
-                val_tokens,
-                base_bytes_lut,
-                has_leading_space_lut,
-                is_boundary_token_lut,
-                stride=args.eval_stride,
-                order=args.ngram_eval_order,
-                alpha=args.ngram_eval_alpha,
-                min_count=args.ngram_eval_min_count,
-                buckets=args.ngram_eval_buckets,
-                max_seconds=args.ngram_eval_max_seconds,
-                eval_seq_len=sw_seq_len,
-                oracle_state=_oracle_state,
-            )
-            if rank == 0:
-                torch.cuda.synchronize()
-                ng_eval_ms = 1000.0 * (time.perf_counter() - t_ng)
-                if ng_coverage >= 0.999999:
-                    log0(
-                        f"final_int6_sliding_window_ngram{args.ngram_eval_order} val_loss:{ng_loss:.4f} "
-                        f"val_bpb:{ng_bpb:.4f} eval_time:{ng_eval_ms:.0f}ms"
-                    )
-                    log0(
-                        f"final_int6_sliding_window_ngram{args.ngram_eval_order}_exact "
-                        f"val_loss:{ng_loss:.8f} val_bpb:{ng_bpb:.8f}"
-                    )
-                else:
-                    log0(
-                        f"final_int6_sliding_window_ngram{args.ngram_eval_order}_partial val_loss:{ng_loss:.4f} "
-                        f"val_bpb:{ng_bpb:.4f} coverage:{ng_coverage:.4f} eval_time:{ng_eval_ms:.0f}ms"
-                    )
-                    log0(
-                        f"final_int6_sliding_window_ngram{args.ngram_eval_order}_partial_exact "
-                        f"val_loss:{ng_loss:.8f} val_bpb:{ng_bpb:.8f} coverage:{ng_coverage:.8f}"
-                    )
-            if distributed:
-                dist.barrier()
     if distributed:
         dist.destroy_process_group()
 if __name__ == "__main__":

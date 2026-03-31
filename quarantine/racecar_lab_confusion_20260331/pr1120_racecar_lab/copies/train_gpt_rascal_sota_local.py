@@ -126,6 +126,8 @@ class Hyperparameters:
     ngram_order_mults_str = os.environ.get("NGRAM_ORDER_MULTS", "")
     cubric_cadence = int(os.environ.get("CUBRIC_CADENCE", 0))
     skip_final_eval = bool(int(os.environ.get("SKIP_FINAL_EVAL", "0")))
+    smoke_skip_val = bool(int(os.environ.get("SMOKE_SKIP_VAL", "0")))
+    smoke_skip_quant_eval = bool(int(os.environ.get("SMOKE_SKIP_QUANT_EVAL", "0")))
     post_ema_diagnostic = bool(int(os.environ.get("POST_EMA_DIAGNOSTIC", "1")))
     compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
     compile_mode = os.environ.get("COMPILE_MODE", "").strip()
@@ -135,6 +137,9 @@ class Hyperparameters:
     coprime_max_loaded_shards = int(os.environ.get("COPRIME_MAX_LOADED_SHARDS", 4))
     coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", 4))
     coprime_shard_hold_steps = int(os.environ.get("COPRIME_SHARD_HOLD_STEPS", 64))
+    gptq_calib_samples = int(os.environ.get("GPTQ_CALIB_SAMPLES", 256))
+    gptq_insta_cache = bool(int(os.environ.get("GPTQ_INSTA_CACHE", "1")))
+    gptq_cache_seqs_per_step = int(os.environ.get("GPTQ_CACHE_SEQS_PER_STEP", 1))
 
 
 def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = ""):
@@ -608,8 +613,13 @@ def gptq_quantize_weight(W: Tensor, H: Tensor, clip_range: int = 31,
     Q = Q[:, invperm]
     return Q, row_scale.to(torch.float16)
 def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
-                   n_samples: int = 256, seq_len: int = 2048) -> dict[str, Tensor]:
-    """Collect Hessian H = X^T X for each linear layer using training data."""
+                   n_samples: int = 256, seq_len: int = 2048,
+                   cached_inputs: list[Tensor] | None = None) -> dict[str, Tensor]:
+    """Collect Hessian H = X^T X for each linear layer using training data.
+
+    cached_inputs may contain already-seen training batches (B,T). We consume
+    these first to avoid an extra loader pass, then fall back to TokenStream.
+    """
     hessians: dict[str, Tensor] = {}
     n_seen: dict[str, int] = {}
     hooks = []
@@ -627,14 +637,35 @@ def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
     for name, module in model.named_modules():
         if isinstance(module, (nn.Linear, CastedLinear)):
             hooks.append(module.register_forward_hook(make_hook(name)))
-    stream = TokenStream(train_pattern)
+    samples_done = 0
+    used_cache = 0
     model.eval()
     with torch.no_grad():
-        for _ in range(n_samples):
-            tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
-            x = tokens[:-1].unsqueeze(0)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model.forward_logits(x)
+        if cached_inputs:
+            for cached in cached_inputs:
+                if samples_done >= n_samples:
+                    break
+                if cached.ndim == 1:
+                    cached = cached.unsqueeze(0)
+                take = min(int(cached.shape[0]), n_samples - samples_done)
+                if take <= 0:
+                    continue
+                x = cached[:take, :seq_len].to(device=device, dtype=torch.int64, non_blocking=True)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    model.forward_logits(x)
+                samples_done += take
+                used_cache += take
+        remain = n_samples - samples_done
+        if remain > 0:
+            stream = TokenStream(train_pattern)
+            for _ in range(remain):
+                tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
+                x = tokens[:-1].unsqueeze(0)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    model.forward_logits(x)
+            samples_done += remain
+    if used_cache > 0:
+        print(f"gptq:insta_cache_used {used_cache}/{n_samples} sequences", flush=True)
     for h in hooks:
         h.remove()
     for name in hessians:
@@ -2117,6 +2148,14 @@ def main() -> None:
     _skip_gptq = int(os.environ.get("SKIP_GPTQ", "0"))
     _gptq_reserve_ms = float(os.environ.get("GPTQ_RESERVE_MS", "30000")) if (max_wallclock_ms is not None and not _skip_gptq) else 0.0
     effective_max_wallclock_ms = (max_wallclock_ms - _gptq_reserve_ms) if max_wallclock_ms is not None else None
+    gptq_cached_inputs: list[Tensor] = []
+    gptq_cached_seq_count = 0
+    gptq_cache_active = (
+        not _skip_gptq
+        and args.gptq_insta_cache
+        and args.gptq_calib_samples > 0
+        and args.gptq_cache_seqs_per_step > 0
+    )
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
             return 1.0
@@ -2167,7 +2206,7 @@ def main() -> None:
     step = 0
     while True:
         last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
-        should_validate = last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)
+        should_validate = (not args.smoke_skip_val) and (last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0))
         if should_validate:
             torch.cuda.synchronize()
             training_time_ms += 1000.0 * (time.perf_counter() - t0)
@@ -2205,6 +2244,15 @@ def main() -> None:
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+            if gptq_cache_active and gptq_cached_seq_count < args.gptq_calib_samples:
+                take = min(
+                    int(x.shape[0]),
+                    int(args.gptq_cache_seqs_per_step),
+                    int(args.gptq_calib_samples - gptq_cached_seq_count),
+                )
+                if take > 0:
+                    gptq_cached_inputs.append(x[:take].detach().to(device="cpu", dtype=torch.int64, non_blocking=False).contiguous())
+                    gptq_cached_seq_count += take
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
             train_loss += loss.detach()
@@ -2279,9 +2327,21 @@ def main() -> None:
         log0("gptq:SKIPPED (SKIP_GPTQ=1) — will use naive int6")
         gptq_hessians: dict[str, Tensor] = {}
     else:
+        if gptq_cache_active:
+            log0(
+                f"gptq:insta_cache_collected seqs:{gptq_cached_seq_count}/{args.gptq_calib_samples} "
+                f"per_step:{args.gptq_cache_seqs_per_step}"
+            )
         log0("gptq:calibrating with training data...")
         t_gptq = time.perf_counter()
-        gptq_hessians = gptq_calibrate(base_model, args.train_files, device, n_samples=256, seq_len=args.train_seq_len)
+        gptq_hessians = gptq_calibrate(
+            base_model,
+            args.train_files,
+            device,
+            n_samples=args.gptq_calib_samples,
+            seq_len=args.train_seq_len,
+            cached_inputs=gptq_cached_inputs if gptq_cache_active else None,
+        )
         log0(f"gptq:calibrated {len(gptq_hessians)} layers in {time.perf_counter()-t_gptq:.1f}s")
     # Apply weight averaging
     if args.lawa_enabled and len(lawa_queue) > 1:
@@ -2340,47 +2400,51 @@ def main() -> None:
         log0(f"Total submission size int6+{_COMPRESSOR}: {quant_file_bytes + code_bytes} bytes")
     if distributed:
         dist.barrier()
-    with open("final_model.int6.ptz", "rb") as f:
-        quant_blob_disk = f.read()
-    quant_state = torch.load(
-        io.BytesIO(zstandard.ZstdDecompressor().decompress(quant_blob_disk) if _COMPRESSOR == "zstd" else _zlib_module.decompress(quant_blob_disk)),
-        map_location="cpu",
-    )
-    deq_state = dequantize_mixed_int6(quant_state["w"], quant_state["m"], sd_cpu)
-    eval_model = GPT(
-        vocab_size=args.vocab_size, num_layers=args.num_layers, model_dim=args.model_dim,
-        num_heads=args.num_heads, num_kv_heads=args.num_kv_heads, mlp_mult=args.mlp_mult,
-        tie_embeddings=args.tie_embeddings, tied_embed_init_std=args.tied_embed_init_std,
-        logit_softcap=args.logit_softcap, rope_base=args.rope_base, qk_gain_init=args.qk_gain_init,
-        mtp_num_heads=0, mtp_loss_weight=0.0,
-        bigram_vocab_size=args.bigram_vocab_size, bigram_dim=args.bigram_dim,
-        xsa_last_n=args.xsa_last_n, rope_dims=args.rope_dims, ln_scale=args.ln_scale,
-        dtg=args.dtg_enabled, ve_enabled=args.ve_enabled, ve_dim=args.ve_dim, ve_layers=args.ve_layers,
-        gated_attention=args.gated_attention, value_residual=args.value_residual,
-    ).to(device).bfloat16()
-    eval_model.qo_bank.data = eval_model.qo_bank.data.float()
-    eval_model.kv_bank.data = eval_model.kv_bank.data.float()
-    eval_model.mlp_up_bank.data = eval_model.mlp_up_bank.data.float()
-    eval_model.mlp_down_bank.data = eval_model.mlp_down_bank.data.float()
-    for m in eval_model.modules():
-        if isinstance(m, CastedLinear):
-            m.float()
-    restore_low_dim_params_to_fp32(eval_model)
-    eval_model.load_state_dict(deq_state, strict=True)
-    torch.cuda.synchronize()
-    t_qeval = time.perf_counter()
-    q_val_loss, q_val_bpb = eval_val(
-        args, eval_model, rank, world_size, device, grad_accum_steps,
-        val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
-    )
-    torch.cuda.synchronize()
-    log0(
-        f"final_int6_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
-        f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
-    )
-    log0(f"final_int6_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
-    del eval_model, deq_state, quant_state, sd_cpu
-    torch.cuda.empty_cache()
+    if args.smoke_skip_quant_eval:
+        log0("smoke_skip_quant_eval:1 -> skipping final_int6_roundtrip eval")
+        del sd_cpu
+    else:
+        with open("final_model.int6.ptz", "rb") as f:
+            quant_blob_disk = f.read()
+        quant_state = torch.load(
+            io.BytesIO(zstandard.ZstdDecompressor().decompress(quant_blob_disk) if _COMPRESSOR == "zstd" else _zlib_module.decompress(quant_blob_disk)),
+            map_location="cpu",
+        )
+        deq_state = dequantize_mixed_int6(quant_state["w"], quant_state["m"], sd_cpu)
+        eval_model = GPT(
+            vocab_size=args.vocab_size, num_layers=args.num_layers, model_dim=args.model_dim,
+            num_heads=args.num_heads, num_kv_heads=args.num_kv_heads, mlp_mult=args.mlp_mult,
+            tie_embeddings=args.tie_embeddings, tied_embed_init_std=args.tied_embed_init_std,
+            logit_softcap=args.logit_softcap, rope_base=args.rope_base, qk_gain_init=args.qk_gain_init,
+            mtp_num_heads=0, mtp_loss_weight=0.0,
+            bigram_vocab_size=args.bigram_vocab_size, bigram_dim=args.bigram_dim,
+            xsa_last_n=args.xsa_last_n, rope_dims=args.rope_dims, ln_scale=args.ln_scale,
+            dtg=args.dtg_enabled, ve_enabled=args.ve_enabled, ve_dim=args.ve_dim, ve_layers=args.ve_layers,
+            gated_attention=args.gated_attention, value_residual=args.value_residual,
+        ).to(device).bfloat16()
+        eval_model.qo_bank.data = eval_model.qo_bank.data.float()
+        eval_model.kv_bank.data = eval_model.kv_bank.data.float()
+        eval_model.mlp_up_bank.data = eval_model.mlp_up_bank.data.float()
+        eval_model.mlp_down_bank.data = eval_model.mlp_down_bank.data.float()
+        for m in eval_model.modules():
+            if isinstance(m, CastedLinear):
+                m.float()
+        restore_low_dim_params_to_fp32(eval_model)
+        eval_model.load_state_dict(deq_state, strict=True)
+        torch.cuda.synchronize()
+        t_qeval = time.perf_counter()
+        q_val_loss, q_val_bpb = eval_val(
+            args, eval_model, rank, world_size, device, grad_accum_steps,
+            val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+        )
+        torch.cuda.synchronize()
+        log0(
+            f"final_int6_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
+            f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
+        )
+        log0(f"final_int6_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+        del eval_model, deq_state, quant_state, sd_cpu
+        torch.cuda.empty_cache()
     sw_seq_len = effective_eval_seq_len
     if args.skip_final_eval:
         log0("final_eval:skipped sliding/ngram by SKIP_FINAL_EVAL=1")

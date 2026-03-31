@@ -74,9 +74,10 @@ class Hyperparameters:
     matrix_lr = float(os.environ.get("MATRIX_LR", 0.025))
     scalar_lr = float(os.environ.get("SCALAR_LR", 0.025))
     muon_momentum = float(os.environ.get("MUON_MOMENTUM", 0.99))
-    muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 5))
+    muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 4))
     muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.92))
     muon_momentum_warmup_steps = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 1500))
+    muon_post_norm = os.environ.get("MUON_POST_NORM", "row_col")
     beta1 = float(os.environ.get("BETA1", 0.9))
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
@@ -230,25 +231,57 @@ class TrainNgramTracker:
 
 # --- Batched Newton-Schulz orthogonalization ---
 
-def zeropower_via_newtonschulz5(G: Tensor, steps: int = 5, eps: float = 1e-7) -> Tensor:
-    """Batched Newton-Schulz orthogonalization. G: (B,M,N) or (M,N)."""
-    a, b, c = (3.4445, -4.7750, 2.0315)
-    was_2d = G.ndim == 2
-    if was_2d:
-        G = G.unsqueeze(0)
+# Polar Express optimal NS coefficients (AOL preconditioning — skip iter 1)
+_AOL_POLAR_COEFFS = [
+    (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
+    (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
+    (3.3184196573706015, -2.488488024314874, 0.51004894012372),
+    (2.300652019954817, -1.6689039845747493, 0.4188073119525673),
+    (1.875, -1.25, 0.375),
+]
+
+
+def zeropower_via_newtonschulz5(G: Tensor, steps: int = 4, eps: float = 1e-7) -> Tensor:
+    """Turbo-Muon: Newton-Schulz with left-Gram AOL + Polar Express coefficients."""
     X = G.bfloat16()
+    if X.ndim == 2:
+        transposed = X.size(0) > X.size(1)
+        if transposed:
+            X = X.T
+        A = X @ X.T
+        s = 1.0 / (A.abs().sum(dim=1).sqrt() + eps)
+        X = s.unsqueeze(1) * X
+        A = s.unsqueeze(0) * A * s.unsqueeze(1)
+        for i in range(steps):
+            a, b, c = _AOL_POLAR_COEFFS[min(i, len(_AOL_POLAR_COEFFS) - 1)]
+            if i > 0:
+                A = X @ X.T
+            B = b * A + c * A @ A
+            X = a * X + B @ X
+        return X.T if transposed else X
     transposed = X.size(-2) > X.size(-1)
     if transposed:
         X = X.mT
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
-    for _ in range(steps):
-        A = X @ X.mT
-        B = b * A + c * (A @ A)
+    A = X @ X.mT
+    s = 1.0 / (A.abs().sum(dim=-1).sqrt() + eps)
+    X = s.unsqueeze(-1) * X
+    A = s.unsqueeze(-2) * A * s.unsqueeze(-1)
+    for i in range(steps):
+        a, b, c = _AOL_POLAR_COEFFS[min(i, len(_AOL_POLAR_COEFFS) - 1)]
+        if i > 0:
+            A = X @ X.mT
+        B = b * A + c * A @ A
         X = a * X + B @ X
-    if transposed:
-        X = X.mT
-    if was_2d:
-        X = X.squeeze(0)
+    return X.mT if transposed else X
+
+
+def _post_ns_normalize(X: Tensor, mode: str) -> Tensor:
+    if mode == "none":
+        return X
+    if mode in ("row", "row_col"):
+        X = X / (X.float().norm(dim=-1, keepdim=True).to(X.dtype) + 1e-7)
+    if mode in ("col", "row_col"):
+        X = X / (X.float().norm(dim=-2, keepdim=True).to(X.dtype) + 1e-7)
     return X
 
 # --- Parallel Muon optimizer ---
@@ -263,11 +296,11 @@ class Muon(torch.optim.Optimizer):
     4. Each all-gather overlaps with next bank's NS5
     """
     def __init__(self, params, lr: float, momentum: float, backend_steps: int,
-                 nesterov: bool = True, weight_decay: float = 0.0):
+                 nesterov: bool = True, weight_decay: float = 0.0, post_norm: str = "none"):
         super().__init__(
             params,
             dict(lr=lr, momentum=momentum, backend_steps=backend_steps,
-                 nesterov=nesterov, weight_decay=weight_decay),
+                 nesterov=nesterov, weight_decay=weight_decay, post_norm=post_norm),
         )
         self._built = False
 
@@ -371,6 +404,7 @@ class Muon(torch.optim.Optimizer):
                     update = buf
 
                 update = zeropower_via_newtonschulz5(update, steps=backend_steps)
+                update = _post_ns_normalize(update, group.get("post_norm", "none"))
 
                 if sharded:
                     prev_ag_handle = dist.all_gather_into_tensor(
@@ -2047,6 +2081,7 @@ def main() -> None:
         momentum=args.muon_momentum,
         backend_steps=args.muon_backend_steps,
         weight_decay=args.muon_wd,
+        post_norm=args.muon_post_norm,
     )
     for group in optimizer_muon.param_groups:
         group["base_lr"] = args.matrix_lr

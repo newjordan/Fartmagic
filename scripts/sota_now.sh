@@ -68,8 +68,8 @@ step500=$(grep "step:500/" "${LOG}" | grep -oP 'step_avg:\K[0-9.]+' || true)
 if [[ -n "${step500}" ]]; then
     echo ""
     echo "step_avg @ 500: ${step500}ms  (record: ~90.70ms)"
-    awk "BEGIN {exit !(${step500} >= 93.0)}" && true || {
+    if awk "BEGIN {exit (${step500} < 93.0 ? 1 : 0)}"; then
         echo "STACK PARITY FAILURE — ${step500}ms >= 93ms. Wrong env. Score invalid."
         exit 2
-    }
+    fi
 fi

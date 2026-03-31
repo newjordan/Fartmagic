@@ -27,7 +27,7 @@ May settle further below 74.52ms in full production run.
 | Seed | Steps | raw_bpb | int6_sw_bpb | quant_gap | bytes | vs BW4 |
 |------|-------|---------|-------------|-----------|-------|--------|
 | 444 | 8035 | 1.1987 | **1.18672385** | -0.0120 | 9,024,399 (~8.61MB) | **-0.00058** |
-| 300 | TBD | TBD | TBD | TBD | TBD | TBD |
+| 300 | 8018 | 1.1993 | 1.18758156 | -0.0117 | 9,251,386 (~8.82MB) | **+0.00027 vs Leg 3 seed=300** ⚠️ |
 
 Step_avg production: 74.68ms (trending down, clipped by wallclock).
 SWA kicked in at step 7650.
@@ -39,5 +39,10 @@ Sliding window eval: 72,592ms (full val set, 8×H100).
 |--------|-------------|-------|
 | Leg 3 SOTA | 1.18746 | 8.84MB |
 | BW4 seed=444 | 1.18731 | 8.97MB |
-| **BW5 seed=444** | **1.18672** | **8.61MB** |
-| BW5 seed=300 | TBD | TBD |
+| BW5 seed=444 | 1.18672 | 8.61MB |
+| BW5 seed=300 | 1.18758 | 8.82MB |
+| **BW5 2-seed mean** | **1.18715** | **8.82MB (max)** |
+| Leg 3 3-seed mean | 1.18743 | 9.36MB |
+| **BW5 vs Leg 3 mean** | **-0.00027** | **-0.54MB** |
+
+**Verdict:** seed=300 does not individually confirm — it is +0.00012 worse than Leg 3 seed=300 (1.18746 vs 1.18758). The improvement is real in mean but not consistent across seeds. File size drop on seed=444 was noise.

@@ -2,6 +2,12 @@
 
 **Micro Crawler**: 4 flat XSA layers + 1 shared crawler block × 3 loops, mlp_mult=6.0. QAT via CRAWLER_QUANT_INT8=1. Naive int6 + zstd, ~9.4MB.
 
+## Architecture Philosophy
+
+The whole stack is a causal coordination engine operating at three temporal resolutions simultaneously through shared weights.
+
+Each loop iteration is not doing different work — it is coordinating the same fuzzy input representation against the same learned shape space, but at a different causal horizon. Loop 0 attends to immediate causes (adjacent tokens). Loop 1 attends to medium-range causal structure. Loop 2 integrates distant causes at the sentence and paragraph level. The shared weights are the learned geometric attractor — the distributed representation of known truth that the input is being pulled toward through each pass. Weight sharing is not a parameter-budget compromise; it is the mechanism. The same causal law applied at three temporal resolutions, each loop leaving the representation less fuzzy than it found it.
+
 ## Results
 
 | Seed | val_bpb (int6 SW exact) | Steps | Size |
@@ -42,3 +48,5 @@ SEED=1337 NPROC_PER_NODE=8 bash experiments/Crawler_Leg_3/run.sh
 # Seeds 42 + 300
 NPROC_PER_NODE=8 bash experiments/Crawler_Leg_3/run_multi_seed.sh
 ```
+
+Training script: `experiments/Medusa/train_gpt.py`

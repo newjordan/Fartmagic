@@ -21,10 +21,14 @@ echo "[preflight] locating custom FA3 module from a non-venv python"
 if [ -n "${BASE_PYTHON}" ]; then
   candidates=("${BASE_PYTHON}")
 else
-  candidates=(
+  mapfile -t _which_py < <(which -a python3 2>/dev/null | awk '!seen[$0]++')
+  candidates=("${_which_py[@]}")
+  candidates+=(
     "/usr/bin/python3"
     "/opt/conda/bin/python3"
     "/usr/local/bin/python3"
+    "/root/miniconda3/bin/python3"
+    "/workspace/miniconda3/bin/python3"
   )
 fi
 
@@ -46,9 +50,17 @@ PY
 done
 
 if [ -z "${FA3_BASE_PYTHON}" ]; then
-  echo "FATAL: could not find a base python with flash_attn_interface."
-  echo "Hint: pass BASE_PYTHON=/path/to/python3 that can import flash_attn_interface."
-  exit 1
+  # Fallback: discover module file directly in common roots.
+  while IFS= read -r mpath; do
+    [ -n "${mpath}" ] || continue
+    FA3_DIR="$(dirname "${mpath}")"
+    break
+  done < <(find /workspace /opt/conda /usr/local /root -type f -name flash_attn_interface.py 2>/dev/null | head -n 1)
+  if [ -z "${FA3_DIR}" ]; then
+    echo "FATAL: could not find flash_attn_interface via python import or filesystem scan."
+    echo "Hint: pass BASE_PYTHON=/path/to/python3 that can import flash_attn_interface."
+    exit 1
+  fi
 fi
 echo "[preflight] FA3 base python: ${FA3_BASE_PYTHON}"
 echo "[preflight] FA3_DIR=${FA3_DIR}"
@@ -61,7 +73,7 @@ fi
 
 if [ ! -d "${VENV_DIR}" ]; then
   echo "[setup] creating ${VENV_DIR}"
-  "${FA3_BASE_PYTHON}" -m venv "${VENV_DIR}"
+  "${FA3_BASE_PYTHON:-${BASE_PYTHON:-python3}}" -m venv "${VENV_DIR}"
 fi
 
 source "${VENV_DIR}/bin/activate"

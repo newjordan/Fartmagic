@@ -106,7 +106,7 @@ RESULTS_FILE=$(mktemp)
 # Link train_gpt.py from BW5 (same model, same base)
 # ----------------------------------------------------------------
 if [[ ! -f "${SCRIPT_DIR}/train_gpt.py" ]]; then
-    ln -s "${REPO_ROOT}/experiments/Bandit_Wagon_V/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
+    ln -s "${REPO_ROOT}/crawler/2026-03-29_BW5/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
 fi
 
 run_arm BWVC-00 "control (no cannon)"        none

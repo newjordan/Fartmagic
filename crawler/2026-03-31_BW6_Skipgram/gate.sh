@@ -1,20 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 # ================================================================
-#  Bandit_Wagon_V_Cannon — 8×H100 SPEED GATE
+#  BW6_Skipgram — 1GPU Quality Gate
 #
-#  Purpose: verify that cannon's -20ms/step speedup (seen on 1 GPU)
-#  survives DDP all-reduce on 8×H100.
+#  Variable: TRIGRAM (0 vs 1)
+#  Base: BW5 (COMPILE_FULLGRAPH=1, ROPE_SCALES=9,1,1, CHOKE_DIM=0)
+#  Zero extra parameters — trigram hashes into existing bigram table.
 #
-#  Variable: CRAWLER_CANNON_TYPE (none vs scalar)
-#  Scalar chosen: best raw_bpb in 1GPU gate, cheapest (3 params)
-#
-#  Base: BW5 (CHOKE_DIM=0, COMPILE_FULLGRAPH=1, ROPE_SCALES=9,1,1)
-#
-#  Pass criteria: scalar step_avg < control step_avg
+#  Pass: TRIGRAM=1 raw_bpb < control raw_bpb AND step_avg within ±2ms
 #
 #  Usage:
-#    NPROC_PER_NODE=8 bash experiments/Bandit_Wagon_V_Cannon/gate_8gpu.sh
+#    bash crawler/2026-03-31_BW6_Skipgram/gate.sh
+#    ABLATION_STEPS=2000 bash crawler/2026-03-31_BW6_Skipgram/gate.sh
 # ================================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,8 +19,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 SEED="${SEED:-444}"
-NPROC="${NPROC_PER_NODE:-8}"
-GATE_STEPS=2000
+ABLATION_STEPS="${ABLATION_STEPS:-2000}"
 TRAIN_PY="${SCRIPT_DIR}/train_gpt.py"
 LOGDIR="${REPO_ROOT}/logs"
 mkdir -p "${LOGDIR}"
@@ -31,30 +27,31 @@ mkdir -p "${LOGDIR}"
 export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 
 echo "================================================================"
-echo "  BWVC CANNON — 8GPU SPEED GATE"
-echo "  ${GATE_STEPS} steps | seed=${SEED} | nproc=${NPROC}"
-echo "  Control vs scalar cannon — does DDP preserve speed gain?"
+echo "  BW6_SKIPGRAM — 1GPU QUALITY GATE"
+echo "  ${ABLATION_STEPS} steps | seed=${SEED}"
+echo "  Variable: TRIGRAM (0=bigram only vs 1=bigram+trigram)"
+echo "  Zero extra parameters"
 echo "================================================================"
-
-BW5_BASELINE_STEP_AVG="74.68"
 
 run_arm() {
     local arm_id="$1"
     local label="$2"
-    local cannon_type="$3"
+    local trigram="$3"
 
     echo ""
     echo "--- ${arm_id}: ${label} ---"
-    local logfile="${LOGDIR}/bwvc_8gpu_${arm_id}_s${SEED}_$(date +%H%M%S).log"
+    local logfile="${LOGDIR}/bw6sk_${arm_id}_s${SEED}_$(date +%H%M%S).log"
 
     env \
         SEED="${SEED}" \
-        ITERATIONS="${GATE_STEPS}" \
+        ITERATIONS="${ABLATION_STEPS}" \
         WARMDOWN_ITERS=0 \
         MAX_WALLCLOCK_SECONDS=0 \
         COMPLEMENT_ALPHA=0 \
         XSA_LAST_N=11 \
         BIGRAM_VOCAB_SIZE=2048 \
+        BIGRAM_DIM=128 \
+        TRIGRAM="${trigram}" \
         ROPE_DIMS=16 \
         SWA_EVERY=50 \
         MTP_NUM_HEADS=0 \
@@ -80,44 +77,41 @@ run_arm() {
         MLP_LEAKY_SLOPE=0.5 \
         CRAWLER_MLP_LEAKY_SLOPE=0.5 \
         CRAWLER_MLP_CHOKE_DIM=0 \
+        CRAWLER_CANNON_TYPE=none \
         CRAWLER_LOOP_ROPE_SCALES=9,1,1 \
         CRAWLER_LOOP_SMEAR=0 \
         CRAWLER_TAP_DIM=0 \
         CRAWLER_TAP_LOOP_SPECIFIC=1 \
         CRAWLER_TAP_LAYERS=all \
-        CRAWLER_CANNON_TYPE="${cannon_type}" \
-        NPROC_PER_NODE="${NPROC}" \
-        torchrun --standalone --nproc_per_node="${NPROC}" "${TRAIN_PY}" \
+        NPROC_PER_NODE=1 \
+        torchrun --standalone --nproc_per_node=1 "${TRAIN_PY}" \
         2>&1 | tee "${logfile}"
 
-    local step_avg
+    local raw_bpb step_avg int6_sw_bpb
+    raw_bpb=$(grep -oP 'step:[0-9]+/[0-9]+ val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
+    int6_sw_bpb=$(grep -oP 'int6_sw_bpb:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
     step_avg=$(grep -oP 'step_avg:\K[0-9.]+' "${logfile}" | tail -1 || echo "?")
-    echo "  -> step_avg: ${step_avg}ms"
-    echo "${arm_id}|${label}|${cannon_type}|${step_avg}" >> "${RESULTS_FILE}"
+    echo "  -> step_avg:${step_avg}ms  raw_bpb:${raw_bpb}  int6_sw_bpb:${int6_sw_bpb}"
+    echo "${arm_id}|${label}|${trigram}|${step_avg}|${raw_bpb}|${int6_sw_bpb}" >> "${RESULTS_FILE}"
 }
 
 RESULTS_FILE=$(mktemp)
 
-# Link train_gpt.py from BW5
-if [[ ! -f "${SCRIPT_DIR}/train_gpt.py" ]]; then
-    ln -s "${REPO_ROOT}/experiments/Bandit_Wagon_V/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
-fi
-
-run_arm BWVC-00 "control (no cannon)" none
-run_arm BWVC-01 "scalar cannon (3 params)" scalar
+run_arm BW6SK-00 "control (bigram only, TRIGRAM=0)" 0
+run_arm BW6SK-01 "skipgram (bigram+trigram, TRIGRAM=1)" 1
 
 echo ""
 echo "================================================================"
-echo "  BWVC 8GPU SPEED GATE SUMMARY"
-echo "  BW5 full run baseline: ${BW5_BASELINE_STEP_AVG}ms/step"
+echo "  BW6_SKIPGRAM 1GPU GATE SUMMARY"
+echo "  seed=${SEED}  steps=${ABLATION_STEPS}"
 echo "================================================================"
-printf "%-10s %-28s %-10s %-12s\n" "ARM" "LABEL" "TYPE" "STEP_AVG"
-printf "%-10s %-28s %-10s %-12s\n" "---" "-----" "----" "--------"
-while IFS='|' read -r arm label cannon step_avg; do
-    printf "%-10s %-28s %-10s %-12s\n" "${arm}" "${label}" "${cannon}" "${step_avg}ms"
+printf "%-12s %-38s %-8s %-10s %-10s %-12s\n" "ARM" "LABEL" "TRIGRAM" "STEP_AVG" "RAW_BPB" "INT6_SW_BPB"
+printf "%-12s %-38s %-8s %-10s %-10s %-12s\n" "---" "-----" "-------" "--------" "-------" "-----------"
+while IFS='|' read -r arm label trigram step_avg raw int6; do
+    printf "%-12s %-38s %-8s %-10s %-10s %-12s\n" "${arm}" "${label}" "${trigram}" "${step_avg}ms" "${raw}" "${int6}"
 done < "${RESULTS_FILE}"
 rm -f "${RESULTS_FILE}"
 echo ""
-echo "  Pass: scalar step_avg < control step_avg"
-echo "  If speed holds → proceed to Bandit_Wagon_V_PyramidCannon"
+echo "  Pass: BW6SK-01 raw_bpb < BW6SK-00 AND step_avg within ±2ms of control"
+echo "  Note: proxy inflation applies. Gate pass → 8GPU gate next."
 echo "================================================================"

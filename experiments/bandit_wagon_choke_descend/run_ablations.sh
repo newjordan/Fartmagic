@@ -141,6 +141,16 @@ run_arm BWCD-01 "pyramid-512 + rope 4,2,1 (gentle desc)" \
 run_arm BWCD-02 "pyramid-512 + rope 9,1,1 (first wide)" \
     CRAWLER_LOOP_ROPE_SCALES=9,1,1
 
+# ----------------------------------------------------------------
+# BWCD-03  pyramid-512 + 9,3,9 (wide-medium-wide bracket)
+# Loop 0 establishes global context. Loop 1 refines structure.
+# Loop 2 re-integrates globally on the already-refined residual.
+# Loops 0+2 share the same causal horizon — outer loops bracket
+# the medium refinement. Balance: open wide, refine, close wide.
+# ----------------------------------------------------------------
+run_arm BWCD-03 "pyramid-512 + rope 9,3,9 (wide-med-wide)" \
+    CRAWLER_LOOP_ROPE_SCALES=9,3,9
+
 # ================================================================
 #  SUMMARY
 # ================================================================
@@ -149,7 +159,7 @@ REF_PYRAMID="1.44724192"
 
 echo ""
 echo "================================================================"
-echo "  BWCD DESCENDING SUMMARY"
+echo "  BWCD DESCENDING + BRACKET SUMMARY"
 echo "  seed=${SEED}  steps=${ABLATION_STEPS}"
 echo "  References:"
 echo "    BWCS-00 flat ctrl:   ${REF_CTRL}"

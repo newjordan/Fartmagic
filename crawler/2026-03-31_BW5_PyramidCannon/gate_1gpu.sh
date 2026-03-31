@@ -102,7 +102,7 @@ run_arm() {
 RESULTS_FILE=$(mktemp)
 
 if [[ ! -f "${SCRIPT_DIR}/train_gpt.py" ]]; then
-    ln -s "${REPO_ROOT}/experiments/Bandit_Wagon_V/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
+    ln -s "${REPO_ROOT}/crawler/2026-03-29_BW5/train_gpt.py" "${SCRIPT_DIR}/train_gpt.py"
 fi
 
 run_arm BWVPC-00 "control (flat + no cannon)" 0   flat    none

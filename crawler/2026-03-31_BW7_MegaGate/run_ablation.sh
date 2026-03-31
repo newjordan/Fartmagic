@@ -152,8 +152,9 @@ run_arm() {
     echo "  Log: ${log}"
     echo "----------------------------------------------------------------"
 
+    TORCHRUN=$(command -v torchrun 2>/dev/null || echo "python3 -m torch.distributed.run")
     env "${BASE_ENV[@]}" "${extra_env[@]}" \
-        torchrun --standalone --nproc_per_node="${NPROC}" "${TRAIN_PY}" \
+        ${TORCHRUN} --standalone --nproc_per_node="${NPROC}" "${TRAIN_PY}" \
         2>&1 | tee "${log}"
 
     local raw int6 step_ms bytes

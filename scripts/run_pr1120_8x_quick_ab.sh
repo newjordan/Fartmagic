@@ -18,6 +18,7 @@ mkdir -p "${COPY_DIR}" "${RUN_DIR}"
 # Bootstrap trainer copy if needed.
 if [ ! -f "${TRAIN_COPY}" ]; then
   for src in \
+    "scripts/train_gpt_rascal_insta_cache.py" \
     "experiments/Rascal_Master/train_gpt.py" \
     "experiments/SOTA/2026-03-30_JUNKYARD_RAT_RASCAL_II_nogptq/train_gpt.py" \
     "records/track_10min_16mb/2026-03-30_Rascal_8xH100/train_gpt.py"
@@ -42,6 +43,17 @@ fi
 : "${GPTQ_RESERVE_MS:=9000}"
 : "${GPTQ_CALIB_SAMPLES:=256}"
 : "${GPTQ_CACHE_SEQS_PER_STEP:=1}"
+
+echo "[preflight] torch/cuda/gpu:"
+"${PYTHON_BIN}" -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.device_count())"
+
+if "${PYTHON_BIN}" -c "from flash_attn_interface import flash_attn_func; print('FA3_OK')" >/tmp/pr1120_fa3_check.txt 2>&1; then
+  echo "[preflight] $(cat /tmp/pr1120_fa3_check.txt)"
+else
+  echo "[preflight] WARNING: flash_attn_interface import failed (likely no FA3)."
+  echo "[preflight] Detail:"
+  sed -n '1,3p' /tmp/pr1120_fa3_check.txt || true
+fi
 
 COMMON_ENV=(
   "SEED=${SEED}"
@@ -72,7 +84,7 @@ run_case() {
     2>&1 | tee "${log}"
 }
 
-if rg -q "GPTQ_INSTA_CACHE" "${TRAIN_COPY}"; then
+if grep -q "GPTQ_INSTA_CACHE" "${TRAIN_COPY}"; then
   run_case "stream_seed${SEED}" "GPTQ_INSTA_CACHE=0"
   run_case "insta_seed${SEED}" "GPTQ_INSTA_CACHE=1" "GPTQ_CACHE_SEQS_PER_STEP=${GPTQ_CACHE_SEQS_PER_STEP}"
 else
@@ -84,5 +96,5 @@ echo "[done] logs: ${RUN_DIR}"
 for f in "${RUN_DIR}"/*.log; do
   [ -f "$f" ] || continue
   echo "=== $f ==="
-  rg -n "step:6500|stopping_early|gptq:calibrated|gptq:insta_cache|final_sliding_window_exact" "$f" | tail -n 20 || true
+  grep -nE "step:6500|stopping_early|gptq:calibrated|gptq:insta_cache|final_sliding_window_exact" "$f" | tail -n 20 || true
 done

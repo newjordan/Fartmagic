@@ -22,13 +22,13 @@ actual=$(sha256sum "${LOCKED_SRC}" | awk '{print $1}')
 [[ "${actual}" == "${EXPECTED_HASH}" ]] || die "hash mismatch. got ${actual}"
 echo "      OK ${actual:0:16}..."
 
-# ── 2. CUDA must be 12.4 ─────────────────────────────────────
-echo "[2/3] CUDA version (must be 12.4.x)..."
+# ── 2. CUDA must be 12.x (not 13.x / cu130) ─────────────────
+echo "[2/3] CUDA version (must be 12.x, not 13.x)..."
 cuda_ver=$(python3 -c "import torch; print(torch.version.cuda or 'NONE')" 2>/dev/null) \
     || die "python3/torch failed — fix environment"
 torch_ver=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null)
-[[ "${cuda_ver}" == "12.4"* ]] || \
-    die "wrong CUDA: '${cuda_ver}' (torch ${torch_ver}). Need cu124."
+[[ "${cuda_ver}" == "12."* ]] || \
+    die "wrong CUDA: '${cuda_ver}' (torch ${torch_ver}). cu13x gave ~93ms/step on H100 — invalid."
 echo "      torch=${torch_ver}  cuda=${cuda_ver}  OK"
 
 # ── 3. Run — same env as original submission ──────────────────

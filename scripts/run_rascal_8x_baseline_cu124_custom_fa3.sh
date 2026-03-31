@@ -64,9 +64,7 @@ if [ -z "${FA3_BASE_PYTHON}" ]; then
     break
   done < <(find /workspace /opt/conda /usr/local /root -type f \( -name flash_attn_interface.py -o -name "flash_attn_interface*.so" \) 2>/dev/null | head -n 1)
   if [ -z "${FA3_DIR}" ]; then
-    echo "FATAL: could not find flash_attn_interface via python import or filesystem scan."
-    echo "Hint: pass BASE_PYTHON=/path/to/python3 that can import flash_attn_interface."
-    exit 1
+    echo "[preflight] custom FA3 not found; will try wheel fallback inside ${VENV_DIR} with --no-deps"
   fi
 fi
 echo "[preflight] FA3 base python: ${FA3_BASE_PYTHON}"
@@ -104,13 +102,25 @@ then
 fi
 
 echo "[verify] FA3 via PYTHONPATH bridge"
-if ! PYTHONPATH="${FA3_DIR}:${PYTHONPATH:-}" python -c "from flash_attn_interface import flash_attn_func; print('FA3_OK_CUSTOM')"; then
-  echo "FATAL: venv could not import flash_attn_interface from FA3_DIR=${FA3_DIR}"
-  exit 1
+if [ -n "${FA3_DIR}" ] && PYTHONPATH="${FA3_DIR}:${PYTHONPATH:-}" python -c "from flash_attn_interface import flash_attn_func; print('FA3_OK_CUSTOM')"; then
+  FA3_MODE="custom"
+else
+  echo "[setup] attempting FA3 wheel fallback (--no-deps)"
+  if python -m pip install --no-deps --no-cache-dir \
+      "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
+      || python -m pip install --no-deps --no-cache-dir \
+      "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl"; then
+    python -c "from flash_attn_interface import flash_attn_func; print('FA3_OK_WHEEL')"
+    FA3_MODE="wheel"
+    FA3_DIR=""
+  else
+    echo "FATAL: FA3 unavailable (custom import missing and wheel fallback failed)."
+    exit 1
+  fi
 fi
 
 echo "[run] locked Rascal baseline (SKIP_GPTQ=1)"
-PYTHONPATH="${FA3_DIR}:${PYTHONPATH:-}" \
+PYTHONPATH="${FA3_DIR:+${FA3_DIR}:}${PYTHONPATH:-}" \
 PYTHON_BIN="${REPO_ROOT}/${VENV_DIR}/bin/python" \
 NPROC_PER_NODE="${NPROC_PER_NODE}" \
 SEED="${SEED}" \

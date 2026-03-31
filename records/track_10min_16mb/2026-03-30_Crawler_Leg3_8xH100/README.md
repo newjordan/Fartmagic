@@ -50,3 +50,17 @@ NPROC_PER_NODE=8 bash experiments/Crawler_Leg_3/run_multi_seed.sh
 ```
 
 Training script: `experiments/Medusa/train_gpt.py`
+
+## Active Ablation Work
+
+The crawler architecture established above is the foundation. Current ablation series are investigating how to deepen the causal coordination mechanism:
+
+**Choke (bandit_wagon_choke_shaped — BWCS):** Introduce per-loop bottleneck routing inside the crawler MLP. The fuzzy input must commit to a compressed shape before the loop can export its result. Per-loop routing means each causal horizon gets its own compression geometry. Testing flat, pyramid, grouped, and residual bottleneck shapes.
+
+**Exporter / Cannon (planned — BWE):** Calibrate what each loop exports to the next. The choke compresses; the cannon fires the result at the right scale for the next loop's shared weights to receive cleanly. Per-channel soft clamp matched to the int6 dynamic range, plus per-loop bandwidth control so no single causal horizon dominates the residual stream.
+
+**Battery (bandit_wagon_battery — BWB):** Per-loop RoPE frequency scaling (1, 3, 9) to specialize each loop's attention to a different causal distance. Pairs with skipgram features at matching skip distances as a future combination.
+
+**Tap (bandit_wagon_tap — BWT):** Inject frozen encoder layer outputs per loop as stable, pre-drift ground truth anchors — giving each loop a direct read on what the encoder captured before any crawler-loop error accumulated.
+
+The goal across all series: make the causal coordination at each temporal resolution explicit and controllable, rather than emergent and unbalanced.

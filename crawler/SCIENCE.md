@@ -50,6 +50,21 @@ Full run detail (seed=444, 600s, 8034 steps):
 
 ---
 
+## Thread: N-gram Embedding Enrichment
+
+Hypothesis: richer n-gram hashing at the input (bigram → bigram+trigram) gives the crawler better local context at zero parameter cost.
+
+| Date | Leg | Change vs Parent | 8GPU Gate | Full Run BPB | Size | Verdict | Key Finding |
+|------|-----|-----------------|-----------|-------------|------|---------|-------------|
+| 2026-03-31 | BW6_Skipgram | BW5 + TRIGRAM=1 | ✗ null | — | — | ✗ DOES NOT PROMOTE | Null result. +0.0005 raw / +0.00014 int6_sw — both within variance noise. Speed: −0.06ms (zero overhead). Size: −140KB (interesting compression artifact). Crawler recurrence already approximates trigram context; static hash adds nothing. |
+
+Gate detail (seed=444, 2000 steps, 8×H100):
+- BW6SK-00 control: 74.53ms · raw_bpb 1.3083 · int6_sw_bpb 1.28951966 · 9,482,608 bytes
+- BW6SK-01 trigram: 74.47ms · raw_bpb 1.3088 · int6_sw_bpb 1.28965847 · 9,342,986 bytes
+- Delta: −0.06ms · +0.0005 raw · +0.00014 int6_sw · **−140KB**
+
+---
+
 ## Thread: MLP Choke Architecture
 
 Hypothesis: pyramid-shaped MLP bottleneck (CRAWLER_MLP_CHOKE_DIM=512) gives the loop

@@ -9,13 +9,14 @@ These two files tell you where the lab stands. Read them before doing anything.
 
 ## Repo structure
 ```
-neural/      ← Neural SOTA track (Rascal lineage) — leaderboard #1 focus
-crawler/     ← Crawler track (Bandit_Wagon lineage) — compression/quality focus
-vault/       ← Immutable locked sources. Never modify.
-records/     ← Leaderboard submission records. Never modify.
-scripts/     ← Shared runners. sota_now.sh is the neural baseline runner.
-data/        ← Dataset. Never modify.
-junkyard/    ← Legacy experiments. Read-only reference only.
+neural/       ← Neural SOTA track (Rascal lineage) — leaderboard #1 focus
+crawler/      ← Crawler track (Bandit_Wagon lineage) — compression/quality focus
+submissions/  ← Competition PR zone. Read submissions/PROTOCOL.md before touching.
+vault/        ← Immutable locked sources. Never modify.
+records/      ← Leaderboard submission records. Never modify.
+scripts/      ← Shared runners. sota_now.sh is the neural baseline runner.
+data/         ← Dataset. Never modify.
+junkyard/     ← Legacy experiments. Read-only reference only.
 ```
 
 ## Hard rules
@@ -32,7 +33,9 @@ the result is uninterpretable and the money is gone.
 **Gate before 8x.** Every hypothesis runs a 1-GPU 2000-step gate (~$0.50) before
 an 8×H100 full run (~$3-4). Never skip the gate.
 
-**Never submit from TEST_LAB.** Submissions go: dedicated branch → fork1 → PR.
+**Never submit from TEST_LAB.** Submissions go: `submissions/` zone only.
+Read `submissions/PROTOCOL.md`. Run `bash submissions/validate.sh <records_dir>` first.
+Branch flow: `submission/<name>` → push `fork1` → PR to `openai/parameter-golf`.
 
 ## RunPod workflow
 1. Pod always pulls from `TEST_LAB` branch

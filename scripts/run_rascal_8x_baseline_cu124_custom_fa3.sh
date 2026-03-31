@@ -26,10 +26,17 @@ else
   candidates+=(
     "/usr/bin/python3"
     "/opt/conda/bin/python3"
+    "/opt/conda/bin/python"
     "/usr/local/bin/python3"
+    "/usr/local/bin/python"
     "/root/miniconda3/bin/python3"
+    "/root/miniconda3/bin/python"
     "/workspace/miniconda3/bin/python3"
+    "/workspace/miniconda3/bin/python"
   )
+  for p in /opt/conda/envs/*/bin/python3 /opt/conda/envs/*/bin/python /root/.conda/envs/*/bin/python3 /root/.conda/envs/*/bin/python; do
+    candidates+=("${p}")
+  done
 fi
 
 FA3_BASE_PYTHON=""
@@ -50,12 +57,12 @@ PY
 done
 
 if [ -z "${FA3_BASE_PYTHON}" ]; then
-  # Fallback: discover module file directly in common roots.
+  # Fallback: discover module file directly in common roots (py/so).
   while IFS= read -r mpath; do
     [ -n "${mpath}" ] || continue
     FA3_DIR="$(dirname "${mpath}")"
     break
-  done < <(find /workspace /opt/conda /usr/local /root -type f -name flash_attn_interface.py 2>/dev/null | head -n 1)
+  done < <(find /workspace /opt/conda /usr/local /root -type f \( -name flash_attn_interface.py -o -name "flash_attn_interface*.so" \) 2>/dev/null | head -n 1)
   if [ -z "${FA3_DIR}" ]; then
     echo "FATAL: could not find flash_attn_interface via python import or filesystem scan."
     echo "Hint: pass BASE_PYTHON=/path/to/python3 that can import flash_attn_interface."

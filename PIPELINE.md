@@ -1,6 +1,6 @@
 # Lab Pipeline — Ranked Hypothesis Queue
 
-**Updated:** 2026-03-31
+**Updated:** 2026-03-31 (end of day)
 **Crawler champion:** 1.18672385 BPB · 8.61MB · `crawler/2026-03-29_BW5/`
 **Neural champion:** 1.10986874 BPB · 15.44MB · `neural/2026-03-30_Rascal_II/`
 
@@ -66,11 +66,10 @@ These have claimed or theorized BPB deltas large enough to change standings.
 ### [NEURAL] Trigram on Rascal II
 **Status:** Code already in vault. Just needs `TRIGRAM=1` env var.
 **Variable:** `TRIGRAM=1` (default 0). Zero extra parameters.
-**Mechanism:** Identical to BW6_Skipgram: trigram hash `(t-2, t-1, t)` added into same 2048-slot bigram embedding table. Neural SOTA already has the implementation — it just defaults off.
-**Estimated delta:** Small-medium. If skipgram helps crawler, likely helps neural too (same mechanism).
+**Mechanism:** Trigram hash `(t-2, t-1, t)` into same 2048-slot bigram table. Neural SOTA already has the code — defaults off.
+**Note:** Crawler trigram was null (recurrence approximates context). Neural SOTA is a standard transformer — trigram provides context NOT otherwise captured. Mechanism applies differently. Still worth gating.
 **Cost:** ~$0.50 gate.
-**Prerequisite:** None. Run standalone on Rascal II base.
-**Risk:** Low. Zero params, warm start, additive.
+**Risk:** Low. If crawler null → neural may also be null, but different architecture means different expectation.
 
 ---
 
@@ -86,12 +85,9 @@ These have claimed or theorized BPB deltas large enough to change standings.
 
 ---
 
-### [CRAWLER] BW6_Skipgram (Trigram)
-**Status:** 8GPU gate running now.
-**Variable:** `TRIGRAM=1`. Zero extra parameters.
-**Mechanism:** Trigram hash `(t-2, t-1, t)` added to existing bigram embedding. Same 2048-slot table, same projection. Richer n-gram input context for the crawler loops at zero cost.
-**Estimated delta:** Small-medium. Zero-param enrichment.
-**Gate pass criterion:** BW6SK-01 raw_bpb < control AND step_avg ±2ms.
+### [CRAWLER] BW6_Skipgram (Trigram) — CLOSED
+**Status:** ✗ Null result. Archived.
+**Result:** +0.0005 raw / +0.00014 int6_sw — within variance noise. Speed neutral (−0.06ms). Size −140KB (interesting compression artifact). Crawler recurrence already approximates trigram context.
 
 ---
 
@@ -106,12 +102,9 @@ These have claimed or theorized BPB deltas large enough to change standings.
 
 ---
 
-### [CRAWLER] BW5_Cannon Full Run
-**Status:** run.sh ready. Gate passed (74.81ms vs 74.84ms, −0.00016 int6_sw_bpb).
-**Variable:** `CRAWLER_CANNON_TYPE=scalar`. 3 params.
-**Signal at gate:** Tiny speed gain, tiny quality gain, +343KB size regression.
-**Unknown:** Whether the quality signal compounds over 8000 steps or stays marginal.
-**Cost:** ~$3-4.
+### [CRAWLER] BW5_Cannon Full Run — CLOSED
+**Status:** ✗ Does not promote. Archived.
+**Result:** 1.18692423 vs BW5 1.18672385 — +0.00020 worse. Gate signal reversed at scale. Size −179KB vs BW5 at full run (zstd quirk). Channel cannon (1.5K params) never tested at full run — future option if needed.
 
 ---
 
@@ -176,5 +169,5 @@ These have claimed or theorized BPB deltas large enough to change standings.
 
 | Experiment | Location | Blocker |
 |-----------|----------|---------|
-| QK_GAIN + SLOT gate | `experiments/QK_GAIN_SLOT_Gate/` | Needs torch 2.11. REPO_ROOT path also broken in run script. |
+| QK_GAIN + SLOT gate | `neural/2026-03-31_QK_Gain_SLOT/` | Needs torch 2.11. REPO_ROOT path broken in run script — fix before running. |
 | QK_SLOT (neural) | `junkyard/experiments/QK_SLOT_Ablation/` | Same torch 2.11 issue. Pod ran at 3358ms/step (4× slow). |

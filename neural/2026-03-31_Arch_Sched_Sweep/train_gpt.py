@@ -2127,7 +2127,17 @@ def main() -> None:
         warmdown_ms = args.warmdown_iters * step_ms
         remaining_ms = max(max_wallclock_ms - elapsed_ms, 0.0)
         return remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
-    if args.warmup_steps > 0:
+    _skip_train = bool(int(os.environ.get("SKIP_TRAIN", "0")))
+    _load_checkpoint = os.environ.get("LOAD_CHECKPOINT", "")
+    if _skip_train:
+        if not _load_checkpoint:
+            raise SystemExit("SKIP_TRAIN=1 requires LOAD_CHECKPOINT=<path>")
+        log0(f"skip_train:loading {_load_checkpoint}")
+        _ckpt_sd = torch.load(_load_checkpoint, map_location="cpu", weights_only=True)
+        base_model.load_state_dict(_ckpt_sd, strict=True)
+        del _ckpt_sd
+        log0("skip_train:checkpoint loaded — bypassing training loop")
+    if args.warmup_steps > 0 and not _skip_train:
         initial_model_state = {name: tensor.detach().cpu().clone() for name, tensor in base_model.state_dict().items()}
         initial_optimizer_states = [copy.deepcopy(opt.state_dict()) for opt in optimizers]
         model.train()
@@ -2165,7 +2175,7 @@ def main() -> None:
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     step = 0
-    while True:
+    while not _skip_train:
         last_step = step == args.iterations or (stop_after_step is not None and step >= stop_after_step)
         should_validate = last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)
         if should_validate:

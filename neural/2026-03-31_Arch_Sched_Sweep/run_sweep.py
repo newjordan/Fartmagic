@@ -42,6 +42,7 @@ class Case:
     name: str
     env: dict[str, str]
     note: str
+    post_only: bool = False  # if True: skip training, load checkpoint from a prior case
 
 
 CASES = [
@@ -83,7 +84,8 @@ CASES = [
     Case(
         name="gptq",
         env={"SKIP_GPTQ": "0"},
-        note="SKIP_GPTQ 1→0 — full Hessian GPTQ, 30s reserve (~170 fewer steps on 4xGPU)",
+        note="SKIP_GPTQ 1→0 — full Hessian GPTQ on baseline checkpoint (no retraining)",
+        post_only=True,
     ),
     Case(
         name="warmdown_4k",
@@ -150,6 +152,7 @@ def run_case(
     nproc: int,
     seed: int,
     dry_run: bool,
+    checkpoint_path: Path | None = None,
 ) -> dict:
     env = os.environ.copy()
     env.update(BASE_ENV)
@@ -161,11 +164,23 @@ def run_case(
     if hopper.is_dir():
         env["PYTHONPATH"] = f"{hopper}:{env.get('PYTHONPATH', '')}"
 
+    if case.post_only:
+        if checkpoint_path is None or not checkpoint_path.is_file():
+            print(f"[{case.name}] SKIP — no checkpoint available (baseline must run first)")
+            return {"name": case.name, "note": case.note, "rc": "SKIP",
+                    "post_ema_bpb": "SKIP", "sliding_bpb": "SKIP", "int6_bpb": "SKIP",
+                    "size_bytes": "SKIP", "quant_gap": "SKIP", "qat_step": "SKIP",
+                    "swa_start": "SKIP", "total_steps": "0", "step_avg_ms": "SKIP",
+                    "log": "SKIP"}
+        env["SKIP_TRAIN"] = "1"
+        env["LOAD_CHECKPOINT"] = str(checkpoint_path)
+
     log_file = log_dir / f"{case.name}_s{seed}.log"
     cmd = [torchrun_bin, "--standalone", f"--nproc_per_node={nproc}", str(train_script)]
     changed = {k: v for k, v in case.env.items()}
+    mode_tag = " [POST-TRAIN: reuses baseline checkpoint]" if case.post_only else ""
     print(f"\n{'='*70}")
-    print(f"CASE: {case.name}")
+    print(f"CASE: {case.name}{mode_tag}")
     print(f"note: {case.note}")
     print(f"diff: {changed if changed else '(none — baseline)'}")
     print(f"log:  {log_file}")
@@ -289,11 +304,25 @@ def main() -> None:
     print(f"Arch+Sched Sweep  seed={args.seed}  nproc={args.nproc}  cases={[c.name for c in selected]}")
     print(f"MAX_WALLCLOCK_SECONDS=600 — QAT fires ~step 2800, SWA ~step 2650 on 4xH100")
 
+    # Checkpoint saved after each full training run; post_only cases reuse it.
+    # We use the baseline checkpoint so post_only cases test quant on the best model.
+    saved_checkpoint: Path | None = None
+    final_model_src = repo_root / "final_model.pt"
+
     results = []
     for case in selected:
         r = run_case(case, train_script, repo_root, log_dir,
-                     args.torchrun, args.nproc, args.seed, args.dry_run)
+                     args.torchrun, args.nproc, args.seed, args.dry_run,
+                     checkpoint_path=saved_checkpoint)
         results.append(r)
+        # After a full training run, snapshot the checkpoint for post_only cases.
+        # Use the first successful training run (baseline if present, else first case).
+        if not case.post_only and saved_checkpoint is None and not args.dry_run:
+            if final_model_src.is_file() and r.get("rc") == 0:
+                saved_checkpoint = log_dir / f"checkpoint_{case.name}_s{args.seed}.pt"
+                import shutil
+                shutil.copy2(str(final_model_src), str(saved_checkpoint))
+                print(f"[checkpoint] saved {case.name} model → {saved_checkpoint}")
         print_summary(results)
 
     csv_path = log_dir / f"summary_s{args.seed}_{int(time.time())}.csv"

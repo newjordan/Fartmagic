@@ -1,10 +1,4 @@
 #!/bin/bash
-# =============================================================================
-# LOCKED — vault/pod_setup_sota_cu124_2026-04-01.sh
-# Locked: 2026-04-01  Source: scripts/pod_setup.sh @ e7a5944
-# Neural SOTA stack: torch==2.4.1+cu124, custom FA3 discovery + cu124 Hopper wheel
-# DO NOT MODIFY. Copy to scripts/pod_setup.sh to restore.
-# =============================================================================
 set -euo pipefail
 export PIP_ROOT_USER_ACTION=ignore   # suppress "running as root" pip warning
 # =============================================================================
@@ -22,14 +16,6 @@ export PIP_ROOT_USER_ACTION=ignore   # suppress "running as root" pip warning
 
 REPO_URL="https://github.com/newjordan/parameter-golf.git"
 BRANCH="TEST_LAB"
-PIP_TORCH_INDEX_URL="${PIP_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
-REQUIRED_CUDA_PREFIX="${REQUIRED_CUDA_PREFIX:-12.4}"
-# Pinned for the known-good 8xH100 stack.
-REQUIRED_TORCH_PKGS="${REQUIRED_TORCH_PKGS:-torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1}"
-REQUIRED_TORCH_VERSION="${REQUIRED_TORCH_VERSION:-2.4.1+cu124}"
-# Standard 8xH100 SXM pods: install cu124 Hopper FA3 wheel when not pre-installed.
-# Custom-head pods (ABI incompatible): override with ALLOW_FA3_WHEEL_INSTALL=0.
-ALLOW_FA3_WHEEL_INSTALL="${ALLOW_FA3_WHEEL_INSTALL:-1}"
 # Auto-detect repo root from script location; fall back for curl-pipe scenario
 _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || true
 _CANDIDATE="$(cd -- "${_SCRIPT_DIR}/.." && pwd 2>/dev/null)" || true
@@ -68,52 +54,14 @@ else
 fi
 
 # =============================================================================
-# 2. Verify/repair base environment (system Python + exact SOTA PyTorch)
+# 2. Verify base environment (system Python + PyTorch must already exist)
 # =============================================================================
 echo ""
-echo "[2/6] Checking base environment (must be cu124)..."
+echo "[2/6] Checking base environment..."
 
 python3 --version || { echo "FATAL: python3 not found"; exit 1; }
-
-torch_state() {
-python3 - <<PY
-import sys
-required = "${REQUIRED_CUDA_PREFIX}"
-required_torch = "${REQUIRED_TORCH_VERSION}"
-try:
-    import torch
-except Exception as e:
-    print(f"  PyTorch import failed: {type(e).__name__}: {e}")
-    raise SystemExit(10)
-cuda = torch.version.cuda or "NONE"
-print(f"  PyTorch {torch.__version__}  CUDA {cuda}")
-if not cuda.startswith(required):
-    raise SystemExit(20)
-if torch.__version__ != required_torch:
-    raise SystemExit(21)
-PY
-}
-
-if torch_state; then
-    echo "  Base torch stack OK"
-else
-    rc=$?
-    if [ "${rc}" -eq 10 ]; then
-        echo "  PyTorch missing/broken in system Python; installing pinned cu124 stack..."
-    elif [ "${rc}" -eq 20 ]; then
-        echo "  Wrong CUDA backend detected; reinstalling pinned cu124 stack..."
-    elif [ "${rc}" -eq 21 ]; then
-        echo "  Wrong torch version detected; reinstalling pinned SOTA torch stack..."
-    else
-        echo "  Unexpected torch check failure (rc=${rc}); reinstalling pinned cu124 stack..."
-    fi
-    python3 -m pip install --upgrade pip >/dev/null
-    # Clean old torch family first to avoid stale binary mixes.
-    python3 -m pip uninstall -y torch torchvision torchaudio triton >/dev/null 2>&1 || true
-    python3 -m pip install --no-cache-dir --force-reinstall \
-        --index-url "${PIP_TORCH_INDEX_URL}" ${REQUIRED_TORCH_PKGS}
-    torch_state || { echo "FATAL: torch stack still invalid after reinstall"; exit 1; }
-fi
+python3 -c "import torch; print(f'  PyTorch {torch.__version__}  CUDA {torch.version.cuda}')" \
+    || { echo "FATAL: PyTorch not installed in system Python"; exit 1; }
 
 GPU_COUNT=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo "0")
 if [ "$GPU_COUNT" -eq 0 ]; then
@@ -133,9 +81,9 @@ fi
 echo ""
 echo "[3/6] Installing pip packages..."
 
-python3 -m pip install --upgrade pip -q 2>&1 | tail -1
+pip install --upgrade pip -q 2>&1 | tail -1
 
-python3 -m pip install numpy tqdm huggingface-hub kernels setuptools \
+pip install numpy tqdm huggingface-hub kernels setuptools \
     "typing-extensions==4.15.0" datasets tiktoken sentencepiece attr -q 2>&1 | tail -1
 echo "  Core packages OK"
 
@@ -148,73 +96,54 @@ echo "[4/6] zstandard..."
 if python3 -c "import zstandard" 2>/dev/null; then
     echo "  Already installed"
 else
-    python3 -m pip install zstandard -q
+    pip install zstandard -q
     echo "  Installed"
 fi
 python3 -c "import zstandard; print(f'  zstandard {zstandard.__version__}')"
 
 # =============================================================================
-# 5. FlashAttention-3 — discover custom FA3 from pod's Python envs first
+# 5. FlashAttention-3
 # =============================================================================
 echo ""
 echo "[5/6] FlashAttention-3..."
 
-FA3_SELECTED_PYTHONPATH=""
-
-# Scan all Python candidates on the pod to find the one with custom FA3 installed.
-# The pod image (e.g. Vast.ai H100 SXM) pre-installs FA3 in a conda/system env that
-# may differ from the current shell's python3. We must discover it.
-mapfile -t _fa3_candidates < <(
-    which -a python3 2>/dev/null | awk '!seen[$0]++'
-    printf '%s\n' \
-        /usr/bin/python3 \
-        /opt/conda/bin/python3 /opt/conda/bin/python \
-        /usr/local/bin/python3 \
-        /root/miniconda3/bin/python3 /root/miniconda3/bin/python \
-        /workspace/miniconda3/bin/python3 /workspace/miniconda3/bin/python
-    find /opt/conda/envs /root/.conda/envs /workspace/miniconda3/envs \
-        -maxdepth 3 \( -name python3 -o -name python \) 2>/dev/null | head -20
-)
-
-_FA3_DIR=""
-_FA3_SOURCE_PYTHON=""
-for _py in "${_fa3_candidates[@]}"; do
-    [ -x "${_py}" ] || continue
-    if _dir="$("${_py}" - 2>/dev/null <<'PY'
-import inspect, os
-import flash_attn_interface
-print(os.path.dirname(inspect.getfile(flash_attn_interface)))
-PY
-)"; then
-        _FA3_DIR="${_dir}"
-        _FA3_SOURCE_PYTHON="${_py}"
-        break
+install_fa3() {
+    echo "  Attempting FA3 abi3 wheel (cu128)..."
+    if pip install --no-cache-dir \
+        "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
+        2>&1 | tail -3; then
+        return 0
     fi
-done
 
-if [ -n "${_FA3_DIR}" ]; then
-    FA3_SELECTED_PYTHONPATH="${_FA3_DIR}:${PYTHONPATH:-}"
-    echo "  Found custom FA3 at: ${_FA3_DIR}"
-    echo "  (discovered via ${_FA3_SOURCE_PYTHON})"
-elif python3 -c "from flash_attn_interface import flash_attn_func" >/dev/null 2>&1; then
-    FA3_SELECTED_PYTHONPATH="${PYTHONPATH:-}"
-    echo "  FA3 already in current python3 site-packages"
-elif [ "${ALLOW_FA3_WHEEL_INSTALL}" = "1" ]; then
-    echo "  Custom FA3 not found — falling back to cu124 wheel..."
-    python3 -m pip install --no-cache-dir \
+    echo "  cu128 failed, trying cu124..."
+    if pip install --no-cache-dir \
         "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
-        2>&1 | tail -3 || { echo "FATAL: FA3 wheel install failed"; exit 1; }
-    FA3_SELECTED_PYTHONPATH="${PYTHONPATH:-}"
-else
-    echo "FATAL: FA3 (flash_attn_interface) not found in any Python env on this pod."
-    echo "       Use ALLOW_FA3_WHEEL_INSTALL=1 to fall back to the cu124 generic wheel."
-    exit 1
-fi
+        2>&1 | tail -3; then
+        return 0
+    fi
 
-# Verify FA3 is importable and has no ABI mismatch
-PYTHONPATH="${FA3_SELECTED_PYTHONPATH}" python3 -c \
-    "from flash_attn_interface import flash_attn_func; print('  FA3 (flash_attn_interface) OK')" \
-    || { echo "FATAL: FA3 import failed — ABI mismatch or missing symbol. Check torch/FA3 version pairing."; exit 1; }
+    echo "  Wheels failed. Checking for local flash-attention/hopper source..."
+    if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
+        SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
+        SRC="${WORKSPACE}/flash-attention/hopper/flash_attn_interface.py"
+        if [ -f "$SRC" ]; then
+            ln -sf "$SRC" "${SITE}/flash_attn_interface.py"
+            echo "  Symlinked flash_attn_interface.py into site-packages"
+            return 0
+        fi
+    fi
+
+    echo "  WARNING: Could not install FA3. Will fall back to PyTorch SDPA."
+    return 1
+}
+
+if python3 -c "from flash_attn_interface import flash_attn_func; print('  FA3 (flash_attn_interface) OK')" 2>/dev/null; then
+    : # already good
+elif python3 -c "import flash_attn; v=flash_attn.__version__; assert v.startswith('3'); print(f'  FA3 v{v} OK')" 2>/dev/null; then
+    : # flash_attn v3 package works
+else
+    install_fa3
+fi
 
 # =============================================================================
 # 6. Dataset (sp1024)
@@ -276,7 +205,7 @@ echo "============================================"
 echo " Verification"
 echo "============================================"
 
-PYTHONPATH="${FA3_SELECTED_PYTHONPATH}" python3 - << 'PYEOF'
+python3 - << 'PYEOF'
 import sys, glob
 
 print(f"Python       : {sys.version.split()[0]}")
@@ -290,9 +219,14 @@ print(f"GPUs         : {torch.cuda.device_count()}")
 fa = "NOT FOUND"
 try:
     from flash_attn_interface import flash_attn_func
-    fa = "flash_attn_interface (FA3)"
+    fa = "flash_attn_interface (FA3 hopper)"
 except ImportError:
-    pass
+    try:
+        import flash_attn
+        v = flash_attn.__version__
+        fa = f"flash_attn v{v}" + ("" if v.startswith("3") else " WARNING: not FA3!")
+    except ImportError:
+        pass
 print(f"FlashAttn    : {fa}")
 
 try:

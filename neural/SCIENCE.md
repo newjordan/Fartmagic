@@ -245,3 +245,6 @@ Gate target for all new legs: beat **1.10986874** BPB on seed 444 → confirm on
 | **Rascal_II** | **1.10986874** | **15.44MB** | **1.1099** | **CHAMPION (open PR #1120)** |
 
 | 2026-03-31 | **QK_Gain_SLOT_Legal** | context-only SLOT (eval-only) | ✓ gate −0.0057 proxy | — | — | — | ⏳ GATE PASSED, 8×GPU PENDING | |
+
+<!-- NEW LEG STUB -->
+| 2026-03-31 | Rascal_III_SLOT | (fill in) | ⏳ | ⏳ | — | — | ⏳ PENDING | |

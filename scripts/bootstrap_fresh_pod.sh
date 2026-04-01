@@ -99,15 +99,12 @@ log "Installing repo deps"
 python -m pip install -r requirements.txt
 python -m pip install zstandard
 
-# Optional FA3 install (best-effort)
-if ! python - <<'PY' >/dev/null 2>&1
-from flash_attn_interface import flash_attn_func  # noqa: F401
-PY
-then
-    log "flash_attn_interface missing; attempting FA3 wheel (best-effort)"
-    python -m pip install --no-cache-dir \
-      "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
-      || true
+if [ -x "${REPO_DIR}/scripts/pod_setup.sh" ]; then
+    log "Running strict FA3 setup (scripts/pod_setup.sh)"
+    bash "${REPO_DIR}/scripts/pod_setup.sh"
+else
+    echo "FATAL: missing ${REPO_DIR}/scripts/pod_setup.sh (required for strict cu124+FA3 setup)"
+    exit 1
 fi
 
 mkdir -p "${REPO_DIR}/logs"
@@ -126,7 +123,9 @@ chmod +x "${WORKSPACE}/activate_pglab.sh"
 log "Preflight checks"
 python - <<'PY'
 import os
+import importlib
 import torch
+from flash_attn_interface import flash_attn_func  # noqa: F401
 print("python:", os.sys.executable)
 print("torch:", torch.__version__)
 print("torch_cuda:", torch.version.cuda)
@@ -134,6 +133,10 @@ print("cuda_available:", torch.cuda.is_available())
 print("gpu_count:", torch.cuda.device_count())
 if torch.cuda.is_available() and torch.cuda.device_count() > 0:
     print("gpu0:", torch.cuda.get_device_name(0))
+importlib.import_module("flash_attn_3._C")
+print("fa3_runtime: OK")
+assert torch.__version__ == "2.4.1+cu124", f"wrong torch: {torch.__version__}"
+assert str(torch.version.cuda).startswith("12.4"), f"wrong cuda: {torch.version.cuda}"
 PY
 
 if command -v nvidia-smi >/dev/null 2>&1; then

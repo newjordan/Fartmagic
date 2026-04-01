@@ -55,12 +55,12 @@ run_arm() {
     SKIP_GPTQ=1 \
     MAX_WALLCLOCK_SECONDS=0 \
     ITERATIONS=1200 \
-    "SLOT_ENABLED=${slot}" \
-    "SLOT_MAX_WINDOWS=${SLOT_MAX_WINDOWS}" \
-    "SEED=${SEED}" \
-    "DATA_PATH=${DATA_PATH}" \
-    "TOKENIZER_PATH=${TOKENIZER_PATH}" \
-    "PYTHONPATH=${PYTHONPATH_EXTRA}${PYTHONPATH:-}" \
+    SLOT_ENABLED="${slot}" \
+    SLOT_MAX_WINDOWS="${SLOT_MAX_WINDOWS}" \
+    SEED="${SEED}" \
+    DATA_PATH="${DATA_PATH}" \
+    TOKENIZER_PATH="${TOKENIZER_PATH}" \
+    PYTHONPATH="${PYTHONPATH_EXTRA}${PYTHONPATH:-}" \
     "${TORCHRUN}" --standalone "--nproc_per_node=${NPROC}" "${TRAIN_GPT}" \
         2>&1 | tee "${log}"
     echo "[${name}] done"

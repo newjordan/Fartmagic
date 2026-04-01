@@ -107,24 +107,28 @@ python3 -c "import zstandard; print(f'  zstandard {zstandard.__version__}')"
 echo ""
 echo "[5/6] FlashAttention-3..."
 
+fa3_runtime_check() {
+    python3 - << 'PYEOF' >/dev/null 2>&1
+import importlib
+from flash_attn_interface import flash_attn_func  # noqa: F401
+importlib.import_module("flash_attn_3._C")
+PYEOF
+}
+
 install_fa3() {
-    # --- 1. Dao-AILab v2.8.3 wheel (auto-detect torch, python, ABI) ---
-    _torch_minor=$(python3 -c "import torch; print('.'.join(torch.__version__.split('.')[:2]))" 2>/dev/null)
-    _pyver=$(python3 -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')" 2>/dev/null)
-    _abi=$(python3 -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')" 2>/dev/null)
-    if [[ -n "${_torch_minor}" && -n "${_pyver}" && -n "${_abi}" ]]; then
-        _whl="flash_attn-2.8.3+cu12torch${_torch_minor}cxx11abi${_abi}-${_pyver}-${_pyver}-linux_x86_64.whl"
-        _url="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/${_whl}"
-        echo "  Trying Dao-AILab v2.8.3: torch${_torch_minor} ${_pyver} abi=${_abi}"
-        if pip install --no-deps --no-cache-dir "${_url}" 2>&1 | tail -3; then
-            echo "  Installed ${_whl}"
+    # --- 1. Official FA3 abi3 wheel for cu124 ---
+    _fa3_whl_url="https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl"
+    echo "  Trying official FA3 abi3 wheel (cu124)..."
+    if pip install --no-cache-dir "${_fa3_whl_url}" 2>&1 | tail -3; then
+        if fa3_runtime_check; then
+            echo "  Installed and verified FA3 wheel"
             return 0
         fi
-        echo "  Dao-AILab wheel failed (${_url})"
+        echo "  Wheel installed but runtime ABI check failed; continuing..."
     fi
 
-    # --- 2. Search system for pre-installed FA3 (common on Vast.ai/RunPod) ---
-    echo "  Searching system for pre-installed flash_attn_interface..."
+    # --- 2. Search system for pre-installed FA3 runtime and bridge it ---
+    echo "  Searching system for FA3 runtime (_C.abi3.so + flash_attn_interface.py)..."
     _fa3_path=""
     for _py in $(which -a python3 2>/dev/null | awk '!seen[$0]++') /opt/conda/bin/python3 /usr/bin/python3; do
         [ -x "${_py}" ] || continue
@@ -139,11 +143,23 @@ except ImportError:
         if [ -n "${_fa3_path}" ]; then
             SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
             echo "  Found FA3 at ${_fa3_path} (via ${_py})"
+            mkdir -p "${SITE}/flash_attn_3"
             for _f in "${_fa3_path}"/flash_attn_interface*; do
                 [ -e "${_f}" ] && ln -sf "${_f}" "${SITE}/"
             done
-            echo "  Symlinked into ${SITE}"
-            return 0
+            for _cand in "${_fa3_path}"/flash_attn_3/_C*.so \
+                         /usr/local/lib/python3.*/dist-packages/flash_attn_3/_C*.so \
+                         /opt/conda/lib/python3.*/site-packages/flash_attn_3/_C*.so; do
+                [ -e "${_cand}" ] || continue
+                ln -sf "${_cand}" "${SITE}/flash_attn_3/_C.abi3.so"
+                touch "${SITE}/flash_attn_3/__init__.py"
+                break
+            done
+            if fa3_runtime_check; then
+                echo "  Bridged and verified FA3 runtime from system packages"
+                return 0
+            fi
+            echo "  Found candidate FA3, but runtime ABI check failed; continuing..."
         fi
     done
 
@@ -154,21 +170,29 @@ except ImportError:
         SRC="${WORKSPACE}/flash-attention/hopper/flash_attn_interface.py"
         if [ -f "$SRC" ]; then
             ln -sf "$SRC" "${SITE}/flash_attn_interface.py"
-            echo "  Symlinked flash_attn_interface.py into site-packages"
-            return 0
+            if fa3_runtime_check; then
+                echo "  Symlinked and verified flash_attn_interface.py runtime"
+                return 0
+            fi
+            echo "  Local flash_attn_interface exists, but runtime ABI check failed; continuing..."
         fi
     fi
 
-    echo "  WARNING: Could not install FA3. Will fall back to PyTorch SDPA."
+    echo "  FATAL: Could not install a working FA3 runtime."
     return 1
 }
 
-if python3 -c "from flash_attn_interface import flash_attn_func; print('  FA3 (flash_attn_interface) OK')" 2>/dev/null; then
+if fa3_runtime_check; then
+    echo "  FA3 runtime already valid"
+elif python3 -c "import flash_attn; v=flash_attn.__version__; assert v.startswith('3'); print(f'  FA3 v{v} OK')" 2>/dev/null && fa3_runtime_check; then
     : # already good
-elif python3 -c "import flash_attn; v=flash_attn.__version__; assert v.startswith('3'); print(f'  FA3 v{v} OK')" 2>/dev/null; then
-    : # flash_attn v3 package works
 else
-    install_fa3
+    install_fa3 || exit 1
+fi
+
+if ! fa3_runtime_check; then
+    echo "FATAL: FA3 is required but not runtime-valid (flash_attn_3._C import failed)."
+    exit 1
 fi
 
 # =============================================================================

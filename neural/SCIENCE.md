@@ -248,3 +248,6 @@ Gate target for all new legs: beat **1.10986874** BPB on seed 444 → confirm on
 
 <!-- NEW LEG STUB -->
 | 2026-03-31 | Rascal_III_SLOT | (fill in) | ⏳ | ⏳ | — | — | ⏳ PENDING | |
+
+<!-- NEW LEG STUB -->
+| 2026-03-31 | RASCAL_WINDOWN_TESTING | 4-arm legal suite: CTRL / SLOT / Scale TTT / SLOT+Scale | ⏳ | ⏳ | — | — | ⏳ SUITE PENDING | |

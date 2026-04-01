@@ -33,7 +33,21 @@ the full gap post-training. If delta scales with gap, full run improvement could
 
 ## Full Run (8×H100, seed=444)
 
-_Pending._
+| metric | value |
+|--------|-------|
+| raw BPB | 1.1999 |
+| int6_sw BPB | **1.18292670** |
+| quant gap | 0.01697 |
+| step_avg | ~76ms |
+| steps | 7893 (wallclock stop) |
+| bytes | 9,963,860 (9.96MB) |
+| GPTQ calibration | 8.6s post-training |
+
+**vs BW5 champion (1.18672385): −0.00380 BPB — NEW CHAMPION**
+
+Gate delta was −0.00486; full run delivered −0.00380 vs champion. Proxy inflation ~1.3×.
+GPTQ calibration 8.6s post-training, zero impact on training step count.
+Size +0.72MB vs BW5 (9.96MB vs ~9.24MB), well under 16MB.
 
 ---
 
@@ -45,4 +59,7 @@ _Pending._
 
 ## Verdict
 
-_Pending full run._
+**PROMOTES.** BW10_GPTQ (BW8 + LOOP_AWARE_GPTQ=1) is the new crawler champion at 1.18292670 BPB.
+
+Next: seed=300 confirmation, then update LEADER.md.
+Next experiment: BW12 = BW11_5Flat (5F) + GPTQ — stack both improvements.

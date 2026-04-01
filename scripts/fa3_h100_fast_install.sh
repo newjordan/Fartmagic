@@ -42,7 +42,8 @@ export MAX_JOBS="${MAX_JOBS:-4}"
 export TMPDIR="${TMPDIR:-/workspace/tmp}"
 mkdir -p "${TMPDIR}"
 
-pip install -e .
+pip install -U ninja packaging
+pip install -e . --no-build-isolation
 
 python3 - <<'PYEOF'
 import importlib, os, site

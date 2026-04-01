@@ -17,11 +17,13 @@ actual=$(sha256sum "${SRC}" | awk '{print $1}')
 [[ "${actual}" == "${EXPECTED_HASH}" ]] || die "hash mismatch — got ${actual}"
 echo "      OK ${actual:0:16}..."
 
-echo "[2/3] CUDA must be 12.x..."
+echo "[2/3] CUDA must be 12.4 (cu124 — SOTA stack)..."
 cuda_ver=$(python3 -c "import torch; print(torch.version.cuda or 'NONE')" 2>/dev/null) \
     || die "python3/torch failed"
-[[ "${cuda_ver}" == "12."* ]] || die "wrong CUDA: ${cuda_ver}"
-echo "      cuda=${cuda_ver} OK"
+torch_ver=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null)
+[[ "${cuda_ver}" == "12.4"* ]] || \
+    die "wrong CUDA: ${cuda_ver} (torch ${torch_ver}) — SOTA requires cu124. cu128 produces non-matching weights."
+echo "      torch=${torch_ver}  cuda=${cuda_ver}  OK"
 
 echo "[3/3] launching seed=${SEED} nproc=${NPROC}..."
 mkdir -p "${LOG_DIR}"

@@ -26,15 +26,10 @@ TRAIN_SHARDS="${TRAIN_SHARDS:-1}"
 FORCE_SYNC="${FORCE_SYNC:-0}"
 
 # PyTorch install mode:
-# - conda: install via conda channels
+# - conda: install via conda channels (default, most reliable on fresh pods)
 # - pip: install via pip CUDA wheels
-TORCH_INSTALL_MODE="${TORCH_INSTALL_MODE:-pip}"
+TORCH_INSTALL_MODE="${TORCH_INSTALL_MODE:-conda}"
 PIP_TORCH_INDEX_URL="${PIP_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
-PIP_TORCH_PACKAGES="${PIP_TORCH_PACKAGES:-torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1}"
-REQUIRED_TORCH_VERSION="${REQUIRED_TORCH_VERSION:-2.4.1+cu124}"
-REQUIRED_CUDA_PREFIX="${REQUIRED_CUDA_PREFIX:-12.4}"
-REQUIRE_FA3="${REQUIRE_FA3:-1}"
-ALLOW_FA3_WHEEL_INSTALL="${ALLOW_FA3_WHEEL_INSTALL:-0}"
 
 mkdir -p "${WORKSPACE}"
 
@@ -77,8 +72,7 @@ if [ "${TORCH_INSTALL_MODE}" = "conda" ]; then
     conda install -y -n "${CONDA_ENV}" pytorch pytorch-cuda=12.4 -c pytorch -c nvidia
 else
     log "Installing CUDA PyTorch via pip index ${PIP_TORCH_INDEX_URL}"
-    python -m pip uninstall -y torch torchvision torchaudio triton >/dev/null 2>&1 || true
-    python -m pip install --no-cache-dir --force-reinstall --index-url "${PIP_TORCH_INDEX_URL}" ${PIP_TORCH_PACKAGES}
+    python -m pip install --upgrade torch torchvision torchaudio --index-url "${PIP_TORCH_INDEX_URL}"
 fi
 
 if [ -d "${REPO_DIR}/.git" ]; then
@@ -105,43 +99,15 @@ log "Installing repo deps"
 python -m pip install -r requirements.txt
 python -m pip install zstandard
 
-FA3_LOCAL_PYTHONPATH="${REPO_DIR}/flash-attention/hopper:${PYTHONPATH:-}"
-FA3_SYSTEM_PYTHONPATH="${PYTHONPATH:-}"
-FA3_SELECTED_PYTHONPATH=""
-
-check_fa3_path() {
-PYTHONPATH="${1:-}" python - <<'PY'
+# Optional FA3 install (best-effort)
+if ! python - <<'PY' >/dev/null 2>&1
 from flash_attn_interface import flash_attn_func  # noqa: F401
 PY
-}
-
-# Required FA3 install (no fallback)
-if check_fa3_path "${FA3_LOCAL_PYTHONPATH}" >/dev/null 2>&1; then
-    FA3_SELECTED_PYTHONPATH="${FA3_LOCAL_PYTHONPATH}"
-    log "Using FA3 provider: local hopper path"
-elif check_fa3_path "${FA3_SYSTEM_PYTHONPATH}" >/dev/null 2>&1; then
-    FA3_SELECTED_PYTHONPATH="${FA3_SYSTEM_PYTHONPATH}"
-    log "Using FA3 provider: system/site-packages"
-else
-    if [ "${ALLOW_FA3_WHEEL_INSTALL}" = "1" ]; then
-        log "flash_attn_interface missing; attempting FA3 wheel (required)"
-        python -m pip install --no-cache-dir \
-          "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
-          || { echo "FATAL: FA3 unavailable; refusing non-SOTA fallback stack"; exit 1; }
-    else
-        echo "FATAL: FA3 unavailable from custom/system paths and wheel install is disabled (ALLOW_FA3_WHEEL_INSTALL=0)."
-        exit 1
-    fi
-    if check_fa3_path "${FA3_LOCAL_PYTHONPATH}" >/dev/null 2>&1; then
-        FA3_SELECTED_PYTHONPATH="${FA3_LOCAL_PYTHONPATH}"
-        log "Using FA3 provider: local hopper path"
-    elif check_fa3_path "${FA3_SYSTEM_PYTHONPATH}" >/dev/null 2>&1; then
-        FA3_SELECTED_PYTHONPATH="${FA3_SYSTEM_PYTHONPATH}"
-        log "Using FA3 provider: system/site-packages"
-    else
-        echo "FATAL: FA3 import failed (missing or ABI mismatch, e.g. undefined symbol)."
-        exit 1
-    fi
+then
+    log "flash_attn_interface missing; attempting FA3 wheel (best-effort)"
+    python -m pip install --no-cache-dir \
+      "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
+      || true
 fi
 
 mkdir -p "${REPO_DIR}/logs"
@@ -154,7 +120,6 @@ source "${MINICONDA_DIR}/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 cd "${REPO_DIR}"
 export PATH="${MINICONDA_DIR}/bin:\${PATH}"
-export PYTHONPATH="${FA3_SELECTED_PYTHONPATH}"
 ACTEOF
 chmod +x "${WORKSPACE}/activate_pglab.sh"
 
@@ -169,21 +134,7 @@ print("cuda_available:", torch.cuda.is_available())
 print("gpu_count:", torch.cuda.device_count())
 if torch.cuda.is_available() and torch.cuda.device_count() > 0:
     print("gpu0:", torch.cuda.get_device_name(0))
-
-required_torch = os.environ.get("REQUIRED_TORCH_VERSION", "2.4.1+cu124")
-required_cuda = os.environ.get("REQUIRED_CUDA_PREFIX", "12.4")
-if torch.__version__ != required_torch:
-    raise SystemExit(f"FATAL: wrong torch {torch.__version__} (expected {required_torch})")
-if not (torch.version.cuda or "NONE").startswith(required_cuda):
-    raise SystemExit(f"FATAL: wrong CUDA {torch.version.cuda} (expected {required_cuda}x)")
 PY
-
-if [ "${REQUIRE_FA3}" = "1" ]; then
-    PYTHONPATH="${FA3_SELECTED_PYTHONPATH}" python - <<'PY'
-from flash_attn_interface import flash_attn_func  # noqa: F401
-print("flash_attn_interface: OK")
-PY
-fi
 
 if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi -L || true

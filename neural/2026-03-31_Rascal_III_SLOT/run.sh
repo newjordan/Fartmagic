@@ -4,8 +4,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-SRC="${REPO_ROOT}/neural/2026-03-31_Rascal_III_SLOT/train_gpt.py"
-EXPECTED_HASH="6937ec89a1050966e3fc894ab07b55b99bbece2e282b697871cf1ef2223c07f1"
+SRC="${REPO_ROOT}/neural/2026-03-31_Rascal_III_SLOT/train_gpt_slot.py"
+EXPECTED_HASH="fac1d67b2779ce1b8b118284728e8799b5ab55dd43c95b38db428d3380369f17"
 SEED="${SEED:-444}"
 NPROC="${NPROC_PER_NODE:-8}"
 LOG_DIR="${REPO_ROOT}/logs/slot_runs"

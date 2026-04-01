@@ -59,7 +59,7 @@ run_arm() {
     DATA_PATH="${DATA_PATH}" \
     TOKENIZER_PATH="${TOKENIZER_PATH}" \
     PYTHONPATH="${PYTHONPATH_EXTRA}${PYTHONPATH:-}" \
-    "${TORCHRUN}" --standalone "--nproc_per_node=${NPROC}" "${SCRIPT_DIR}/train_gpt.py" \
+    "${TORCHRUN}" --standalone "--nproc_per_node=${NPROC}" "${SCRIPT_DIR}/train_gpt_slot.py" \
         2>&1 | tee "${log}"
     echo "[${name}] done"
 }

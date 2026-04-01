@@ -15,6 +15,7 @@ LOG_DIR="${REPO_ROOT}/logs/sota_runs"
 REQUIRED_TORCH_VERSION="${REQUIRED_TORCH_VERSION:-2.4.1+cu124}"
 REQUIRED_CUDA_PREFIX="${REQUIRED_CUDA_PREFIX:-12.4}"
 REQUIRE_FA3="${REQUIRE_FA3:-1}"
+FA3_PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 
 die() { echo "FATAL: $*" >&2; exit 1; }
 
@@ -35,7 +36,7 @@ torch_ver=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null)
 [[ "${torch_ver}" == "${REQUIRED_TORCH_VERSION}" ]] || \
     die "wrong torch: '${torch_ver}'. SOTA requires ${REQUIRED_TORCH_VERSION}"
 if [[ "${REQUIRE_FA3}" == "1" ]]; then
-    python3 -c "from flash_attn_interface import flash_attn_func; print('fa3_ok')" >/dev/null 2>&1 \
+    PYTHONPATH="${FA3_PYTHONPATH}" python3 -c "from flash_attn_interface import flash_attn_func; print('fa3_ok')" >/dev/null 2>&1 \
         || die "flash_attn_interface missing — refusing fallback backend"
 fi
 echo "      torch=${torch_ver}  cuda=${cuda_ver}  OK"
@@ -45,7 +46,7 @@ echo "[3/3] launching (SKIP_GPTQ=1 seed=${SEED})..."
 mkdir -p "${LOG_DIR}"
 LOG="${LOG_DIR}/sota_seed${SEED}_$(date +%Y%m%d_%H%M%S).log"
 
-export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
+export PYTHONPATH="${FA3_PYTHONPATH}"
 
 SEED="${SEED}" \
 MAX_WALLCLOCK_SECONDS=600 \

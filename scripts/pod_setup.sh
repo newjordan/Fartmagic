@@ -150,6 +150,12 @@ python3 -c "import zstandard; print(f'  zstandard {zstandard.__version__}')"
 echo ""
 echo "[5/6] FlashAttention-3..."
 
+FA3_LOCAL_PYTHONPATH="${WORKSPACE}/flash-attention/hopper:${PYTHONPATH:-}"
+
+check_fa3() {
+    PYTHONPATH="${FA3_LOCAL_PYTHONPATH}" python3 -c "from flash_attn_interface import flash_attn_func; print('  FA3 (flash_attn_interface) OK')"
+}
+
 install_fa3() {
     echo "  Attempting FA3 abi3 wheel (cu124)..."
     if python3 -m pip install --no-cache-dir \
@@ -161,8 +167,10 @@ install_fa3() {
     return 1
 }
 
-python3 -c "from flash_attn_interface import flash_attn_func; print('  FA3 (flash_attn_interface) OK')" 2>/dev/null \
+check_fa3 2>/dev/null \
     || install_fa3 \
+    || { echo "FATAL: FA3 unavailable; refusing non-SOTA fallback stack"; exit 1; }
+check_fa3 >/dev/null 2>&1 \
     || { echo "FATAL: FA3 unavailable; refusing non-SOTA fallback stack"; exit 1; }
 
 # =============================================================================
@@ -237,16 +245,12 @@ print(f"CUDA avail   : {torch.cuda.is_available()}")
 print(f"GPUs         : {torch.cuda.device_count()}")
 
 fa = "NOT FOUND"
+sys.path.insert(0, "./flash-attention/hopper")
 try:
     from flash_attn_interface import flash_attn_func
     fa = "flash_attn_interface (FA3 hopper)"
 except ImportError:
-    try:
-        import flash_attn
-        v = flash_attn.__version__
-        fa = f"flash_attn v{v}" + ("" if v.startswith("3") else " WARNING: not FA3!")
-    except ImportError:
-        pass
+    pass
 print(f"FlashAttn    : {fa}")
 
 try:

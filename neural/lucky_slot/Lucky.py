@@ -135,9 +135,6 @@ class Hyperparameters:
     coprime_max_loaded_shards = int(os.environ.get("COPRIME_MAX_LOADED_SHARDS", 4))
     coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", 1))
     coprime_shard_hold_steps = int(os.environ.get("COPRIME_SHARD_HOLD_STEPS", 64))
-    slot_enabled = bool(int(os.environ.get("SLOT_ENABLED", "0")))
-    slot_steps = int(os.environ.get("SLOT_STEPS", "8"))
-    slot_lr = float(os.environ.get("SLOT_LR", "0.005"))
 
 
 def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = ""):
@@ -1813,11 +1810,8 @@ def eval_val_sliding(
     stride: int,
     batch_seqs: int = 32,
     eval_seq_len: int | None = None,
-    slot_enabled: bool = False,
-    slot_steps: int = 8,
-    slot_lr: float = 0.005,
 ) -> tuple[float, float]:
-    """Sliding window evaluation with optional context-only SLOT at eval time."""
+    """Sliding window evaluation: each token scored with maximum context."""
     seq_len = eval_seq_len or args.train_seq_len
     total_tokens = val_tokens.numel() - 1
     window_starts = [ws for ws in range(0, total_tokens, stride)
@@ -1830,13 +1824,12 @@ def eval_val_sliding(
     token_count = torch.zeros((), device=device, dtype=torch.float64)
     byte_count = torch.zeros((), device=device, dtype=torch.float64)
     base_model.eval()
-    if not slot_enabled:
-        compiled_logits = maybe_compile(
-            base_model.forward_logits,
-            enabled=args.compile_enabled,
-            fullgraph=args.compile_fullgraph,
-        )
-    with (torch.inference_mode() if not slot_enabled else torch.no_grad()):
+    compiled_logits = maybe_compile(
+        base_model.forward_logits,
+        enabled=args.compile_enabled,
+        fullgraph=args.compile_fullgraph,
+    )
+    with torch.inference_mode():
         for bi in range(0, len(my_windows), batch_seqs):
             batch_ws = my_windows[bi:bi + batch_seqs]
             bsz = len(batch_ws)
@@ -1850,28 +1843,100 @@ def eval_val_sliding(
                 chunk = val_tokens[ws:end + 1].to(dtype=torch.int64, device=device)
                 x_batch[i, :wlen] = chunk[:-1]
                 y_batch[i, :wlen] = chunk[1:]
-            if slot_enabled and not any(ws == 0 for ws in batch_ws):
-                captured: list[Tensor | None] = [None]
-                hook = base_model.final_norm.register_forward_hook(
-                    lambda _module, _inputs, output: captured.__setitem__(0, output.detach())
-                )
-                with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    base_model.forward_logits(x_batch)
-                hook.remove()
-                hidden = captured[0]
-                if hidden is None:
-                    raise RuntimeError("SLOT hidden-state capture failed")
-                ctx_mask = torch.zeros(bsz, seq_len, dtype=torch.bool, device=device)
-                for i, wl in enumerate(wlens):
-                    ctx_mask[i, :max(wl - stride, 0)] = True
-                delta = torch.zeros(
-                    1,
-                    1,
-                    hidden.size(-1),
-                    device=device,
-                    dtype=hidden.dtype,
-                    requires_grad=True,
-                )
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = compiled_logits(x_batch)
+            nll = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)).float(),
+                y_batch.reshape(-1),
+                reduction="none",
+            ).reshape(bsz, seq_len)
+            for i, ws in enumerate(batch_ws):
+                wlen = wlens[i]
+                s = 0 if ws == 0 else max(wlen - stride, 0)
+                scored_nll = nll[i, s:wlen].to(torch.float64)
+                loss_sum += scored_nll.sum()
+                token_count += float(wlen - s)
+                tgt = y_batch[i, s:wlen]
+                prev = x_batch[i, s:wlen]
+                tb = base_bytes_lut[tgt].to(torch.float64)
+                tb += (has_leading_space_lut[tgt] & ~is_boundary_token_lut[prev]).to(torch.float64)
+                byte_count += tb.sum()
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(token_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(byte_count, op=dist.ReduceOp.SUM)
+    val_loss = (loss_sum / token_count).item()
+    bits_per_token = val_loss / math.log(2.0)
+    tokens_per_byte = token_count.item() / byte_count.item()
+    base_model.train()
+    return val_loss, bits_per_token * tokens_per_byte
+
+
+def eval_val_sliding_slot(
+    args: Hyperparameters,
+    base_model: nn.Module,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+    val_tokens: Tensor,
+    base_bytes_lut: Tensor,
+    has_leading_space_lut: Tensor,
+    is_boundary_token_lut: Tensor,
+    stride: int,
+    batch_seqs: int = 32,
+    eval_seq_len: int | None = None,
+    slot_steps: int = 8,
+    slot_lr: float = 0.005,
+) -> tuple[float, float]:
+    """Sliding-window eval with context-only SLOT applied after export."""
+    seq_len = eval_seq_len or args.train_seq_len
+    total_tokens = val_tokens.numel() - 1
+    window_starts = [ws for ws in range(0, total_tokens, stride)
+                     if min(ws + seq_len, total_tokens) - ws >= 1]
+    total_windows = len(window_starts)
+    my_s = (total_windows * rank) // world_size
+    my_e = (total_windows * (rank + 1)) // world_size
+    my_windows = window_starts[my_s:my_e]
+    loss_sum = torch.zeros((), device=device, dtype=torch.float64)
+    token_count = torch.zeros((), device=device, dtype=torch.float64)
+    byte_count = torch.zeros((), device=device, dtype=torch.float64)
+    base_model.eval()
+    with torch.no_grad():
+        for bi in range(0, len(my_windows), batch_seqs):
+            batch_ws = my_windows[bi:bi + batch_seqs]
+            bsz = len(batch_ws)
+            x_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+            y_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+            wlens: list[int] = []
+            for i, ws in enumerate(batch_ws):
+                end = min(ws + seq_len, total_tokens)
+                wlen = end - ws
+                wlens.append(wlen)
+                chunk = val_tokens[ws:end + 1].to(dtype=torch.int64, device=device)
+                x_batch[i, :wlen] = chunk[:-1]
+                y_batch[i, :wlen] = chunk[1:]
+            captured: list[Tensor | None] = [None]
+            hook = base_model.final_norm.register_forward_hook(
+                lambda _module, _inputs, output: captured.__setitem__(0, output.detach())
+            )
+            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                base_model.forward_logits(x_batch)
+            hook.remove()
+            hidden = captured[0]
+            if hidden is None:
+                raise RuntimeError("SLOT hidden-state capture failed")
+            ctx_mask = torch.zeros(bsz, seq_len, dtype=torch.bool, device=device)
+            for i, wl in enumerate(wlens):
+                ctx_mask[i, :max(wl - stride, 0)] = True
+            delta = torch.zeros(
+                bsz,
+                1,
+                hidden.size(-1),
+                device=device,
+                dtype=hidden.dtype,
+                requires_grad=True,
+            )
+            if ctx_mask.any():
                 opt = torch.optim.AdamW([delta], lr=slot_lr, weight_decay=1e-8, eps=1e-5)
                 with torch.enable_grad():
                     for _ in range(slot_steps):
@@ -1882,26 +1947,16 @@ def eval_val_sliding(
                                 F.linear(h, base_model.tok_emb.weight)
                                 if base_model.tie_embeddings else base_model.lm_head(h)
                             )
-                            logits_slot = base_model.logit_softcap * torch.tanh(
-                                lp / base_model.logit_softcap
-                            )
+                            logits_slot = base_model.logit_softcap * torch.tanh(lp / base_model.logit_softcap)
                         F.cross_entropy(logits_slot[ctx_mask].float(), y_batch[ctx_mask]).backward()
                         opt.step()
-                with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    h = hidden + delta.detach()
-                    lp = (
-                        F.linear(h, base_model.tok_emb.weight)
-                        if base_model.tie_embeddings else base_model.lm_head(h)
-                    )
-                    logits = base_model.logit_softcap * torch.tanh(
-                        lp / base_model.logit_softcap
-                    )
-            elif slot_enabled:
-                with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    logits = base_model.forward_logits(x_batch)
-            else:
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    logits = compiled_logits(x_batch)
+            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                h = hidden + delta.detach()
+                lp = (
+                    F.linear(h, base_model.tok_emb.weight)
+                    if base_model.tie_embeddings else base_model.lm_head(h)
+                )
+                logits = base_model.logit_softcap * torch.tanh(lp / base_model.logit_softcap)
             nll = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)).float(),
                 y_batch.reshape(-1),
@@ -2442,19 +2497,29 @@ def main() -> None:
     if args.skip_final_eval:
         log0("final_eval:skipped sliding/ngram by SKIP_FINAL_EVAL=1")
     else:
-        slot_tag = f"+slot{args.slot_steps}steps" if args.slot_enabled else ""
+        slot_enabled = bool(int(os.environ.get("SLOT_ENABLED", "0")))
+        slot_steps = int(os.environ.get("SLOT_STEPS", "8"))
+        slot_lr = float(os.environ.get("SLOT_LR", "0.005"))
+        slot_tag = f"+slot{slot_steps}steps" if slot_enabled else ""
         if args.eval_stride > 0 and args.eval_stride < sw_seq_len:
             torch.cuda.synchronize()
             t_slide = time.perf_counter()
-            sw_val_loss, sw_val_bpb = eval_val_sliding(
-                args, base_model, rank, world_size, device,
-                val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
-                stride=args.eval_stride,
-                eval_seq_len=sw_seq_len,
-                slot_enabled=args.slot_enabled,
-                slot_steps=args.slot_steps,
-                slot_lr=args.slot_lr,
-            )
+            if slot_enabled:
+                sw_val_loss, sw_val_bpb = eval_val_sliding_slot(
+                    args, base_model, rank, world_size, device,
+                    val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                    stride=args.eval_stride,
+                    eval_seq_len=sw_seq_len,
+                    slot_steps=slot_steps,
+                    slot_lr=slot_lr,
+                )
+            else:
+                sw_val_loss, sw_val_bpb = eval_val_sliding(
+                    args, base_model, rank, world_size, device,
+                    val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                    stride=args.eval_stride,
+                    eval_seq_len=sw_seq_len,
+                )
             torch.cuda.synchronize()
             log0(
                 f"final_sliding_window{slot_tag} val_loss:{sw_val_loss:.4f} val_bpb:{sw_val_bpb:.4f} "
@@ -2464,15 +2529,22 @@ def main() -> None:
         if args.eval_stride != 64 and 64 < sw_seq_len:
             torch.cuda.synchronize()
             t_slide64 = time.perf_counter()
-            sw64_val_loss, sw64_val_bpb = eval_val_sliding(
-                args, base_model, rank, world_size, device,
-                val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
-                stride=64,
-                eval_seq_len=sw_seq_len,
-                slot_enabled=args.slot_enabled,
-                slot_steps=args.slot_steps,
-                slot_lr=args.slot_lr,
-            )
+            if slot_enabled:
+                sw64_val_loss, sw64_val_bpb = eval_val_sliding_slot(
+                    args, base_model, rank, world_size, device,
+                    val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                    stride=64,
+                    eval_seq_len=sw_seq_len,
+                    slot_steps=slot_steps,
+                    slot_lr=slot_lr,
+                )
+            else:
+                sw64_val_loss, sw64_val_bpb = eval_val_sliding(
+                    args, base_model, rank, world_size, device,
+                    val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                    stride=64,
+                    eval_seq_len=sw_seq_len,
+                )
             torch.cuda.synchronize()
             log0(
                 f"final_sliding_window_s64{slot_tag} val_loss:{sw64_val_loss:.4f} val_bpb:{sw64_val_bpb:.4f} "

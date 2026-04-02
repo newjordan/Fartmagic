@@ -27,9 +27,26 @@ elif [[ -f /venv/main/bin/activate ]]; then
   source /venv/main/bin/activate
 fi
 
-PYTHON_BIN="$(command -v python || true)"
-[[ -n "${PYTHON_BIN}" ]] || die "python not found after env activation"
-"${PYTHON_BIN}" -c "import torch" >/dev/null 2>&1 || die "python cannot import torch; activate the pod env first"
+choose_python() {
+  local candidate
+  for candidate in \
+    "$(command -v python 2>/dev/null || true)" \
+    "$(command -v python3 2>/dev/null || true)" \
+    "/workspace/miniconda3/envs/${CONDA_ENV:-fa3wheel}/bin/python" \
+    "${VENV_DIR:-/workspace/venv_cu124}/bin/python" \
+    "/venv/main/bin/python"
+  do
+    [[ -n "${candidate}" && -x "${candidate}" ]] || continue
+    if "${candidate}" -c "import torch" >/dev/null 2>&1; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_BIN="$(choose_python || true)"
+[[ -n "${PYTHON_BIN}" ]] || die "no usable python with torch found; activate the pod env first"
 
 export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 

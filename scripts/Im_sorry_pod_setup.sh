@@ -105,6 +105,15 @@ else
 fi
 python3 -c "import zstandard; print(f'  zstandard {zstandard.__version__}')"
 
+echo "  brotli..."
+if python3 -c "import brotli" 2>/dev/null; then
+    echo "  Already installed"
+else
+    pip install brotli -q
+    echo "  Installed"
+fi
+python3 -c "import brotli; print(f'  brotli {brotli.__version__}')" 2>/dev/null || echo "  brotli OK"
+
 # =============================================================================
 # 5. FlashAttention-3
 # =============================================================================

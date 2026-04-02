@@ -2411,7 +2411,7 @@ def main() -> None:
         log0(f"Code size: {code_bytes} bytes")
     sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
     # GPTQ quantization using Hessians collected from training data
-    quant_result, quant_meta = mixed_quantize_int6_gptq(sd_cpu, {"mlp", "attn", "aux", "embed"}, gptq_hessians)
+    quant_result, quant_meta = mixed_quantize_int6_gptq(sd_cpu, {"mlp", "attn", "aux"}, gptq_hessians)
     quant_raw = _serialize_quant_raw(quant_result, quant_meta)
     log0(f"quant_raw_bytes:{len(quant_raw)} (pre-compression, raw format)")
     quant_blob = zstandard.ZstdCompressor(level=22).compress(quant_raw) if _COMPRESSOR == "zstd" else _zlib_module.compress(quant_raw, 9)
@@ -2460,7 +2460,7 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int6_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
-    del eval_model, deq_state, quant_state, sd_cpu
+    del eval_model, deq_state, quant_result_rt, quant_meta_rt, sd_cpu
     torch.cuda.empty_cache()
     sw_seq_len = effective_eval_seq_len
     if args.skip_final_eval:

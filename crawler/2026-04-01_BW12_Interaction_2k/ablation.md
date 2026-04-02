@@ -2,11 +2,13 @@
 
 Status: completed (`seed=444`, window start `2026-04-01 20:26:18`)
 
-Run command:
+Current run command (unified runner):
 
 ```bash
-SEED=444 NPROC_PER_NODE=4 bash crawler/2026-04-01_BW12_Interaction_2k/run_ablation_sequence.sh
+SEED=444 NPROC_PER_NODE=4 bash crawler/2026-04-02_BW15_AllCrawler_2k/run_ablation_sequence.sh
 ```
+
+Legacy per-series runner was removed in favor of the single unified crawler sequence.
 
 External run artifacts (from pod):
 

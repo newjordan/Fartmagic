@@ -39,7 +39,7 @@ echo "  SP4096 data OK"
 # 500 steps, production config
 BASE_ENV=(
     SEED="${SEED}"
-    MAX_STEPS=500
+    ITERATIONS=2000
     MAX_WALLCLOCK_SECONDS=0
     RECUR_LAYERS=4,5
     RECUR_START_STEP=0

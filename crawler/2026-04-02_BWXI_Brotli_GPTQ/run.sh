@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 # ================================================================
-# Bandit Wagon XI — BWX + brotli + GPTQ
+# Bandit Wagon XI — Best-foot-forward production run
 #
-# One seed per invocation (default: 444). Use again with SEED=300.
+# BWX 9F + brotli + loop-aware GPTQ + QK4 + loops=2
 #
 # Usage:
 #   SEED=444 NPROC_PER_NODE=8 bash crawler/2026-04-02_BWXI_Brotli_GPTQ/run.sh
@@ -26,7 +26,7 @@ MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-600}"
 WARMDOWN_ITERS="${WARMDOWN_ITERS:-2000}"
 NUM_FLAT_LAYERS="${NUM_FLAT_LAYERS:-9}"
 NUM_CRAWLER_LAYERS="${NUM_CRAWLER_LAYERS:-1}"
-CRAWLER_LOOPS="${CRAWLER_LOOPS:-3}"
+CRAWLER_LOOPS="${CRAWLER_LOOPS:-2}"
 
 mkdir -p "${SCRIPT_DIR}/results"
 LOG_TS="${SCRIPT_DIR}/results/train_seed${SEED}_$(date +%Y%m%d_%H%M%S).log"
@@ -71,11 +71,11 @@ PY
 
 echo ""
 echo "============================================"
-echo "  Bandit Wagon XI — BWX + brotli + GPTQ"
+echo "  Bandit Wagon XI — Best-foot-forward"
 echo "  seed=${SEED} GPUs=${NPROC} wallclock=${MAX_WALLCLOCK_SECONDS}s"
 echo "  NUM_FLAT_LAYERS=${NUM_FLAT_LAYERS} CRAWLER_LOOPS=${CRAWLER_LOOPS}"
-echo "  SKIP_GPTQ=0  GPTQ_CAL_SAMPLES=128"
-echo "  Compression: brotli (quality=11)"
+echo "  LOOP_AWARE_GPTQ=1  GPTQ_CAL_SAMPLES=128"
+echo "  QK_GAIN_INIT=4.0  Compression: brotli (quality=11)"
 echo "  log: ${LOG_TS}"
 echo "============================================"
 echo ""
@@ -106,7 +106,8 @@ env \
     DELTA_NET_HEADS=0 \
     SKIP_EMA=1 \
     SKIP_GPTQ=0 \
-    LOOP_AWARE_GPTQ=0 \
+    LOOP_AWARE_GPTQ=1 \
+    QK_GAIN_INIT=4.0 \
     GPTQ_CAL_SAMPLES=128 \
     GPTQ_CAL_SEQ_LEN=2048 \
     MLP_LEAKY_SLOPE=0.5 \

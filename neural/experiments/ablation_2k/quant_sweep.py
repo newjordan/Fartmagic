@@ -163,13 +163,9 @@ def main():
 
     hp = tgt.Hyperparameters()
 
-    # Load val data
+    # Load val data using the same loader as training
     print("Loading validation data...")
-    import glob
-    val_files = sorted(glob.glob(hp.val_files))
-    val_tokens = torch.cat([torch.from_numpy(
-        __import__('numpy').memmap(f, dtype=__import__('numpy').uint16, mode='r')
-    ).to(torch.int32) for f in val_files])
+    val_tokens = tgt.load_validation_tokens(hp.val_files, hp.train_seq_len)
     print(f"Val tokens: {val_tokens.numel():,}")
 
     # Build BPB LUTs

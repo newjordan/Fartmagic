@@ -28,19 +28,16 @@ SUMMARY="${RESULTS_DIR}/darkhorse_summary_${TS}.tsv"
 
 pip install brotli -q 2>/dev/null || true
 
-# SP4096 data setup
-echo "[preflight] Checking SP4096 data..."
-if [ ! -d "./data/datasets/fineweb10B_sp4096" ]; then
-    echo "  SP4096 data not found — downloading..."
-    MATCHED_FINEWEB_REPO_ID=kevclark/parameter-golf python3 data/cached_challenge_fineweb.py --variant sp4096 --skip-manifest 2>&1 | tail -3
-fi
-echo "  SP4096 data OK"
+# Use our SP1024 data — testing architecture, not tokenizer
+echo "[preflight] Using SP1024 (our standard data)..."
+ls ./data/datasets/fineweb10B_sp1024/fineweb_train_*.bin | wc -l | xargs -I{} echo "  train shards: {}"
 
 # 500 steps, production config
 BASE_ENV=(
     SEED="${SEED}"
     ITERATIONS=2000
     MAX_WALLCLOCK_SECONDS=0
+    VOCAB_SIZE=1024
     RECUR_LAYERS=4,5
     RECUR_START_STEP=500
     PARALLEL_START_LAYER=7

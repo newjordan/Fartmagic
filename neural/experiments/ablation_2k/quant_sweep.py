@@ -174,7 +174,9 @@ def main():
 
     # Build BPB LUTs
     print("Building BPB lookup tables...")
-    base_bytes_lut, has_leading_space_lut, is_boundary_token_lut = tgt.build_sentencepiece_luts(hp.tokenizer_path)
+    import sentencepiece as spm
+    sp = spm.SentencePieceProcessor(model_file=hp.tokenizer_path)
+    base_bytes_lut, has_leading_space_lut, is_boundary_token_lut = tgt.build_sentencepiece_luts(sp, hp.vocab_size, device)
 
     # Load checkpoint
     print(f"Loading checkpoint {args.checkpoint}...")

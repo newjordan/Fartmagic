@@ -170,7 +170,7 @@ class Hyperparameters:
     mlp_kernel_mode = os.environ.get("MLP_KERNEL_MODE", "").strip().lower()
     loader_mode = os.environ.get("LOADER_MODE", "sequential").strip().lower()
     coprime_max_loaded_shards = int(os.environ.get("COPRIME_MAX_LOADED_SHARDS", 4))
-    coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", 4))
+    coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", 1))
     coprime_shard_hold_steps = int(os.environ.get("COPRIME_SHARD_HOLD_STEPS", 64))
     slot_enabled = bool(int(os.environ.get("SLOT_ENABLED", "0")))
     slot_steps = int(os.environ.get("SLOT_STEPS", "8"))

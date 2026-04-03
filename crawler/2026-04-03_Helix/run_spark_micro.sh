@@ -179,23 +179,58 @@ run_arm "D3_helix_dim64" \
     NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=64
 
 # ----------------------------------------------------------------
+# MARCO-POLO TESTS: Cross-attention vs linear projection
+# ----------------------------------------------------------------
+
+echo ""
+echo "==== PHASE 5: MARCO-POLO — Cross-attention vs linear projection ===="
+
+# F0: Linear projection baseline (same as B1 but explicit for comparison)
+run_arm "F0_linear_5f_dim16" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=16 HELIX_CROSS_ATTN=0
+
+# F1: Marco-Polo cross-attention dim=16
+run_arm "F1_marco_5f_dim16" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=16 HELIX_CROSS_ATTN=1
+
+# F2: Marco-Polo dim=32
+run_arm "F2_marco_5f_dim32" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=32 HELIX_CROSS_ATTN=1
+
+# F3: Marco-Polo dim=8 (very cheap — is it enough?)
+run_arm "F3_marco_5f_dim8" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=8 HELIX_CROSS_ATTN=1
+
+# F4: Marco-Polo at stride=3 (less frequent but content-addressed)
+run_arm "F4_marco_5f_s3_dim16" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=3 HELIX_DIM=16 HELIX_CROSS_ATTN=1
+
+# F5: Marco-Polo on deeper model (7F)
+run_arm "F5_marco_7f_dim16" \
+    NUM_FLAT_LAYERS=7 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=16 HELIX_CROSS_ATTN=1
+
+# F6: Marco-Polo + 2 loops (does loop recurrence help cross-attn?)
+run_arm "F6_marco_5f_2loop" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=2 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=16 HELIX_CROSS_ATTN=1
+
+# ----------------------------------------------------------------
 # INTERACTION TESTS: Helix + other crawler features
 # ----------------------------------------------------------------
 
 echo ""
-echo "==== PHASE 5: INTERACTIONS — Helix + existing features ===="
+echo "==== PHASE 6: INTERACTIONS — Helix + existing features ===="
 
-# E0: Helix + INST_DIM (do instructions help or conflict?)
-run_arm "E0_helix_inst32" \
+# G0: Helix + INST_DIM (do instructions help or conflict?)
+run_arm "G0_helix_inst32" \
     NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=2 HELIX=1 HELIX_STRIDE=1 INST_DIM=32
 
-# E1: Helix + anchor (does anchor help in helix mode?)
-run_arm "E1_helix_anchor16" \
+# G1: Helix + anchor (does anchor help in helix mode?)
+run_arm "G1_helix_anchor16" \
     NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=2 HELIX=1 HELIX_STRIDE=1 ANCHOR_DIM=16
 
-# E2: Helix + tap (cross-injection + encoder tap — redundant?)
-run_arm "E2_helix_tap16" \
-    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 CRAWLER_TAP_DIM=16
+# G2: Marco-Polo + INST_DIM (does content-addressed + instruction stack?)
+run_arm "G2_marco_inst32" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=2 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=16 HELIX_CROSS_ATTN=1 INST_DIM=32
 
 # ----------------------------------------------------------------
 # DONE

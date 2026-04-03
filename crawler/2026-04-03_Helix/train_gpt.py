@@ -135,7 +135,8 @@ class Hyperparameters:
     # Helix: dual-stream co-firing — crawler fires alongside every flat layer with cross-injection
     helix_enabled = bool(int(os.environ.get("HELIX", "0")))
     helix_dim = int(os.environ.get("HELIX_DIM", 32))          # cross-injection projection dimension
-    helix_stride = int(os.environ.get("HELIX_STRIDE", 1))     # crawler fires every Nth flat layer (1=every layer)  # use int8 for shared crawler block (multi-context quant resilience)
+    helix_stride = int(os.environ.get("HELIX_STRIDE", 1))     # crawler fires every Nth flat layer (1=every layer)
+    helix_cross_attn = bool(int(os.environ.get("HELIX_CROSS_ATTN", "0")))  # marco-polo: cross-attention instead of linear projection
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
     phrase_cache_enabled = bool(int(os.environ.get("PHRASE_CACHE", "0")))
     phrase_buckets = int(os.environ.get("PHRASE_BUCKETS", 4_194_304))
@@ -1100,6 +1101,7 @@ class CrawlerGPT(nn.Module):
         helix_enabled: bool = False,
         helix_dim: int = 32,
         helix_stride: int = 1,
+        helix_cross_attn: bool = False,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
@@ -1260,20 +1262,34 @@ class CrawlerGPT(nn.Module):
         self.helix_enabled = helix_enabled and num_crawler_layers > 0
         self.helix_stride = helix_stride
         self.helix_dim = helix_dim
-        if self.helix_enabled:
-            # Flat→Crawler: project flat hidden into small dim, expand into crawler residual
+        self.helix_cross_attn = helix_cross_attn
+        if self.helix_enabled and not helix_cross_attn:
+            # Linear projection mode (original)
             self.helix_f2c_down = nn.Linear(model_dim, helix_dim, bias=False)
             self.helix_f2c_up = nn.Linear(helix_dim, model_dim, bias=False)
-            # Crawler→Flat: project crawler hidden into small dim, expand into flat residual
             self.helix_c2f_down = nn.Linear(model_dim, helix_dim, bias=False)
             self.helix_c2f_up = nn.Linear(helix_dim, model_dim, bias=False)
-            # Merge gate: combine crawler stream back into flat at the end
             self.helix_merge_gate = nn.Parameter(torch.zeros(model_dim))
-            # Zero-init the up projections for warm start (helix off at init)
             nn.init.zeros_(self.helix_f2c_up.weight)
             nn.init.zeros_(self.helix_c2f_up.weight)
             nn.init.normal_(self.helix_f2c_down.weight, std=0.01)
             nn.init.normal_(self.helix_c2f_down.weight, std=0.01)
+        elif self.helix_enabled and helix_cross_attn:
+            # Marco-Polo mode: cross-attention between streams
+            # Crawler asks "marco" (query), flat answers "polo" (key+value)
+            self.helix_c2f_q = nn.Linear(model_dim, helix_dim, bias=False)  # crawler query
+            self.helix_c2f_k = nn.Linear(model_dim, helix_dim, bias=False)  # flat key
+            self.helix_c2f_v = nn.Linear(model_dim, helix_dim, bias=False)  # flat value
+            self.helix_c2f_out = nn.Linear(helix_dim, model_dim, bias=False)  # project back
+            # Flat asks "marco" (query), crawler answers "polo" (key+value)
+            self.helix_f2c_q = nn.Linear(model_dim, helix_dim, bias=False)  # flat query
+            self.helix_f2c_k = nn.Linear(model_dim, helix_dim, bias=False)  # crawler key
+            self.helix_f2c_v = nn.Linear(model_dim, helix_dim, bias=False)  # crawler value
+            self.helix_f2c_out = nn.Linear(helix_dim, model_dim, bias=False)  # project back
+            self.helix_merge_gate = nn.Parameter(torch.zeros(model_dim))
+            # Zero-init output projections for warm start
+            nn.init.zeros_(self.helix_c2f_out.weight)
+            nn.init.zeros_(self.helix_f2c_out.weight)
 
         # VE on crawler blocks
         self.ve_layer_indices = [int(x) for x in ve_layers.split(",") if x.strip()] if ve_enabled else []
@@ -1407,6 +1423,29 @@ class CrawlerGPT(nn.Module):
             x = x_loop
         return x
 
+    def _helix_cross_inject(self, source: Tensor, target: Tensor, direction: str) -> Tensor:
+        """Marco-Polo cross-attention: source asks, target answers."""
+        if direction == "f2c":  # flat asks, crawler answers
+            q = self.helix_f2c_q(source)   # flat query: "what do I need from crawler?"
+            k = self.helix_f2c_k(target)   # crawler key: "what I have"
+            v = self.helix_f2c_v(target)   # crawler value: "the answer"
+            out_proj = self.helix_f2c_out
+        else:  # c2f: crawler asks, flat answers
+            q = self.helix_c2f_q(source)   # crawler query: "marco"
+            k = self.helix_c2f_k(target)   # flat key: "polo — I'm here"
+            v = self.helix_c2f_v(target)   # flat value: "here's what you need"
+            out_proj = self.helix_c2f_out
+        # Scaled dot-product attention (causal — preserves autoregressive property)
+        scale = q.size(-1) ** -0.5
+        attn = torch.bmm(q, k.transpose(-2, -1)) * scale
+        # Causal mask
+        T = q.size(1)
+        causal_mask = torch.triu(torch.full((T, T), float('-inf'), device=q.device), diagonal=1)
+        attn = attn + causal_mask[None, :, :]
+        attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(dtype=q.dtype)
+        out = torch.bmm(attn, v)
+        return out_proj(out)
+
     def _run_helix(self, x: Tensor, x0: Tensor, input_ids: Tensor, ve_cache: dict) -> Tensor:
         """Helix: dual-stream co-firing. Crawler fires alongside every flat layer with cross-injection."""
         # Initialize crawler stream from same input
@@ -1428,6 +1467,18 @@ class CrawlerGPT(nn.Module):
             sin = freqs.sin()[None, :, None, :].to(dtype=x.dtype)
             lcs = (cos, sin)
 
+        def _cross_inject_pair(x_flat, x_crawl):
+            """Bidirectional cross-injection: flat↔crawler."""
+            if self.helix_cross_attn:
+                # Marco-Polo: content-addressed cross-attention
+                crawl_hint = self._helix_cross_inject(x_crawl, x_flat, "c2f")  # crawler asks flat
+                flat_hint = self._helix_cross_inject(x_flat, x_crawl, "f2c")   # flat asks crawler
+            else:
+                # Linear projection mode
+                crawl_hint = self.helix_f2c_up(self.helix_f2c_down(x_flat))
+                flat_hint = self.helix_c2f_up(self.helix_c2f_down(x_crawl))
+            return flat_hint, crawl_hint
+
         step_count = 0
         # Encoder phase: flat encoder layers interleaved with crawler
         for i in range(self.flat_encoder_layers):
@@ -1436,15 +1487,12 @@ class CrawlerGPT(nn.Module):
             step_count += 1
             # Crawler co-fires at stride intervals
             if step_count % self.helix_stride == 0:
-                # Cross-inject: flat → crawler
-                crawl_hint = self.helix_f2c_up(self.helix_f2c_down(x))
+                flat_hint, crawl_hint = _cross_inject_pair(x, x_crawl)
                 x_crawl = x_crawl + crawl_hint
                 # Crawler fires (shared weights)
                 for block in self.crawler_blocks:
                     ve = self._get_crawler_ve(0, input_ids, ve_cache)
                     x_crawl = block(x_crawl, x0, v_embed=ve, loop_idx=0, cos_sin=lcs)
-                # Cross-inject: crawler → flat
-                flat_hint = self.helix_c2f_up(self.helix_c2f_down(x_crawl))
                 x = x + flat_hint
 
         # Decoder phase: flat decoder layers interleaved with crawler
@@ -1455,12 +1503,11 @@ class CrawlerGPT(nn.Module):
             x = self.flat_blocks[bi](x, x0)
             step_count += 1
             if step_count % self.helix_stride == 0:
-                crawl_hint = self.helix_f2c_up(self.helix_f2c_down(x))
+                flat_hint, crawl_hint = _cross_inject_pair(x, x_crawl)
                 x_crawl = x_crawl + crawl_hint
                 for block in self.crawler_blocks:
                     ve = self._get_crawler_ve(0, input_ids, ve_cache)
                     x_crawl = block(x_crawl, x0, v_embed=ve, loop_idx=0, cos_sin=lcs)
-                flat_hint = self.helix_c2f_up(self.helix_c2f_down(x_crawl))
                 x = x + flat_hint
 
         # Merge: blend crawler stream into flat stream via learned gate
@@ -1566,6 +1613,7 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             helix_enabled=args.helix_enabled,
             helix_dim=args.helix_dim,
             helix_stride=args.helix_stride,
+            helix_cross_attn=args.helix_cross_attn,
         )
     else:
         model = GPT(

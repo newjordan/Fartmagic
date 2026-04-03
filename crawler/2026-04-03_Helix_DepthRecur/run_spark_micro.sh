@@ -17,8 +17,15 @@ cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 
 SEED="${SEED:-444}"
+NPROC="${NPROC_PER_NODE:-4}"
 TRAIN_PY="${SCRIPT_DIR}/train_gpt.py"
 TS="$(date +%Y%m%d_%H%M%S)"
+
+if command -v torchrun >/dev/null 2>&1; then
+    TORCHRUN=(torchrun)
+else
+    TORCHRUN=(python3 -m torch.distributed.run)
+fi
 
 RESULTS_DIR="${SCRIPT_DIR}/results"
 mkdir -p "${RESULTS_DIR}"
@@ -26,30 +33,32 @@ SUMMARY="${RESULTS_DIR}/micro_summary_${TS}.tsv"
 
 pip install brotli -q 2>/dev/null || true
 
+# Production-scale config on 4×H100: real model size, compile on, 500 steps
 MICRO_ENV=(
     SEED="${SEED}"
-    ITERATIONS=200
+    ITERATIONS=500
     MAX_WALLCLOCK_SECONDS=0
-    WARMDOWN_ITERS=50
-    TRAIN_BATCH_TOKENS=131072
-    VAL_BATCH_SIZE=131072
-    EVAL_STRIDE=2048
-    TRAIN_SEQ_LEN=512
-    EVAL_SEQ_LEN=512
-    COMPILE_ENABLED=0
-    COMPILE_FULLGRAPH=0
+    WARMDOWN_ITERS=100
+    TRAIN_BATCH_TOKENS=786432
+    VAL_BATCH_SIZE=524288
+    EVAL_STRIDE=64
+    TRAIN_SEQ_LEN=2048
+    EVAL_SEQ_LEN=2048
+    COMPILE_ENABLED=1
+    COMPILE_FULLGRAPH=1
+    TORCHDYNAMO_OPTIMIZE_DDP=0
     USE_CRAWLER=1
     NUM_CRAWLER_LAYERS=1
-    CRAWLER_MLP_MULT=4.0
-    MODEL_DIM=256
-    NUM_HEADS=4
-    NUM_KV_HEADS=2
-    INST_DIM=16
-    BIGRAM_VOCAB_SIZE=512
-    BIGRAM_DIM=64
-    XSA_LAST_N=0
-    ROPE_DIMS=8
-    SWA_EVERY=20
+    CRAWLER_MLP_MULT=6.0
+    MODEL_DIM=512
+    NUM_HEADS=8
+    NUM_KV_HEADS=4
+    INST_DIM=32
+    BIGRAM_VOCAB_SIZE=2048
+    BIGRAM_DIM=128
+    XSA_LAST_N=11
+    ROPE_DIMS=16
+    SWA_EVERY=50
     SKIP_GPTQ=1
     SKIP_EMA=1
     QK_GAIN_INIT=4.0
@@ -60,9 +69,11 @@ MICRO_ENV=(
     CRAWLER_TAP_DIM=0
     ANCHOR_DIM=0
     MATRIX_LR=0.03
+    EMBED_LR=0.035
     HELIX_DIM=64
-    TRAIN_LOG_EVERY=50
-    VAL_LOSS_EVERY=200
+    TRAIN_LOG_EVERY=100
+    VAL_LOSS_EVERY=500
+    NPROC_PER_NODE="${NPROC}"
 )
 
 run_arm() {
@@ -73,8 +84,8 @@ run_arm() {
     echo "  ARM: ${tag} — $(date)"
     echo "================================================================"
     env "${MICRO_ENV[@]}" "$@" \
-        python "${TRAIN_PY}" 2>&1 | tee "${logfile}"
-    local bpb=$(grep -oP 'step:200/200 val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${logfile}" 2>/dev/null || echo "?")
+        "${TORCHRUN[@]}" --standalone --nproc_per_node="${NPROC}" "${TRAIN_PY}" 2>&1 | tee "${logfile}"
+    local bpb=$(grep -oP 'step:500/500 val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${logfile}" 2>/dev/null || echo "?")
     local int6=$(grep -oP 'final_int6_sliding_window_exact.*val_bpb:\K[0-9.]+' "${logfile}" 2>/dev/null || echo "?")
     local step_ms=$(grep -oP 'step_avg:\K[0-9.]+' "${logfile}" | tail -1 2>/dev/null || echo "?")
     local params=$(grep -oP 'model_params:\K[0-9]+' "${logfile}" 2>/dev/null || echo "?")
@@ -86,8 +97,8 @@ echo -e "arm\tparams\traw_bpb\tint6_sw_bpb\tstep_ms" > "${SUMMARY}"
 
 echo ""
 echo "================================================================"
-echo "  HELIX + DEPTH RECURRENCE MICRO TESTS"
-echo "  200 steps, dim=256, seq=512, compile=off"
+echo "  HELIX + DEPTH RECURRENCE — 4×H100 PRODUCTION SCALE"
+echo "  500 steps, dim=512, seq=2048, compile=on, ${NPROC} GPUs"
 echo "================================================================"
 
 # ----------------------------------------------------------------
@@ -162,13 +173,13 @@ run_arm "T3_9f_recur_only_L45" \
 echo ""
 echo "==== DELAYED RECURRENCE START ===="
 
-# U0: 5F helix + recur L2,3 starting at step 50 (25% through training)
-run_arm "U0_helix_recur_delayed50" \
-    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=64 RECUR_LAYERS=2,3 RECUR_START_STEP=50
+# U0: 5F helix + recur L2,3 starting at step 125 (25% through training)
+run_arm "U0_helix_recur_delayed125" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=64 RECUR_LAYERS=2,3 RECUR_START_STEP=125
 
-# U1: 5F helix + recur L2,3 starting at step 100 (50% through)
-run_arm "U1_helix_recur_delayed100" \
-    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=64 RECUR_LAYERS=2,3 RECUR_START_STEP=100
+# U1: 5F helix + recur L2,3 starting at step 250 (50% through)
+run_arm "U1_helix_recur_delayed250" \
+    NUM_FLAT_LAYERS=5 CRAWLER_LOOPS=1 HELIX=1 HELIX_STRIDE=1 HELIX_DIM=64 RECUR_LAYERS=2,3 RECUR_START_STEP=250
 
 # ----------------------------------------------------------------
 # DONE

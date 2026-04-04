@@ -174,7 +174,7 @@ class Hyperparameters:
     coprime_shard_hold_steps = int(os.environ.get("COPRIME_SHARD_HOLD_STEPS", 64))
     slot_enabled = bool(int(os.environ.get("SLOT_ENABLED", "1")))
     slot_steps = int(os.environ.get("SLOT_STEPS", "32"))
-    slot_lr = float(os.environ.get("SLOT_LR", "0.05"))
+    slot_lr = float(os.environ.get("SLOT_LR", "0.04"))
     slot_max_windows = int(os.environ.get("SLOT_MAX_WINDOWS", "0"))  # 0 = all windows
 
 

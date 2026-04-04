@@ -163,6 +163,8 @@ class Hyperparameters:
     ngram_order_mults_str = os.environ.get("NGRAM_ORDER_MULTS", "")
     cubric_cadence = int(os.environ.get("CUBRIC_CADENCE", 0))
     skip_final_eval = bool(int(os.environ.get("SKIP_FINAL_EVAL", "0")))
+    eval_only = bool(int(os.environ.get("EVAL_ONLY", "0")))
+    eval_only_checkpoint = os.environ.get("EVAL_ONLY_CHECKPOINT", "final_model.pt")
     post_ema_diagnostic = bool(int(os.environ.get("POST_EMA_DIAGNOSTIC", "1")))
     compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
     compile_mode = os.environ.get("COMPILE_MODE", "").strip()
@@ -2240,6 +2242,37 @@ def main() -> None:
         warmdown_ms = args.warmdown_iters * step_ms
         remaining_ms = max(max_wallclock_ms - elapsed_ms, 0.0)
         return remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
+    # EVAL_ONLY mode: skip training, load checkpoint, jump to eval
+    if args.eval_only:
+        log0(f"eval_only:loading {args.eval_only_checkpoint}")
+        ckpt = torch.load(args.eval_only_checkpoint, map_location="cpu")
+        base_model.load_state_dict(ckpt, strict=True)
+        del ckpt
+        log0(f"eval_only:loaded, running sliding window eval with SLOT_LR={args.slot_lr} SLOT_STEPS={args.slot_steps}")
+        # Jump directly to sliding window eval
+        effective_eval_seq_len = args.eval_seq_len or args.train_seq_len
+        sw_seq_len = effective_eval_seq_len
+        if args.eval_stride > 0 and args.eval_stride < sw_seq_len:
+            torch.cuda.synchronize()
+            t_slide = time.perf_counter()
+            sw_val_loss, sw_val_bpb = eval_val_sliding(
+                args, base_model, rank, world_size, device,
+                val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                stride=args.eval_stride, eval_seq_len=sw_seq_len,
+                slot_enabled=args.slot_enabled, slot_steps=args.slot_steps,
+                slot_lr=args.slot_lr, max_windows=args.slot_max_windows,
+            )
+            torch.cuda.synchronize()
+            slot_tag = f"+slot{args.slot_steps}steps" if args.slot_enabled else ""
+            log0(
+                f"eval_only_sliding{slot_tag} val_loss:{sw_val_loss:.4f} val_bpb:{sw_val_bpb:.4f} "
+                f"stride:{args.eval_stride} SLOT_LR:{args.slot_lr} eval_time:{1000.0 * (time.perf_counter() - t_slide):.0f}ms"
+            )
+            log0(f"eval_only_sliding{slot_tag}_exact val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}")
+        if distributed:
+            dist.destroy_process_group()
+        return
+
     if args.warmup_steps > 0:
         initial_model_state = {name: tensor.detach().cpu().clone() for name, tensor in base_model.state_dict().items()}
         initial_optimizer_states = [copy.deepcopy(opt.state_dict()) for opt in optimizers]

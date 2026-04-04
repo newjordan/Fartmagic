@@ -15,7 +15,7 @@ if [[ -z "${NPROC_PER_NODE}" || "${NPROC_PER_NODE}" == "0" ]]; then
 fi
 
 echo "============================================"
-echo "LUCKY V.2 — Lucky V + SLOT_LR=0.05"
+echo "LUCKY V.2 — Lucky V + SLOT_LR=0.04 + SKIP_GPTQ=1"
 echo "Seed: ${SEED} | GPUs: ${NPROC_PER_NODE}"
 echo "Started: $(date)"
 echo "============================================"

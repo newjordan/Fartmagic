@@ -1,0 +1,78 @@
+logs/8b1216a2-52df-4b07-9b35-ca4b7d9a79f3.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:80
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+splithead:cross_heads=4 v0_residual=False
+model_params:26598484
+f1_corr:rank=0 params=0 est_int6_bytes~0
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+helix:enabled dim=192 stride=1 crawler_fires=9x
+XSA:last_11 world_size:8 grad_accum_steps:1
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:786432 train_seq_len:2048 iterations:20000 warmup_steps:20 max_wallclock_seconds:600.000
+ablate:skip_train=0 init_model_path:- gptq_cal_samples:128 gptq_cal_seq_len:2048
+compile:enabled=1 fullgraph=1 optimize_ddp=0
+ddp:find_unused_parameters=1
+seed:300
+warmup_step:1/20
+warmup_step:2/20
+warmup_step:3/20
+warmup_step:4/20
+warmup_step:5/20
+warmup_step:6/20
+warmup_step:7/20
+warmup_step:8/20
+warmup_step:9/20
+warmup_step:10/20
+warmup_step:11/20
+warmup_step:12/20
+warmup_step:13/20
+warmup_step:14/20
+warmup_step:15/20
+warmup_step:16/20
+warmup_step:17/20
+warmup_step:18/20
+warmup_step:19/20
+warmup_step:20/20
+step:0/20000 val_loss:6.9365 val_bpb:4.1082 train_time:0ms step_avg:0.02ms
+step:1/20000 train_loss:6.9368 train_time:219ms step_avg:219.20ms
+step:2/20000 train_loss:7.2596 train_time:386ms step_avg:193.11ms
+step:3/20000 train_loss:8.2069 train_time:554ms step_avg:184.70ms
+step:4/20000 train_loss:8.8591 train_time:722ms step_avg:180.44ms
+step:5/20000 train_loss:8.8895 train_time:891ms step_avg:178.11ms
+step:6/20000 train_loss:8.6574 train_time:1061ms step_avg:176.78ms
+step:7/20000 train_loss:7.7237 train_time:1235ms step_avg:176.39ms
+step:8/20000 train_loss:6.9834 train_time:1407ms step_avg:175.82ms
+step:9/20000 train_loss:6.6387 train_time:1579ms step_avg:175.49ms
+step:10/20000 train_loss:6.4478 train_time:1753ms step_avg:175.35ms
+step:500/20000 train_loss:2.5170 train_time:90718ms step_avg:181.44ms
+step:1000/20000 train_loss:2.3747 train_time:179822ms step_avg:179.82ms
+step:1500/20000 train_loss:2.2965 train_time:267892ms step_avg:178.59ms
+step:2000/20000 train_loss:2.1126 train_time:355897ms step_avg:177.95ms
+step:2500/20000 train_loss:2.1905 train_time:444736ms step_avg:177.89ms
+swa:start step:3000
+step:3000/20000 train_loss:2.1454 train_time:532729ms step_avg:177.58ms
+step:3378/20000 val_loss:2.0282 val_bpb:1.2012 train_time:600091ms step_avg:177.65ms
+stopping_early: wallclock_cap train_time:600091ms step:3378/20000
+peak memory allocated: 47257 MiB reserved: 48064 MiB
+gptq:loop-aware 2-phase calibration samples=128 seq_len=2048...
+gptq_loop_aware:phase1 collecting all-layer Hessians...
+gptq_loop_aware:patched 58 flat layers with GPTQ weights
+gptq_loop_aware:phase2 collecting crawler Hessians with quantized-flat activations...
+gptq_loop_aware:phase2 collected 6 crawler Hessians
+gptq_loop_aware:restored 58 flat layer weights
+gptq_loop_aware:merged 65 Hessians (6 crawler from phase2)
+gptq:loop-aware calibrated 65 layers in 15.1s
+ema:SKIPPED (SKIP_EMA=1) — using live model weights
+DIAGNOSTIC post_ema val_loss:2.0282 val_bpb:1.2012 eval_time:4058ms
+Serialized model: 103809983 bytes
+Code size: 133961 bytes
+gptq_quantize: 60 GPTQ layers, 0 naive layers
+Serialized model int6+brotli: 10904463 bytes
+Total submission size int6+brotli: 11038424 bytes
+Total submission size int8+zlib: 11038424 bytes
+final_int6_roundtrip val_loss:2.1461 val_bpb:1.2710 eval_time:63331ms
+final_int6_roundtrip_exact val_loss:2.14608979 val_bpb:1.27103526
+final_int6_sliding_window val_loss:2.1111 val_bpb:1.2503 stride:64 eval_time:164927ms
+final_int6_sliding_window_exact val_loss:2.11109758 val_bpb:1.25031421
+final_int8_zlib_roundtrip_exact val_loss:2.11109758 val_bpb:1.25031421

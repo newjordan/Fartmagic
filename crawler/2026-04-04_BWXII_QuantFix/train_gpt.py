@@ -140,6 +140,10 @@ class Hyperparameters:
     # SplitHead: crawler attention heads split between self-attend and cross-attend
     crawler_cross_heads = int(os.environ.get("CRAWLER_CROSS_HEADS", "0"))  # 0=all self-attend (default), >0=N heads cross-attend to flat
     crawler_v0_residual = bool(int(os.environ.get("CRAWLER_V0_RESIDUAL", "0")))  # pass first-firing value as stable reference
+    # Helix quant fixes: per-firing identity + magnitude throttles
+    helix_fire_embed = bool(int(os.environ.get("HELIX_FIRE_EMBED", "0")))  # per-firing learned embedding (routing signal)
+    helix_inject_cap = float(os.environ.get("HELIX_INJECT_CAP", "0"))      # >0: tanh cap on cross-injection magnitude
+    helix_merge_cap = float(os.environ.get("HELIX_MERGE_CAP", "0"))        # >0: clamp merge gate sigmoid output
     # Smart Skip: crawler-gated U-Net skip connections
     smart_skip = bool(int(os.environ.get("SMART_SKIP", "0")))  # crawler confidence gates each skip
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
@@ -1150,6 +1154,9 @@ class CrawlerGPT(nn.Module):
         helix_dim: int = 32,
         helix_stride: int = 1,
         helix_cross_attn: bool = False,
+        helix_fire_embed: bool = False,
+        helix_inject_cap: float = 0.0,
+        helix_merge_cap: float = 0.0,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
@@ -1339,6 +1346,14 @@ class CrawlerGPT(nn.Module):
             nn.init.zeros_(self.helix_c2f_out.weight)
             nn.init.zeros_(self.helix_f2c_out.weight)
 
+        # Helix quant fixes
+        self._helix_inject_cap = helix_inject_cap
+        self._helix_merge_cap = helix_merge_cap
+        if self.helix_enabled and helix_fire_embed:
+            total_fires = num_flat_layers // max(helix_stride, 1)
+            self.helix_fire_embeds = nn.Parameter(torch.zeros(total_fires, model_dim))
+        else:
+            self.helix_fire_embeds = None
         # VE on crawler blocks
         self.ve_layer_indices = [int(x) for x in ve_layers.split(",") if x.strip()] if ve_enabled else []
         kv_dim = self._ve_target_dim
@@ -1523,34 +1538,38 @@ class CrawlerGPT(nn.Module):
             sin = freqs.sin()[None, :, None, :].to(dtype=x.dtype)
             lcs = (cos, sin)
 
+        _inject_cap = self._helix_inject_cap
         def _cross_inject_pair(x_flat, x_crawl):
             """Bidirectional cross-injection: flat↔crawler."""
             if self.helix_cross_attn:
-                # Marco-Polo: content-addressed cross-attention
-                crawl_hint = self._helix_cross_inject(x_crawl, x_flat, "c2f")  # crawler asks flat
-                flat_hint = self._helix_cross_inject(x_flat, x_crawl, "f2c")   # flat asks crawler
+                crawl_hint = self._helix_cross_inject(x_crawl, x_flat, "c2f")
+                flat_hint = self._helix_cross_inject(x_flat, x_crawl, "f2c")
             else:
-                # Linear projection mode
                 crawl_hint = self.helix_f2c_up(self.helix_f2c_down(x_flat))
                 flat_hint = self.helix_c2f_up(self.helix_c2f_down(x_crawl))
+            if _inject_cap > 0:
+                crawl_hint = _inject_cap * torch.tanh(crawl_hint / _inject_cap)
+                flat_hint = _inject_cap * torch.tanh(flat_hint / _inject_cap)
             return flat_hint, crawl_hint
 
+        fire_idx = 0
         step_count = 0
         # Encoder phase: flat encoder layers interleaved with crawler
         for i in range(self.flat_encoder_layers):
             x = self.flat_blocks[i](x, x0)
             step_count += 1
-            # Crawler co-fires at stride intervals
             if step_count % self.helix_stride == 0:
                 flat_hint, crawl_hint = _cross_inject_pair(x, x_crawl)
                 x_crawl = x_crawl + crawl_hint
-                # Crawler fires (shared weights) — with split-head cross-attention to flat stream
+                if self.helix_fire_embeds is not None:
+                    x_crawl = x_crawl + self.helix_fire_embeds[fire_idx][None, None, :]
                 for block in self.crawler_blocks:
                     ve = self._get_crawler_ve(0, input_ids, ve_cache)
                     x_crawl = block(x_crawl, x0, v_embed=ve, loop_idx=0, cos_sin=lcs,
                                     cross_kv_src=x if self._cross_heads > 0 else None,
                                     cross_heads=self._cross_heads)
                 x = x + flat_hint
+                fire_idx += 1
             # Smart Skip: gate skip with crawler confidence
             if self._smart_skip and x_crawl is not None:
                 conf = torch.sigmoid(self.skip_confidence(x_crawl))  # [B, T, 1]
@@ -1568,6 +1587,8 @@ class CrawlerGPT(nn.Module):
             if step_count % self.helix_stride == 0:
                 flat_hint, crawl_hint = _cross_inject_pair(x, x_crawl)
                 x_crawl = x_crawl + crawl_hint
+                if self.helix_fire_embeds is not None:
+                    x_crawl = x_crawl + self.helix_fire_embeds[fire_idx][None, None, :]
                 for block in self.crawler_blocks:
                     ve = self._get_crawler_ve(0, input_ids, ve_cache)
                     x_crawl = block(x_crawl, x0, v_embed=ve, loop_idx=0, cos_sin=lcs,
@@ -1577,6 +1598,8 @@ class CrawlerGPT(nn.Module):
 
         # Merge: blend crawler stream into flat stream via learned gate
         merge_w = torch.sigmoid(self.helix_merge_gate).to(dtype=x.dtype)[None, None, :]
+        if self._helix_merge_cap > 0:
+            merge_w = merge_w.clamp(max=self._helix_merge_cap)
         x = x + merge_w * x_crawl
         return x
 
@@ -1679,6 +1702,9 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             helix_dim=args.helix_dim,
             helix_stride=args.helix_stride,
             helix_cross_attn=args.helix_cross_attn,
+            helix_fire_embed=args.helix_fire_embed,
+            helix_inject_cap=args.helix_inject_cap,
+            helix_merge_cap=args.helix_merge_cap,
         )
     else:
         model = GPT(
@@ -2308,7 +2334,8 @@ def main() -> None:
     )
     log0(f"mlp_act:{args.mlp_act} mlp_leaky_slope:{args.mlp_leaky_slope} crawler_mlp_leaky_slope:{args.crawler_mlp_leaky_slope} crawler_mlp_choke_dim:{args.crawler_mlp_choke_dim} choke_shape:{args.crawler_mlp_choke_shape} choke_groups:{args.crawler_mlp_choke_groups} crawler_loop_smear:{args.crawler_loop_smear} crawler_tap_dim:{args.crawler_tap_dim} crawler_tap_loop_specific:{args.crawler_tap_loop_specific} crawler_tap_layers:{args.crawler_tap_layers} crawler_loop_rope_scales:{args.crawler_loop_rope_scales}")
     if args.helix_enabled:
-        log0(f"helix:enabled dim={args.helix_dim} stride={args.helix_stride} crawler_fires={args.num_flat_layers // args.helix_stride}x")
+        log0(f"helix:enabled dim={args.helix_dim} stride={args.helix_stride} crawler_fires={args.num_flat_layers // args.helix_stride}x"
+             f" fire_embed={args.helix_fire_embed} inject_cap={args.helix_inject_cap} merge_cap={args.helix_merge_cap}")
     log0(f"XSA:last_{args.xsa_last_n} world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0(f"num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads} embed_lr:{token_lr} matrix_lr:{args.matrix_lr}")
     log0(

@@ -7,8 +7,8 @@ if [ "${DIR}" = "/" ]; then echo "ERROR: could not find data/tokenizers/" >&2; e
 export REPO_ROOT="${DIR}"
 cd "${REPO_ROOT}"
 
-# Rascal III — mixed-int (attn=5, embed=8) + brotli-11 + byte-shuffle
-# Changes vs Rascal II: brotli compression, mixed-int quant defaults
+# Rascal III — Lucky V base (SLOT stripped) + mixed-int (attn=5, embed=8) + brotli-11
+# Changes vs Rascal II: brotli compression, QK_GAIN_INIT=5.0, MUON_BACKEND_STEPS=7, mixed-int quant, n-gram eval
 export SEED="${SEED:-444}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 export MAX_WALLCLOCK_SECONDS=600

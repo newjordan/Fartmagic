@@ -33,6 +33,7 @@ cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 
 SEED="${SEED:-444}"
+NPROC="${NPROC_PER_NODE:-4}"
 TRAIN_PY="${SCRIPT_DIR}/train_gpt.py"
 TS="$(date +%Y%m%d_%H%M%S)"
 
@@ -97,7 +98,7 @@ BASE_ENV=(
     CRAWLER_CROSS_HEADS=4
     MUON_WD=0.12
     SMART_SKIP=0
-    NPROC_PER_NODE=1
+    NPROC_PER_NODE="${NPROC}"
 )
 
 # ----------------------------------------------------------------
@@ -203,7 +204,7 @@ for i in "${!TRAIN_NAMES[@]}"; do
         CRAWLER_QUANT_INT8=0 \
         SKIP_TRAIN=0 \
         INIT_MODEL_PATH="" \
-        "${TORCHRUN[@]}" --standalone --nproc_per_node=1 "${TRAIN_PY}" \
+        "${TORCHRUN[@]}" --standalone --nproc_per_node="${NPROC}" "${TRAIN_PY}" \
         2>&1 | tee "${log}"
 
     if [[ -f "${REPO_ROOT}/final_model.pt" ]]; then
@@ -270,7 +271,7 @@ for i in "${!TRAIN_NAMES[@]}"; do
             CRAWLER_QUANT_INT8="${QUANT_INT8[$j]}" \
             SKIP_TRAIN=1 \
             INIT_MODEL_PATH="${ckpt}" \
-            "${TORCHRUN[@]}" --standalone --nproc_per_node=1 "${TRAIN_PY}" \
+            "${TORCHRUN[@]}" --standalone --nproc_per_node="${NPROC}" "${TRAIN_PY}" \
             2>&1 | tee "${log}"
 
         raw=$(extract 'DIAGNOSTIC post_ema val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${log}")

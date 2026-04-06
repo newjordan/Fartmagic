@@ -24,4 +24,5 @@ TRAIN_SCRIPT="${REPO_ROOT}/neural/experiments/Rascal_III/train_gpt.py"
 if [ ! -f "${TRAIN_SCRIPT}" ]; then
   TRAIN_SCRIPT="${REPO_ROOT}/experiments/Rascal_III/train_gpt.py"
 fi
+echo "rascal_iii_train_script:${TRAIN_SCRIPT}"
 exec torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" "${TRAIN_SCRIPT}" "$@"

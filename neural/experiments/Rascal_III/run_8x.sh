@@ -13,6 +13,10 @@ export SEED="${SEED:-444}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 export MAX_WALLCLOCK_SECONDS=600
 export RUN_ID="rascal_iii_seed${SEED}"
+# Force canonical Rascal-II loader behavior (avoid inheriting stale shell env vars).
+export LOADER_MODE="coprime"
+export COPRIME_SHARDS_PER_BATCH="1"
+export COPRIME_SHARD_HOLD_STEPS="64"
 
 pip install brotli -q 2>/dev/null || true
 

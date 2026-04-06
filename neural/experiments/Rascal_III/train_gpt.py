@@ -2080,20 +2080,56 @@ def main() -> None:
             raise TypeError(f"Unsupported checkpoint format for INIT_MODEL_PATH={init_path}")
         if any(k.startswith("module.") for k in init_state.keys()):
             init_state = {k.replace("module.", "", 1): v for k, v in init_state.items()}
-        missing, unexpected = base_model.load_state_dict(init_state, strict=False)
+        model_state = base_model.state_dict()
+        filtered_state: dict[str, Tensor] = {}
+        unexpected: list[str] = []
+        mismatched: list[str] = []
+        adapted: list[str] = []
+        for k, v in init_state.items():
+            if not isinstance(v, torch.Tensor):
+                continue
+            if k not in model_state:
+                unexpected.append(k)
+                continue
+            tgt = model_state[k]
+            if tuple(v.shape) == tuple(tgt.shape):
+                filtered_state[k] = v
+                continue
+            # Backward-compat for skip connector count drift:
+            # old checkpoints may have 4 rows, current model has 5.
+            if (
+                k == "skip_weights"
+                and v.ndim == 2
+                and tgt.ndim == 2
+                and int(v.shape[1]) == int(tgt.shape[1])
+            ):
+                merged = tgt.detach().cpu().clone()
+                rows = min(int(v.shape[0]), int(tgt.shape[0]))
+                merged[:rows].copy_(v[:rows].to(dtype=merged.dtype))
+                filtered_state[k] = merged
+                adapted.append(f"{k}:{tuple(v.shape)}->{tuple(tgt.shape)} rows_copied={rows}")
+                continue
+            mismatched.append(f"{k}:{tuple(v.shape)}->{tuple(tgt.shape)}")
+        missing, unexpected_load = base_model.load_state_dict(filtered_state, strict=False)
+        if unexpected_load:
+            unexpected.extend(unexpected_load)
         allowed_missing = [k for k in missing if "mtp_heads" in k]
         disallowed_missing = [k for k in missing if "mtp_heads" not in k]
-        if disallowed_missing or unexpected:
+        if disallowed_missing or unexpected or mismatched:
             raise RuntimeError(
                 "INIT_MODEL_PATH incompatible with current model "
-                f"(missing_non_mtp={len(disallowed_missing)} unexpected={len(unexpected)})"
+                f"(missing_non_mtp={len(disallowed_missing)} "
+                f"unexpected={len(unexpected)} mismatched={len(mismatched)})"
             )
         if master_process:
             print(
                 "init_model:loaded "
-                f"missing_mtp={len(allowed_missing)} unexpected={len(unexpected)}"
+                f"loaded={len(filtered_state)} missing_mtp={len(allowed_missing)} "
+                f"adapted={len(adapted)} unexpected={len(unexpected)}"
             )
-        del init_obj, init_state
+            if adapted:
+                print(f"init_model:adapted {adapted[0]}")
+        del init_obj, init_state, filtered_state
     if args.complement_alpha > 0:
         tracker = TrainNgramTracker(args.vocab_size, device, complement_alpha=args.complement_alpha)
         base_model._ngram_tracker = tracker

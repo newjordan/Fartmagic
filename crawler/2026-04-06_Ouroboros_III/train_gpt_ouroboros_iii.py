@@ -132,6 +132,11 @@ class Hyperparameters:
     crawler_mlp_mult = float(os.environ.get("CRAWLER_MLP_MULT", 4.0))  # MLP width multiplier for crawler
     inst_dim = int(os.environ.get("INST_DIM", "32"))          # instruction bottleneck dim per loop (0=disabled, use legacy loop_pos)
     crawler_quant_int8 = bool(int(os.environ.get("CRAWLER_QUANT_INT8", "0")))  # use int8 for shared crawler block (multi-context quant resilience)
+    # State-space hybrid: lightweight causal mixer in crawler path
+    ssm_enabled = bool(int(os.environ.get("SSM_ENABLED", "0")))
+    ssm_in_crawler = bool(int(os.environ.get("SSM_IN_CRAWLER", "1")))
+    ssm_dim = int(os.environ.get("SSM_DIM", "256"))
+    ssm_kernel_size = int(os.environ.get("SSM_KERNEL_SIZE", "4"))
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
     phrase_cache_enabled = bool(int(os.environ.get("PHRASE_CACHE", "0")))
     phrase_buckets = int(os.environ.get("PHRASE_BUCKETS", 4_194_304))
@@ -820,6 +825,35 @@ class CrawlerMLP(nn.Module):
             delta = self.choke_up[loop_idx](c)
             return bypass + delta                         # shared bypass + per-loop delta
 
+
+class CrawlerSSMMixer(nn.Module):
+    """Lightweight causal state-space style mixer for crawler activations."""
+    def __init__(self, model_dim: int, ssm_dim: int = 256, kernel_size: int = 4):
+        super().__init__()
+        ssm_dim = max(8, int(ssm_dim))
+        kernel_size = max(2, int(kernel_size))
+        self.in_proj = CastedLinear(model_dim, 2 * ssm_dim, bias=False)
+        self.gate_proj = CastedLinear(model_dim, ssm_dim, bias=False)
+        self.dwconv = nn.Conv1d(
+            ssm_dim,
+            ssm_dim,
+            kernel_size=kernel_size,
+            groups=ssm_dim,
+            bias=False,
+            padding=kernel_size - 1,
+        )
+        self.out_proj = CastedLinear(ssm_dim, model_dim, bias=False)
+        self.out_proj._zero_init = True
+
+    def forward(self, x: Tensor) -> Tensor:
+        uv = self.in_proj(x)
+        u, v = uv.chunk(2, dim=-1)
+        # Causal depthwise sequence mixing; crop right padding to preserve causality.
+        u = self.dwconv(u.transpose(1, 2))[..., :x.size(1)].transpose(1, 2)
+        g = torch.sigmoid(self.gate_proj(x))
+        mixed = F.silu(u) * torch.tanh(v) * g
+        return x + self.out_proj(mixed)
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -1105,6 +1139,10 @@ class CrawlerGPT(nn.Module):
         inst_dim: int = 32,
         anchor_dim: int = 0,
         flat_weight_share: bool = False,
+        ssm_enabled: bool = False,
+        ssm_in_crawler: bool = True,
+        ssm_dim: int = 256,
+        ssm_kernel_size: int = 4,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
@@ -1160,6 +1198,14 @@ class CrawlerGPT(nn.Module):
                   crawler_choke_groups=crawler_mlp_choke_groups)
             for i in range(num_crawler_layers)
         ])
+        self.ssm_enabled = bool(ssm_enabled and ssm_in_crawler and num_crawler_layers > 0)
+        if self.ssm_enabled:
+            self.crawler_ssm = nn.ModuleList([
+                CrawlerSSMMixer(model_dim, ssm_dim=ssm_dim, kernel_size=ssm_kernel_size)
+                for _ in range(num_crawler_layers)
+            ])
+        else:
+            self.crawler_ssm = None
         if rope_dims > 0:
             head_dim = model_dim // num_heads
             for block in list(self.flat_blocks) + list(self.crawler_blocks):
@@ -1310,6 +1356,11 @@ class CrawlerGPT(nn.Module):
         ve_idx = self.ve_layer_indices.index(crawler_idx)
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
 
+    def _apply_crawler_ssm(self, x: Tensor, crawler_idx: int) -> Tensor:
+        if self.crawler_ssm is None:
+            return x
+        return self.crawler_ssm[crawler_idx](x)
+
     def _run_encoder(self, x: Tensor, x0: Tensor) -> tuple[Tensor, list[Tensor]]:
         skips: list[Tensor] = []
         for i in range(self.flat_encoder_layers):
@@ -1382,6 +1433,7 @@ class CrawlerGPT(nn.Module):
             for ci, block in enumerate(self.crawler_blocks):
                 ve = self._get_crawler_ve(ci, input_ids, ve_cache)
                 x_loop = block(x_loop, x0, v_embed=ve, loop_idx=loop, cos_sin=lcs)
+                x_loop = self._apply_crawler_ssm(x_loop, ci)
             # DeltaNet: causal within-loop associative memory; state NOT carried between loops.
             # Cross-loop carry violates causality: final state from loop N encodes all positions
             # 0..T-1, leaking future token information into loop N+1 at every position t < T-1.
@@ -1449,7 +1501,10 @@ class CrawlerGPT(nn.Module):
 def _get_block_named_params(model: nn.Module) -> list:
     """Return named parameters from all transformer blocks, compatible with both GPT and CrawlerGPT."""
     if isinstance(model, CrawlerGPT):
-        return list(model.flat_blocks.named_parameters()) + list(model.crawler_blocks.named_parameters())
+        params = list(model.flat_blocks.named_parameters()) + list(model.crawler_blocks.named_parameters())
+        if model.crawler_ssm is not None:
+            params += list(model.crawler_ssm.named_parameters())
+        return params
     return list(model.blocks.named_parameters())
 
 
@@ -1493,6 +1548,10 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             inst_dim=args.inst_dim,
             anchor_dim=args.anchor_dim,
             flat_weight_share=args.flat_weight_share,
+            ssm_enabled=args.ssm_enabled,
+            ssm_in_crawler=args.ssm_in_crawler,
+            ssm_dim=args.ssm_dim,
+            ssm_kernel_size=args.ssm_kernel_size,
         )
     else:
         model = GPT(
@@ -1665,7 +1724,7 @@ def _classify_param(name: str) -> str:
         return "embed"
     if "f1_corr_in" in name or "f1_corr_out" in name:
         return "aux"
-    if ".mlp." in name:
+    if ".mlp." in name or name.startswith("crawler_ssm."):
         return "mlp"
     if ".attn." in name or (".proj." in name and ".mlp." not in name):
         return "attn"
@@ -1818,7 +1877,7 @@ def gptq_calibrate_loop_aware(model: nn.Module, train_pattern: str, device: torc
              Crawler now sees realistic quantized-flat activations → better compensation.
     Merge: flat layers keep Phase 1 Hessians; crawler layers get Phase 2 Hessians.
     """
-    CRAWLER_PREFIXES = ("crawler_blocks.", "delta_net.", "loop_inst")
+    CRAWLER_PREFIXES = ("crawler_blocks.", "crawler_ssm.", "delta_net.", "loop_inst")
     print("gptq_loop_aware:phase1 collecting all-layer Hessians...", flush=True)
     hessians_p1 = gptq_calibrate(model, train_pattern, device, n_samples, seq_len)
     originals: dict[str, Tensor] = {}
@@ -2211,6 +2270,8 @@ def main() -> None:
         f"est_int6_bytes~{est_corr_int6_bytes}"
     )
     log0(f"mlp_act:{args.mlp_act} mlp_leaky_slope:{args.mlp_leaky_slope} crawler_mlp_leaky_slope:{args.crawler_mlp_leaky_slope} crawler_mlp_choke_dim:{args.crawler_mlp_choke_dim} choke_shape:{args.crawler_mlp_choke_shape} choke_groups:{args.crawler_mlp_choke_groups} crawler_loop_smear:{args.crawler_loop_smear} crawler_tap_dim:{args.crawler_tap_dim} crawler_tap_loop_specific:{args.crawler_tap_loop_specific} crawler_tap_layers:{args.crawler_tap_layers} crawler_loop_rope_scales:{args.crawler_loop_rope_scales}")
+    if args.ssm_enabled and args.ssm_in_crawler and args.use_crawler:
+        log0(f"ssm:enabled=1 in_crawler=1 dim={args.ssm_dim} kernel={args.ssm_kernel_size}")
     log0(f"XSA:last_{args.xsa_last_n} world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0(f"num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads} embed_lr:{token_lr} matrix_lr:{args.matrix_lr}")
     log0(

@@ -307,7 +307,17 @@ def eval_val(
     val_token_count = torch.zeros((), device=device, dtype=torch.float64)
     val_byte_count = torch.zeros((), device=device, dtype=torch.float64)
     model.eval()
-    with torch.inference_mode():
+    ttt_active = hasattr(model, 'ttt') and getattr(model, 'ttt') is not None
+    if not ttt_active:
+        for m in model.modules():
+            if isinstance(m, TTTLayer) and m.ttt_dim > 0:
+                ttt_active = True
+                break
+
+    # TTT performs an inner autograd.grad step even during eval, so gradients
+    # must remain enabled for forward; non-TTT path can stay inference-only.
+    grad_ctx = torch.enable_grad() if ttt_active else torch.inference_mode()
+    with grad_ctx:
         for batch_seq_start in range(seq_start, seq_end, local_batch_seqs):
             batch_seq_end = min(batch_seq_start + local_batch_seqs, seq_end)
             raw_start = batch_seq_start * seq_len
@@ -316,7 +326,16 @@ def eval_val(
             x = local[:-1].reshape(-1, seq_len)
             y = local[1:].reshape(-1, seq_len)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                batch_loss = model(x, y).detach()
+                if ttt_active:
+                    logits = model.forward_logits(x)
+                    batch_loss = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)).float(),
+                        y.reshape(-1),
+                        reduction="mean",
+                    )
+                else:
+                    batch_loss = model(x, y)
+            batch_loss = batch_loss.detach()
             batch_token_count = float(y.numel())
             val_loss_sum += batch_loss.to(torch.float64) * batch_token_count
             val_token_count += batch_token_count
@@ -1804,9 +1823,12 @@ def eval_val_sliding(
             if isinstance(m, TTTLayer) and m.ttt_dim > 0:
                 ttt_active = True
                 break
+    if ttt_active:
+        batch_seqs = 1  # avoid cross-window coupling through shared fast-weight adaptation
     compiled_logits = maybe_torch_compile(base_model.forward_logits, args) if not ttt_active else base_model.forward_logits
-    # TTT needs gradients for inner step — use no_grad context instead of inference_mode
-    grad_ctx = torch.no_grad() if ttt_active else torch.inference_mode()
+    # TTT performs an inner autograd.grad step even during eval, so gradients
+    # must remain enabled for forward; non-TTT path can stay inference-only.
+    grad_ctx = torch.enable_grad() if ttt_active else torch.inference_mode()
     with grad_ctx:
         for bi in range(0, len(my_windows), batch_seqs):
             batch_ws = my_windows[bi:bi + batch_seqs]

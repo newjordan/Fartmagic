@@ -1812,19 +1812,32 @@ def main() -> None:
                 f"stride:{args.eval_stride} eval_time:{1000.0 * (time.perf_counter() - t_slide):.0f}ms"
             )
             log0(f"final_sliding_window_exact val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}")
-            torch.cuda.synchronize()
-            t_ttt = time.perf_counter()
-            log0(f"ttt:starting epochs={args.ttt_epochs} lr={args.ttt_lr} "
-                 f"freeze={args.ttt_freeze_blocks} chunk={args.ttt_chunk_tokens}")
-            ttt_loss, ttt_bpb = eval_val_sliding_ttt(
-                args, base_model, rank, world_size, device,
-                val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
-                stride=args.eval_stride, eval_seq_len=sw_seq_len,
+            ttt_active = (
+                args.ttt_epochs > 0
+                and args.ttt_lr > 0.0
+                and args.ttt_chunk_tokens > 0
+                and args.ttt_freeze_blocks > 0
             )
-            torch.cuda.synchronize()
-            log0(f"final_ttt val_loss:{ttt_loss:.4f} val_bpb:{ttt_bpb:.4f} "
-                 f"eval_time:{1000.0*(time.perf_counter()-t_ttt):.0f}ms")
-            log0(f"final_ttt_exact val_loss:{ttt_loss:.8f} val_bpb:{ttt_bpb:.8f}")
+            if ttt_active:
+                torch.cuda.synchronize()
+                t_ttt = time.perf_counter()
+                log0(f"ttt:starting epochs={args.ttt_epochs} lr={args.ttt_lr} "
+                     f"freeze={args.ttt_freeze_blocks} chunk={args.ttt_chunk_tokens}")
+                ttt_loss, ttt_bpb = eval_val_sliding_ttt(
+                    args, base_model, rank, world_size, device,
+                    val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+                    stride=args.eval_stride, eval_seq_len=sw_seq_len,
+                )
+                torch.cuda.synchronize()
+                log0(f"final_ttt val_loss:{ttt_loss:.4f} val_bpb:{ttt_bpb:.4f} "
+                     f"eval_time:{1000.0*(time.perf_counter()-t_ttt):.0f}ms")
+                log0(f"final_ttt_exact val_loss:{ttt_loss:.8f} val_bpb:{ttt_bpb:.8f}")
+            else:
+                log0(
+                    "ttt:skipped "
+                    f"epochs={args.ttt_epochs} lr={args.ttt_lr} "
+                    f"freeze={args.ttt_freeze_blocks} chunk={args.ttt_chunk_tokens}"
+                )
         if args.eval_stride != 64 and 64 < sw_seq_len:
             torch.cuda.synchronize()
             t_slide64 = time.perf_counter()

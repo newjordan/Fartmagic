@@ -45,6 +45,8 @@ MOVIE_ITERATIONS="${MOVIE_ITERATIONS:-2000}"
 MOVIE_MAX_WALLCLOCK_SECONDS="${MOVIE_MAX_WALLCLOCK_SECONDS:-3600}"
 MOVIE_GPTQ_CAL_SAMPLES="${MOVIE_GPTQ_CAL_SAMPLES:-128}"
 MOVIE_GPTQ_CAL_SEQ_LEN="${MOVIE_GPTQ_CAL_SEQ_LEN:-2048}"
+SHARED_DATA_PATH="${SHARED_DATA_PATH:-${REPO_ROOT}/data/datasets/fineweb10B_sp1024}"
+SHARED_TOKENIZER_PATH="${SHARED_TOKENIZER_PATH:-${REPO_ROOT}/data/tokenizers/fineweb_1024_bpe.model}"
 
 RESULTS_DIR="${SCRIPT_DIR}/results_movie"
 mkdir -p "${RESULTS_DIR}"
@@ -106,12 +108,26 @@ except Exception:
         raise SystemExit(f"ERROR: flash-attn not importable: {exc}")
 PY
 
+    if [[ ! -f "${SHARED_TOKENIZER_PATH}" ]]; then
+        if [[ "${AUTO_DATASET}" == "1" ]]; then
+            log "Tokenizer missing; downloading challenge artifacts"
+            "${PYTHON_BIN}" data/cached_challenge_fineweb.py --variant sp1024 --train-shards 8
+        else
+            echo "ERROR: tokenizer missing at ${SHARED_TOKENIZER_PATH}" >&2
+            echo "Run: python data/cached_challenge_fineweb.py --variant sp1024 --train-shards 8" >&2
+            exit 1
+        fi
+    fi
+
     local shard_count
-    shard_count="$("${PYTHON_BIN}" - <<'PY'
+    shard_count="$(
+        DATA_PATH="${SHARED_DATA_PATH}" "${PYTHON_BIN}" - <<'PY'
 import glob
-print(len(glob.glob("./data/datasets/fineweb10B_sp1024/fineweb_train_*.bin")))
+import os
+data_path = os.environ["DATA_PATH"]
+print(len(glob.glob(os.path.join(data_path, "fineweb_train_*.bin"))))
 PY
-)"
+    )"
 
     if (( shard_count < 8 )); then
         if [[ "${AUTO_DATASET}" == "1" ]]; then
@@ -162,6 +178,8 @@ run_arm() {
         fi
 
         export CUDA_VISIBLE_DEVICES="${gpu}"
+        export DATA_PATH="${SHARED_DATA_PATH}"
+        export TOKENIZER_PATH="${SHARED_TOKENIZER_PATH}"
 
         export SEED="${SEED}"
         export ITERATIONS="${MOVIE_ITERATIONS}"

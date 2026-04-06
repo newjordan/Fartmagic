@@ -1,0 +1,3 @@
+arm	desc	model_params	raw_bpb	int6_sw_bpb	step_ms	bytes	delta_vs_ctrl
+HAB3-00_ctrl	BW5 standard (HELIX=0, loops=3, rope=9,1,1)	14462508	1.3080	1.28905275	72.77	8887004	0.00000000
+HAB3-01_helix	Helix SplitHead (dim=384, stride=1, cross=8, loops=1)	15183916	1.3351	1.42860043	86.35	9320278	+0.13954768

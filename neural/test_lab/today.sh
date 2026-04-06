@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "${REPO_ROOT}/.."
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Walk up to find repo root (directory containing data/)
+DIR="${SCRIPT_DIR}"
+while [ "${DIR}" != "/" ]; do
+  [ -d "${DIR}/data/tokenizers" ] && break
+  DIR="$(dirname "${DIR}")"
+done
+if [ "${DIR}" = "/" ]; then
+  echo "ERROR: could not find data/tokenizers/ in any parent directory" >&2
+  exit 1
+fi
+export REPO_ROOT="${DIR}"
+cd "${REPO_ROOT}"
 
 export SEED="${SEED:-300}"
 export QUANT_ATTN_BITS="${QUANT_ATTN_BITS:-5}"

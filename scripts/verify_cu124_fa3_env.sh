@@ -29,10 +29,49 @@ import importlib
 import os
 import torch
 
-assert torch.__version__.startswith("2.4.1+cu124"), f"wrong torch: {torch.__version__}"
-assert str(torch.version.cuda).startswith("12.4"), f"wrong cuda: {torch.version.cuda}"
-importlib.import_module("flash_attn_3._C")
-from flash_attn_interface import flash_attn_func  # noqa: F401
+torch_version = torch.__version__
+torch_base = torch_version.split("+", 1)[0]
+torch_parts = torch_base.split(".")
+try:
+    torch_mm = tuple(int(x) for x in torch_parts[:2])
+except ValueError as exc:
+    raise AssertionError(f"unparseable torch version: {torch_version}") from exc
+
+assert torch_mm >= (2, 4), f"torch too old: {torch_version} (need >=2.4.x)"
+cuda_version = str(torch.version.cuda or "")
+try:
+    cuda_major = int(cuda_version.split(".", 1)[0])
+except (TypeError, ValueError):
+    cuda_major = -1
+assert cuda_major >= 12, f"wrong cuda: {torch.version.cuda} (need >=12.x)"
+
+fa_ok = False
+fa_errors = []
+try:
+    importlib.import_module("flash_attn_3._C")
+    from flash_attn_interface import flash_attn_func  # noqa: F401
+    fa_ok = True
+except Exception as exc:
+    fa_errors.append(f"flash_attn_3 path: {exc}")
+
+if not fa_ok:
+    try:
+        from flash_attn_interface import flash_attn_func  # noqa: F401
+        fa_ok = True
+    except Exception as exc:
+        fa_errors.append(f"flash_attn_interface path: {exc}")
+
+if not fa_ok:
+    try:
+        import flash_attn
+        assert str(getattr(flash_attn, "__version__", "")).startswith("3"), (
+            f"flash_attn is not v3: {getattr(flash_attn, '__version__', '?')}"
+        )
+        fa_ok = True
+    except Exception as exc:
+        fa_errors.append(f"flash_attn package path: {exc}")
+
+assert fa_ok, "flash-attn import failed; " + " | ".join(fa_errors)
 
 verify_data = os.environ.get("VERIFY_DATA", "1") != "0"
 train = []

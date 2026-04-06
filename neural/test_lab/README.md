@@ -1,0 +1,28 @@
+# Test Lab
+
+`test_lab/` is the stable launch surface for runs in `sota_nueral`.
+
+Code ownership:
+- Mutable training code lives under `experiments/`
+- Frozen records live under `records/`
+- `test_lab/` only contains launch wrappers and run-facing notes
+
+Current launch targets:
+- `test_lab/Rascal_II_homebase/run.sh`
+- `test_lab/Rascal_II_mixed_int_lab/run.sh`
+- `test_lab/today.sh`
+
+Examples:
+
+```bash
+bash test_lab/today.sh
+```
+
+Today's fixed test:
+- Rascal II mixed-int probe
+- `SEED=300`
+- `QUANT_ATTN_BITS=5`
+- `QUANT_MLP_BITS=6`
+- `QUANT_AUX_BITS=6`
+- `QUANT_EMBED_BITS=8`
+- `QUANT_OTHER_BITS=8`

@@ -1,0 +1,140 @@
+=== OUROBOROS ABLATION SWEEP START Mon Apr  6 16:12:11 UTC 2026 ===
+
+=== Running ouroboros_control Mon Apr  6 16:12:11 UTC 2026 ===
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:80
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+model_params:26253908
+f1_corr:rank=0 params=0 est_int6_bytes~0
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+XSA:last_11 world_size:4 grad_accum_steps:2
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:786432 train_seq_len:2048 iterations:20000 warmup_steps:20 max_wallclock_seconds:600.000
+ablate:skip_train=0 init_model_path:- gptq_cal_samples:128 gptq_cal_seq_len:2048
+compile:enabled=1 fullgraph=1 optimize_ddp=0
+ddp:find_unused_parameters=1
+seed:300
+step:0/20000 val_loss:6.9295 val_bpb:4.1040 train_time:0ms step_avg:0.01ms
+step:10/20000 train_loss:6.1380 train_time:1761ms step_avg:176.13ms
+step:500/20000 train_loss:2.3994 train_time:96625ms step_avg:193.25ms
+step:1000/20000 train_loss:2.2972 train_time:194905ms step_avg:194.91ms
+step:1500/20000 train_loss:2.1974 train_time:286525ms step_avg:191.02ms
+step:2000/20000 train_loss:2.0074 train_time:381405ms step_avg:190.70ms
+step:2500/20000 train_loss:2.1003 train_time:470571ms step_avg:188.23ms
+swa:start step:2850
+step:3000/20000 train_loss:2.0298 train_time:559851ms step_avg:186.62ms
+step:3225/20000 val_loss:1.9960 val_bpb:1.1821 train_time:600152ms step_avg:186.09ms
+stopping_early: wallclock_cap train_time:600152ms step:3225/20000
+gptq:loop-aware 2-phase calibration samples=128 seq_len=2048...
+gptq:loop-aware calibrated 64 layers in 9.9s
+ema:SKIPPED (SKIP_EMA=1) — using live model weights
+DIAGNOSTIC post_ema val_loss:1.9960 val_bpb:1.1821 eval_time:4346ms
+Serialized model: 103119163 bytes
+Code size: 121677 bytes
+gptq_quantize: 60 GPTQ layers, 0 naive layers
+Serialized model int6+brotli: 14414203 bytes
+Total submission size int6+brotli: 14535880 bytes
+final_int6_roundtrip_exact val_loss:2.00639788 val_bpb:1.18830184
+final_int6_sliding_window_exact val_loss:1.96551844 val_bpb:1.16409381
+=== Finished ouroboros_control Mon Apr  6 16:27:54 UTC 2026 ===
+
+=== Running ouroboros_arm_a_noisy_qat Mon Apr  6 16:27:54 UTC 2026 ===
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+model_params:26253908
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+XSA:last_11 world_size:4 grad_accum_steps:2
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:786432 train_seq_len:2048 iterations:20000 warmup_steps:20 max_wallclock_seconds:600.000
+compile:enabled=1 fullgraph=1 optimize_ddp=0
+seed:300
+step:0/20000 val_loss:6.9295 val_bpb:4.1040 train_time:0ms step_avg:0.01ms
+step:10/20000 train_loss:6.1395 train_time:1766ms step_avg:176.59ms
+step:500/20000 train_loss:2.4049 train_time:88380ms step_avg:176.76ms
+step:1000/20000 train_loss:2.2968 train_time:178031ms step_avg:178.03ms
+step:1500/20000 train_loss:2.2021 train_time:266475ms step_avg:177.65ms
+step:2000/20000 train_loss:2.0143 train_time:355389ms step_avg:177.69ms
+step:2500/20000 train_loss:2.1103 train_time:443908ms step_avg:177.56ms
+swa:start step:3000
+step:3000/20000 train_loss:2.0384 train_time:532517ms step_avg:177.51ms
+step:3380/20000 val_loss:1.9914 val_bpb:1.1794 train_time:600054ms step_avg:177.53ms
+stopping_early: wallclock_cap train_time:600054ms step:3380/20000
+gptq:loop-aware 2-phase calibration samples=128 seq_len=2048...
+gptq:loop-aware calibrated 64 layers in 9.4s
+ema:SKIPPED (SKIP_EMA=1) — using live model weights
+DIAGNOSTIC post_ema val_loss:1.9914 val_bpb:1.1794 eval_time:4735ms
+Serialized model: 103119163 bytes
+Code size: 122738 bytes
+gptq_quantize: 60 GPTQ layers, 0 naive layers
+Serialized model int6+brotli: 14647007 bytes
+Total submission size int6+brotli: 14769745 bytes
+final_int6_roundtrip_exact val_loss:2.00125020 val_bpb:1.18525309
+final_int6_sliding_window_exact val_loss:1.96051803 val_bpb:1.16113228
+=== Finished ouroboros_arm_a_noisy_qat Mon Apr  6 16:42:13 UTC 2026 ===
+
+=== Running ouroboros_arm_b_crawler_int8 Mon Apr  6 16:42:13 UTC 2026 ===
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+model_params:26253908
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+XSA:last_11 world_size:4 grad_accum_steps:2
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:786432 train_seq_len:2048 iterations:20000 warmup_steps:20 max_wallclock_seconds:600.000
+compile:enabled=1 fullgraph=1 optimize_ddp=0
+seed:300
+step:0/20000 val_loss:6.9295 val_bpb:4.1040 train_time:0ms step_avg:0.01ms
+step:10/20000 train_loss:6.1387 train_time:1788ms step_avg:178.84ms
+step:500/20000 train_loss:2.4018 train_time:88774ms step_avg:177.55ms
+step:1000/20000 train_loss:2.2940 train_time:177578ms step_avg:177.58ms
+step:1500/20000 train_loss:2.2044 train_time:266367ms step_avg:177.58ms
+step:2000/20000 train_loss:2.0135 train_time:355285ms step_avg:177.64ms
+step:2500/20000 train_loss:2.1097 train_time:444082ms step_avg:177.63ms
+swa:start step:3000
+step:3000/20000 train_loss:2.0402 train_time:532957ms step_avg:177.65ms
+step:3377/20000 val_loss:1.9921 val_bpb:1.1798 train_time:600085ms step_avg:177.70ms
+stopping_early: wallclock_cap train_time:600085ms step:3377/20000
+gptq:loop-aware 2-phase calibration samples=128 seq_len=2048...
+gptq:loop-aware calibrated 64 layers in 10.0s
+ema:SKIPPED (SKIP_EMA=1) — using live model weights
+DIAGNOSTIC post_ema val_loss:1.9921 val_bpb:1.1798 eval_time:4074ms
+Serialized model: 103119163 bytes
+Code size: 121677 bytes
+gptq_quantize: 54 GPTQ layers, 0 naive layers
+Serialized model int6+brotli: 15426329 bytes
+Total submission size int6+brotli: 15548006 bytes
+final_int6_roundtrip_exact val_loss:2.00117276 val_bpb:1.18520723
+final_int6_sliding_window_exact val_loss:1.96019622 val_bpb:1.16094168
+=== Finished ouroboros_arm_b_crawler_int8 Mon Apr  6 16:56:34 UTC 2026 ===
+
+=== Running ouroboros_arm_c_contractive Mon Apr  6 16:56:34 UTC 2026 ===
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+model_params:26253908
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+XSA:last_11 world_size:4 grad_accum_steps:2
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:786432 train_seq_len:2048 iterations:20000 warmup_steps:20 max_wallclock_seconds:600.000
+compile:enabled=1 fullgraph=1 optimize_ddp=0
+seed:300
+step:0/20000 val_loss:6.9295 val_bpb:4.1040 train_time:0ms step_avg:0.02ms
+step:10/20000 train_loss:6.1448 train_time:1769ms step_avg:176.89ms
+step:500/20000 train_loss:2.4068 train_time:87868ms step_avg:175.74ms
+step:1000/20000 train_loss:2.2993 train_time:175821ms step_avg:175.82ms
+step:1500/20000 train_loss:2.2047 train_time:264092ms step_avg:176.06ms
+step:2000/20000 train_loss:2.0151 train_time:352316ms step_avg:176.16ms
+step:2500/20000 train_loss:2.1093 train_time:440493ms step_avg:176.20ms
+step:3000/20000 train_loss:2.0403 train_time:529310ms step_avg:176.44ms
+swa:start step:3050
+step:3397/20000 val_loss:1.9921 val_bpb:1.1798 train_time:600128ms step_avg:176.66ms
+stopping_early: wallclock_cap train_time:600128ms step:3397/20000
+gptq:loop-aware 2-phase calibration samples=128 seq_len=2048...
+gptq:loop-aware calibrated 64 layers in 9.6s
+ema:SKIPPED (SKIP_EMA=1) — using live model weights
+DIAGNOSTIC post_ema val_loss:1.9921 val_bpb:1.1798 eval_time:4150ms
+Serialized model: 103119163 bytes
+Code size: 122045 bytes
+gptq_quantize: 60 GPTQ layers, 0 naive layers
+Serialized model int6+brotli: 14535035 bytes
+Total submission size int6+brotli: 14657080 bytes
+final_int6_roundtrip_exact val_loss:2.00278879 val_bpb:1.18616433
+final_int6_sliding_window_exact val_loss:1.96168783 val_bpb:1.16182510
+=== Finished ouroboros_arm_c_contractive Mon Apr  6 17:11:58 UTC 2026 ===
+
+=== OUROBOROS ABLATION SWEEP COMPLETE Mon Apr  6 17:11:58 UTC 2026 ===

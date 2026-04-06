@@ -1,6 +1,7 @@
 from __future__ import annotations
 import copy
 import glob
+import io
 import math
 import os
 import random
@@ -27,6 +28,53 @@ try:
     from flash_attn_interface import flash_attn_func as flash_attn_3_func
 except ImportError:
     flash_attn_3_func = None
+try:
+    import brotli
+    _COMPRESSOR = "brotli"
+except ImportError:
+    try:
+        import zstandard
+        _COMPRESSOR = "zstd"
+    except ImportError:
+        import zlib as _zlib_module
+        import warnings
+        _COMPRESSOR = "zlib"
+        warnings.warn("zstandard not found — falling back to zlib. Artifact may be larger.")
+
+_BYTE_SHUFFLE = True
+_BYTE_SHUFFLE_STRIDE = 2
+_BSHF_MAGIC = b"BSHF"
+
+
+def _byte_shuffle(data: bytes, stride: int = 2) -> bytes:
+    if stride <= 1 or len(data) < stride:
+        return data
+    arr = np.frombuffer(data, dtype=np.uint8)
+    n = len(arr)
+    out = np.empty(n, dtype=np.uint8)
+    pos = 0
+    for i in range(stride):
+        chunk = arr[i::stride]
+        out[pos:pos + len(chunk)] = chunk
+        pos += len(chunk)
+    return _BSHF_MAGIC + bytes([stride]) + out.tobytes()
+
+
+def _byte_unshuffle(data: bytes) -> bytes:
+    if len(data) < 5 or data[:4] != _BSHF_MAGIC:
+        return data
+    stride = data[4]
+    if stride < 2:
+        return data[5:]
+    arr = np.frombuffer(data, dtype=np.uint8, offset=5)
+    n = len(arr)
+    out = np.empty(n, dtype=np.uint8)
+    pos = 0
+    for i in range(stride):
+        chunk_len = n // stride + (1 if i < n % stride else 0)
+        out[i::stride][:chunk_len] = arr[pos:pos + chunk_len]
+        pos += chunk_len
+    return out.tobytes()
 
 if os.environ.get("TORCHDYNAMO_SUPPRESS_ERRORS", "0") == "1":
     import torch._dynamo
@@ -89,6 +137,14 @@ class Hyperparameters:
     muon_wd = float(os.environ.get("MUON_WD", 0.04))
     adam_wd = float(os.environ.get("ADAM_WD", 0.04))
     qat_enabled = bool(int(os.environ.get("QAT_ENABLED", "0")))
+    quant_attn_bits = int(os.environ.get("QUANT_ATTN_BITS", 5))
+    quant_mlp_bits = int(os.environ.get("QUANT_MLP_BITS", 6))
+    quant_aux_bits = int(os.environ.get("QUANT_AUX_BITS", 6))
+    quant_embed_bits = int(os.environ.get("QUANT_EMBED_BITS", 8))
+    quant_other_bits = int(os.environ.get("QUANT_OTHER_BITS", 8))
+    quant_artifact_path = os.environ.get("QUANT_ARTIFACT_PATH", "final_model.rascal_iii_runner2778.ptz")
+    quant_roundtrip_eval = bool(int(os.environ.get("QUANT_ROUNDTRIP_EVAL", "0")))
+    init_model_path = os.environ.get("INIT_MODEL_PATH", "").strip()
     xsa_last_n = int(os.environ.get("XSA_LAST_N", 11))  # XSA on ALL layers (our novel contribution)
     rope_dims = int(os.environ.get("ROPE_DIMS", 16))
     ln_scale = bool(int(os.environ.get("LN_SCALE", "1")))
@@ -119,6 +175,137 @@ def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = "
     if mode:
         kwargs["mode"] = mode
     return torch.compile(fn_or_module, **kwargs)
+
+
+SUPPORTED_QUANT_BITS = {4, 5, 6, 7, 8, 16}
+
+
+def normalize_quant_bits(bits: int) -> int:
+    if bits not in SUPPORTED_QUANT_BITS:
+        raise ValueError(f"Unsupported quant bits: {bits}. Expected one of {sorted(SUPPORTED_QUANT_BITS)}")
+    return bits
+
+
+def quant_clip_range(bits: int) -> int:
+    bits = normalize_quant_bits(bits)
+    if bits >= 16:
+        return 0
+    return (1 << (bits - 1)) - 1
+
+
+def _classify_param_for_quant(name: str) -> str:
+    if name == "tok_emb.weight" or name.endswith(".embed.weight"):
+        return "embed"
+    if "qo_bank" in name or "kv_bank" in name or ".attn." in name:
+        return "attn"
+    if "mlp_up_bank" in name or "mlp_down_bank" in name or ".mlp." in name:
+        return "mlp"
+    if (
+        "bigram" in name
+        or "smear" in name
+        or "skip_weights" in name
+        or "ve_" in name
+        or "value_emb" in name
+    ):
+        return "aux"
+    return "other"
+
+
+def build_quant_policy(args: Hyperparameters) -> dict[str, int]:
+    return {
+        "attn": normalize_quant_bits(args.quant_attn_bits),
+        "mlp": normalize_quant_bits(args.quant_mlp_bits),
+        "aux": normalize_quant_bits(args.quant_aux_bits),
+        "embed": normalize_quant_bits(args.quant_embed_bits),
+        "other": normalize_quant_bits(args.quant_other_bits),
+    }
+
+
+def mixed_quantize_naive(state_dict: dict[str, Tensor], bit_policy: dict[str, int]) -> tuple[dict[str, Tensor], dict[str, object]]:
+    result: dict[str, Tensor] = {}
+    meta: dict[str, object] = {}
+    quant_counts: dict[int, int] = {}
+    raw_count = 0
+    for name, tensor in state_dict.items():
+        t = tensor.detach().cpu()
+        if not torch.is_floating_point(t):
+            result[name] = t
+            meta[name] = {"kind": "raw", "dtype": str(t.dtype), "shape": list(t.shape)}
+            raw_count += 1
+            continue
+        cat = _classify_param_for_quant(name)
+        bits = normalize_quant_bits(bit_policy.get(cat, bit_policy["other"]))
+        if bits >= 16:
+            result[name] = t
+            meta[name] = {"kind": "fp", "dtype": str(t.dtype), "bits": bits, "shape": list(t.shape)}
+            raw_count += 1
+            continue
+        clip = quant_clip_range(bits)
+        if t.ndim >= 2:
+            rows = t.reshape(-1, t.shape[-1]).float()
+            scale = rows.abs().amax(dim=1, keepdim=True) / max(clip, 1)
+            scale = scale.clamp_min(1e-8)
+            q = torch.round(rows / scale).clamp(-clip - 1, clip).to(torch.int8)
+            result[name] = q.reshape(t.shape)
+            meta[name] = {
+                "kind": "q",
+                "bits": bits,
+                "clip": clip,
+                "shape": list(t.shape),
+                "per_row": True,
+                "scale": scale.reshape(-1).contiguous(),
+                "dtype": str(t.dtype),
+            }
+        else:
+            scale = t.float().abs().amax() / max(clip, 1)
+            scale = scale.clamp_min(1e-8)
+            q = torch.round(t.float() / scale).clamp(-clip - 1, clip).to(torch.int8)
+            result[name] = q
+            meta[name] = {
+                "kind": "q",
+                "bits": bits,
+                "clip": clip,
+                "shape": list(t.shape),
+                "per_row": False,
+                "scale": torch.tensor([scale.item()], dtype=torch.float32),
+                "dtype": str(t.dtype),
+            }
+        quant_counts[bits] = quant_counts.get(bits, 0) + 1
+    quant_summary = " ".join(f"int{b}:{c}" for b, c in sorted(quant_counts.items()))
+    print(
+        f"mixed_quantize: 0 GPTQ tensors, {sum(quant_counts.values())} naive tensors {quant_summary} raw:{raw_count}".strip(),
+        flush=True,
+    )
+    return result, meta
+
+
+def dequantize_mixed_quant(result: dict[str, Tensor], meta: dict[str, object], reference: dict[str, Tensor]) -> dict[str, Tensor]:
+    out: dict[str, Tensor] = {}
+    for name, entry in meta.items():
+        kind = entry.get("kind")
+        if kind in ("raw", "fp"):
+            t = result[name]
+            if name in reference:
+                out[name] = t.to(dtype=reference[name].dtype)
+            else:
+                out[name] = t
+            continue
+        if kind != "q":
+            raise ValueError(f"Unknown quant meta kind={kind} for tensor {name}")
+        q = result[name].float()
+        target_dtype = reference[name].dtype if name in reference else torch.float32
+        shape = tuple(entry["shape"])
+        if bool(entry.get("per_row", False)):
+            rows = q.reshape(-1, q.shape[-1])
+            scale = entry["scale"].float().reshape(-1, 1)
+            dq = (rows * scale).reshape(shape)
+        else:
+            scale = float(entry["scale"].float().reshape(-1)[0].item())
+            dq = q * scale
+            if tuple(dq.shape) != shape:
+                dq = dq.reshape(shape)
+        out[name] = dq.to(dtype=target_dtype)
+    return out
 
 
 if triton is not None:
@@ -1387,6 +1574,7 @@ def eval_val_sliding_ttt(
 def main() -> None:
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
+    quant_policy = build_quant_policy(args)
     # zeropower_via_newtonschulz5 runs eagerly with bmm -- do NOT compile
     distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     rank = int(os.environ.get("RANK", "0"))
@@ -1490,6 +1678,14 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
+    if args.init_model_path:
+        init_path = Path(args.init_model_path)
+        if not init_path.exists():
+            raise FileNotFoundError(f"INIT_MODEL_PATH does not exist: {init_path}")
+        init_state = torch.load(str(init_path), map_location="cpu")
+        if not isinstance(init_state, dict):
+            raise ValueError(f"INIT_MODEL_PATH must point to a state_dict .pt file, got: {type(init_state)}")
+        base_model.load_state_dict(init_state, strict=True)
     # No DDP -- Parallel Muon handles bank grad communication via reduce-scatter,
     # and non-bank grads are manually all-reduced before Adam steps.
     compiled_model = maybe_compile(
@@ -1600,6 +1796,15 @@ def main() -> None:
         f"resid_mix=({args.resid_mix_x_init:.4f},{args.resid_mix_x0_init:.4f}) "
         f"ln_scale={int(args.ln_scale)}"
     )
+    log0(
+        "quant_policy:"
+        f"attn={quant_policy['attn']} mlp={quant_policy['mlp']} "
+        f"aux={quant_policy['aux']} embed={quant_policy['embed']} "
+        f"other={quant_policy['other']} artifact={args.quant_artifact_path} "
+        f"quant_roundtrip_eval={int(args.quant_roundtrip_eval)}"
+    )
+    if args.init_model_path:
+        log0(f"init_model_path:{args.init_model_path}")
     log0(f"seed:{args.seed}")
     train_loader = build_train_loader(args, rank, world_size, device)
     log0(train_loader.describe())
@@ -1787,12 +1992,94 @@ def main() -> None:
         log0("diagnostic_eval:skipped POST_EMA_DIAGNOSTIC=0")
     full_state_dict = base_model.state_dict()
     export_sd = full_state_dict
+    code_bytes = len(code.encode("utf-8"))
     if master_process:
         torch.save(export_sd, "final_model.pt")
         model_bytes = os.path.getsize("final_model.pt")
-        code_bytes = len(code.encode("utf-8"))
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
+        sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
+        quant_result, quant_meta = mixed_quantize_naive(sd_cpu, quant_policy)
+        quant_buf = io.BytesIO()
+        torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
+        quant_raw = quant_buf.getvalue()
+        if _BYTE_SHUFFLE:
+            quant_raw = _byte_shuffle(quant_raw, _BYTE_SHUFFLE_STRIDE)
+        if _COMPRESSOR == "brotli":
+            quant_blob = brotli.compress(quant_raw, quality=11)
+        elif _COMPRESSOR == "zstd":
+            quant_blob = zstandard.ZstdCompressor(level=22).compress(quant_raw)
+        else:
+            quant_blob = _zlib_module.compress(quant_raw, 9)
+        with open(args.quant_artifact_path, "wb") as f:
+            f.write(quant_blob)
+        quant_file_bytes = len(quant_blob)
+        log0(f"Serialized model mixed+{_COMPRESSOR}: {quant_file_bytes} bytes")
+        log0(f"Total submission size mixed+{_COMPRESSOR}: {quant_file_bytes + code_bytes} bytes")
+    if distributed:
+        dist.barrier()
+
+    if args.quant_roundtrip_eval:
+        with open(args.quant_artifact_path, "rb") as f:
+            quant_blob_disk = f.read()
+        if _COMPRESSOR == "brotli":
+            raw = brotli.decompress(quant_blob_disk)
+        elif _COMPRESSOR == "zstd":
+            raw = zstandard.ZstdDecompressor().decompress(quant_blob_disk)
+        else:
+            raw = _zlib_module.decompress(quant_blob_disk)
+        if _BYTE_SHUFFLE:
+            raw = _byte_unshuffle(raw)
+        quant_state = torch.load(io.BytesIO(raw), map_location="cpu")
+        sd_cpu_ref = {k: v.detach().cpu() for k, v in export_sd.items()}
+        deq_state = dequantize_mixed_quant(quant_state["w"], quant_state["m"], sd_cpu_ref)
+        eval_model = GPT(
+            vocab_size=args.vocab_size,
+            num_layers=args.num_layers,
+            model_dim=args.model_dim,
+            num_heads=args.num_heads,
+            num_kv_heads=args.num_kv_heads,
+            mlp_mult=args.mlp_mult,
+            tie_embeddings=args.tie_embeddings,
+            tied_embed_init_std=args.tied_embed_init_std,
+            logit_softcap=args.logit_softcap,
+            rope_base=args.rope_base,
+            qk_gain_init=args.qk_gain_init,
+            ngram_buckets=args.ngram_buckets,
+            ngram_heads=args.ngram_heads,
+            ngram_orders=args.ngram_orders,
+            ngram_dim_per_head=args.ngram_dim_per_head,
+            xsa_last_n=args.xsa_last_n,
+            rope_dims=args.rope_dims,
+            ln_scale=args.ln_scale,
+            ve_enabled=args.ve_enabled,
+            ve_dim=args.ve_dim,
+            ve_layers=args.ve_layers,
+        ).to(device).bfloat16()
+        eval_model.qo_bank.data = eval_model.qo_bank.data.float()
+        eval_model.kv_bank.data = eval_model.kv_bank.data.float()
+        eval_model.mlp_up_bank.data = eval_model.mlp_up_bank.data.float()
+        eval_model.mlp_down_bank.data = eval_model.mlp_down_bank.data.float()
+        for module in eval_model.modules():
+            if isinstance(module, CastedLinear):
+                module.float()
+        restore_low_dim_params_to_fp32(eval_model)
+        eval_model.load_state_dict(deq_state, strict=True)
+        torch.cuda.synchronize()
+        t_qeval = time.perf_counter()
+        q_val_loss, q_val_bpb = eval_val(
+            args, eval_model, rank, world_size, device, grad_accum_steps,
+            val_tokens, base_bytes_lut, has_leading_space_lut, is_boundary_token_lut,
+        )
+        torch.cuda.synchronize()
+        log0(
+            f"final_quant_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
+            f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
+        )
+        log0(f"final_quant_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+        del eval_model, deq_state, quant_state, sd_cpu_ref
+    else:
+        log0("final_quant_roundtrip:skipped QUANT_ROUNDTRIP_EVAL=0")
     sw_seq_len = effective_eval_seq_len
     if args.skip_final_eval:
         log0("final_eval:skipped sliding/ngram by SKIP_FINAL_EVAL=1")

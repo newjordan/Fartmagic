@@ -8,4 +8,4 @@ if [ "${DIR}" = "/" ]; then echo "ERROR: could not find data/tokenizers/" >&2; e
 export REPO_ROOT="${DIR}"
 cd "${REPO_ROOT}"
 
-exec bash "${REPO_ROOT}/experiments/Rascal_IV/run_8x_clean.sh" "$@"
+exec bash "${REPO_ROOT}/neural/experiments/Rascal_IV/run_8x_clean.sh" "$@"

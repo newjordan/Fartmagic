@@ -150,10 +150,12 @@ class Hyperparameters:
     regime_tracker_enabled = bool(int(os.environ.get("REGIME_TRACKER", "0")))
     compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
     compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
-    # TTT uses torch.autograd.grad in forward — incompatible with fullgraph
+    # TTT uses torch.autograd.grad(create_graph=True) in forward during training.
+    # torch.compile (AOT autograd) currently does not support this double-backward path.
     ttt_dim_check = int(os.environ.get("TTT_DIM", "0"))
-    if ttt_dim_check > 0 and compile_fullgraph:
-        compile_fullgraph = False  # auto-disable for TTT compatibility
+    if ttt_dim_check > 0:
+        compile_enabled = False
+        compile_fullgraph = False
     # Workaround for torch.compile + DDP higher-order-op backend issue on H100 runs.
     # Keeps compile enabled while avoiding the DDPOptimizer path that throws NotImplementedError.
     torchdynamo_optimize_ddp = bool(int(os.environ.get("TORCHDYNAMO_OPTIMIZE_DDP", "0")))

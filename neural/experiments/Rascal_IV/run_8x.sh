@@ -69,7 +69,10 @@ export SCALE_TTT_ENABLED="0"
 export SLOT_ENABLED="0"
 export TTT_E2E="0"
 
-TRAIN_SCRIPT="${REPO_ROOT}/experiments/Rascal_IV/train_gpt.py"
+TRAIN_SCRIPT="${REPO_ROOT}/neural/experiments/Rascal_IV/train_gpt.py"
+if [ ! -f "${TRAIN_SCRIPT}" ]; then
+  TRAIN_SCRIPT="${REPO_ROOT}/experiments/Rascal_IV/train_gpt.py"
+fi
 
 if [ "${ARM}" != "control" ] && [ "${ALLOW_EXPERIMENTAL}" != "1" ]; then
   echo "ERROR: refusing experimental arm '${ARM}' without RASCAL_IV_ALLOW_EXPERIMENTAL=1" >&2

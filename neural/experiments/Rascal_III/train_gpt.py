@@ -94,6 +94,7 @@ class Hyperparameters:
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 2048))
     eval_seq_len = int(os.environ.get("EVAL_SEQ_LEN", 2048))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
+    init_model_path = os.environ.get("INIT_MODEL_PATH", "").strip()
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
     num_layers = int(os.environ.get("NUM_LAYERS", 11))
@@ -2062,6 +2063,37 @@ def main() -> None:
         if isinstance(module, CastedLinear):
             module.float()
     restore_low_dim_params_to_fp32(base_model)
+    if args.init_model_path:
+        init_path = Path(args.init_model_path).expanduser().resolve()
+        if not init_path.is_file():
+            raise FileNotFoundError(f"INIT_MODEL_PATH does not exist: {init_path}")
+        if master_process:
+            print(f"init_model:loading path={init_path}")
+        init_obj = torch.load(str(init_path), map_location="cpu")
+        if isinstance(init_obj, dict) and "state_dict" in init_obj and isinstance(init_obj["state_dict"], dict):
+            init_state = init_obj["state_dict"]
+        elif isinstance(init_obj, dict) and "model" in init_obj and isinstance(init_obj["model"], dict):
+            init_state = init_obj["model"]
+        elif isinstance(init_obj, dict):
+            init_state = init_obj
+        else:
+            raise TypeError(f"Unsupported checkpoint format for INIT_MODEL_PATH={init_path}")
+        if any(k.startswith("module.") for k in init_state.keys()):
+            init_state = {k.replace("module.", "", 1): v for k, v in init_state.items()}
+        missing, unexpected = base_model.load_state_dict(init_state, strict=False)
+        allowed_missing = [k for k in missing if "mtp_heads" in k]
+        disallowed_missing = [k for k in missing if "mtp_heads" not in k]
+        if disallowed_missing or unexpected:
+            raise RuntimeError(
+                "INIT_MODEL_PATH incompatible with current model "
+                f"(missing_non_mtp={len(disallowed_missing)} unexpected={len(unexpected)})"
+            )
+        if master_process:
+            print(
+                "init_model:loaded "
+                f"missing_mtp={len(allowed_missing)} unexpected={len(unexpected)}"
+            )
+        del init_obj, init_state
     if args.complement_alpha > 0:
         tracker = TrainNgramTracker(args.vocab_size, device, complement_alpha=args.complement_alpha)
         base_model._ngram_tracker = tracker

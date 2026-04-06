@@ -20,5 +20,8 @@ export COPRIME_SHARD_HOLD_STEPS="64"
 
 pip install brotli -q 2>/dev/null || true
 
-TRAIN_SCRIPT="$(find "${REPO_ROOT}" -path "*/Rascal_III/train_gpt.py" | head -1)"
+TRAIN_SCRIPT="${REPO_ROOT}/neural/experiments/Rascal_III/train_gpt.py"
+if [ ! -f "${TRAIN_SCRIPT}" ]; then
+  TRAIN_SCRIPT="${REPO_ROOT}/experiments/Rascal_III/train_gpt.py"
+fi
 exec torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" "${TRAIN_SCRIPT}" "$@"

@@ -10,6 +10,8 @@ Code ownership:
 Current launch targets:
 - `test_lab/Rascal_II_homebase/run.sh`
 - `test_lab/Rascal_II_mixed_int_lab/run.sh`
+- `test_lab/Rascal_IV/run.sh`
+- `test_lab/Rascal_IV/clean.sh`
 - `test_lab/today.sh`
 
 Examples:

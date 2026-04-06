@@ -35,6 +35,19 @@ SEED=300 QUANT_ATTN_BITS=6 QUANT_MLP_BITS=5 QUANT_EMBED_BITS=8 bash test_lab/Ras
 SEED=300 QUANT_ATTN_BITS=5 QUANT_MLP_BITS=5 QUANT_EMBED_BITS=8 QUANT_AUX_BITS=8 bash test_lab/Rascal_II_mixed_int_lab/run.sh
 ```
 
+## 4xGPU Ablation Results (2026-04-06, seed=300, 600s wallclock)
+
+| Metric | Control (all int6) | Mixed (attn=5) | Delta |
+|--------|-------------------|----------------|-------|
+| Post-EMA val_bpb | 1.1763 | 1.1736 | **-0.0027** |
+| Quant roundtrip BPB | 1.1902 | 1.1907 | +0.0005 (noise) |
+| Sliding window BPB | 1.1528 | 1.1500 | **-0.0028** |
+| Artifact size | 14.66 MB | 14.12 MB | **-0.54 MB saved** |
+| Steps completed | 3214 | 3292 | +78 |
+
+**Verdict:** attn=5 is a net positive. Better pre-quant BPB, saves 0.54 MB, quant roundtrip is flat.
+Note: 4xGPU / ~3200 steps, not directly comparable to 8xGPU baseline (1.1099 BPB).
+
 Rules:
 - No SLOT.
 - No evaluation-only adaptation tricks.

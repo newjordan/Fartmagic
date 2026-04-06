@@ -7,7 +7,7 @@ set -euo pipefail
 #  Full 600s run with loop-aware GPTQ and full eval.
 #
 #  Usage:
-#    SEED=444 NPROC_PER_NODE=4 bash crawler/2026-04-06_Ouroboros_II/run.sh
+#    SEED=444 NPROC_PER_NODE=8 bash crawler/2026-04-06_Ouroboros_II/run.sh
 # ================================================================
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +20,7 @@ cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 
 SEED="${SEED:-444}"
-NPROC="${NPROC_PER_NODE:-4}"
+NPROC="${NPROC_PER_NODE:-8}"
 TRAIN_PY="${SCRIPT_DIR}/train_gpt_ouroboros_ii.py"
 
 mkdir -p "${SCRIPT_DIR}/logs"
@@ -60,7 +60,7 @@ env \
     INST_DIM=32 \
     DELTA_NET_HEADS=0 \
     SKIP_EMA=1 \
-    LOOP_AWARE_GPTQ=0 \
+    LOOP_AWARE_GPTQ=1 \
     MLP_LEAKY_SLOPE=0.5 \
     CRAWLER_MLP_LEAKY_SLOPE=0.5 \
     CRAWLER_MLP_CHOKE_DIM=0 \

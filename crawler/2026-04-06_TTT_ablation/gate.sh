@@ -36,8 +36,8 @@ else
     TORCHRUN=(python3 -m torch.distributed.run)
 fi
 
-# Shared base config (BW5/Ouroboros baseline)
-BASE_ENV=(
+# Shared env (common to both architectures)
+SHARED_ENV=(
     SEED="${SEED}"
     ITERATIONS=2000
     MAX_WALLCLOCK_SECONDS=3600
@@ -45,32 +45,28 @@ BASE_ENV=(
     COMPLEMENT_ALPHA=0
     XSA_LAST_N=11
     BIGRAM_VOCAB_SIZE=2048
-    BIGRAM_DIM=128
     ROPE_DIMS=16
     SWA_EVERY=50
     MTP_NUM_HEADS=0
     LATE_QAT_THRESHOLD=0
     MATRIX_LR=0.03
-    MUON_WD=0.04
     TORCHDYNAMO_OPTIMIZE_DDP=0
     COMPILE_FULLGRAPH=1
     NGRAM_EVAL_ORDER=0
     MODEL_DIM=512
     USE_CRAWLER=1
-    NUM_FLAT_LAYERS=4
     NUM_CRAWLER_LAYERS=1
     CRAWLER_MLP_MULT=6.0
     INST_DIM=32
-    CRAWLER_QUANT_INT8=1
     DELTA_NET_HEADS=0
     SKIP_EMA=1
     SKIP_GPTQ=1
     LOOP_AWARE_GPTQ=0
-    NITRUST_ENABLE=0
-    NITRUST_STRICT=0
     MLP_LEAKY_SLOPE=0.5
     CRAWLER_MLP_LEAKY_SLOPE=0.5
     CRAWLER_MLP_CHOKE_DIM=0
+    CRAWLER_MLP_CHOKE_SHAPE=flat
+    CRAWLER_MLP_CHOKE_GROUPS=8
     CRAWLER_LOOP_SMEAR=0
     CRAWLER_TAP_DIM=0
     CRAWLER_TAP_LOOP_SPECIFIC=1
@@ -78,6 +74,24 @@ BASE_ENV=(
     ANCHOR_DIM=0
     FLAT_WEIGHT_SHARE=0
     NPROC_PER_NODE="${NPROC}"
+)
+
+# BWX 9F base for Ouroboros arms (matches records/.../2026-04-02_Bandit_Wagon_X_9F_8xH100)
+OURO_BASE=(
+    NUM_FLAT_LAYERS=9
+    CRAWLER_LOOPS=3
+    CRAWLER_LOOP_ROPE_SCALES=9,1,1
+    CRAWLER_QUANT_INT8=0
+)
+
+# BW5 4F base for Helix arms (matches Helix_ab_3 gate)
+HELIX_BASE=(
+    NUM_FLAT_LAYERS=4
+    CRAWLER_LOOPS=3
+    CRAWLER_LOOP_ROPE_SCALES=9,1,1
+    CRAWLER_QUANT_INT8=1
+    MUON_WD=0.04
+    BIGRAM_DIM=128
 )
 
 {
@@ -126,7 +140,7 @@ run_arm() {
     echo "================================================================"
     echo ""
 
-    env "${BASE_ENV[@]}" "${extra_env[@]}" \
+    env "${SHARED_ENV[@]}" "${extra_env[@]}" \
       "${TORCHRUN[@]}" --standalone --nproc_per_node="${NPROC}" "${TRAIN_PY}" \
       2>&1 | tee "${log}"
 
@@ -154,32 +168,31 @@ run_arm() {
 }
 
 # ================================================================
-#  ARM 0: Ouroboros control (no TTT)
+#  ARM 0: Ouroboros control — BWX 9F base (no TTT)
 # ================================================================
-run_arm "TTT-00_ouro_ctrl" "Ouroboros control (loops=3, no TTT)" "" \
+run_arm "TTT-00_ouro_ctrl" "Ouroboros 9F control (loops=3, no TTT)" "" \
+    "${OURO_BASE[@]}" \
     HELIX=0 \
-    CRAWLER_LOOPS=3 \
-    CRAWLER_LOOP_ROPE_SCALES=9,1,1 \
     CRAWLER_CROSS_HEADS=0 \
     TTT_DIM=0
 CTRL_OURO="${LAST_INT6}"
 
 # ================================================================
-#  ARM 1: Ouroboros + TTT
+#  ARM 1: Ouroboros + TTT — BWX 9F base
 # ================================================================
-run_arm "TTT-01_ouro_ttt" "Ouroboros + E2E TTT (loops=3, ttt_dim=32)" "${CTRL_OURO}" \
+run_arm "TTT-01_ouro_ttt" "Ouroboros 9F + E2E TTT (loops=3, ttt_dim=32)" "${CTRL_OURO}" \
+    "${OURO_BASE[@]}" \
     HELIX=0 \
-    CRAWLER_LOOPS=3 \
-    CRAWLER_LOOP_ROPE_SCALES=9,1,1 \
     CRAWLER_CROSS_HEADS=0 \
     TTT_DIM=32 \
     TTT_LR=0.01 \
     TTT_STEPS=1
 
 # ================================================================
-#  ARM 2: Helix SplitHead control (no TTT)
+#  ARM 2: Helix SplitHead control — BW5 4F base (no TTT)
 # ================================================================
-run_arm "TTT-02_helix_ctrl" "Helix SplitHead control (cross=8, no TTT)" "" \
+run_arm "TTT-02_helix_ctrl" "Helix SplitHead 4F control (cross=8, no TTT)" "" \
+    "${HELIX_BASE[@]}" \
     HELIX=1 \
     HELIX_DIM=384 \
     HELIX_STRIDE=1 \
@@ -192,9 +205,10 @@ run_arm "TTT-02_helix_ctrl" "Helix SplitHead control (cross=8, no TTT)" "" \
 CTRL_HELIX="${LAST_INT6}"
 
 # ================================================================
-#  ARM 3: Helix SplitHead + TTT
+#  ARM 3: Helix SplitHead + TTT — BW5 4F base
 # ================================================================
-run_arm "TTT-03_helix_ttt" "Helix SplitHead + E2E TTT (cross=8, ttt_dim=32)" "${CTRL_HELIX}" \
+run_arm "TTT-03_helix_ttt" "Helix SplitHead 4F + E2E TTT (cross=8, ttt_dim=32)" "${CTRL_HELIX}" \
+    "${HELIX_BASE[@]}" \
     HELIX=1 \
     HELIX_DIM=384 \
     HELIX_STRIDE=1 \

@@ -94,7 +94,7 @@ class Hyperparameters:
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 2048))
     eval_seq_len = int(os.environ.get("EVAL_SEQ_LEN", 2048))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
-    qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 5.0))
+    qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
     num_layers = int(os.environ.get("NUM_LAYERS", 11))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
@@ -111,7 +111,7 @@ class Hyperparameters:
     matrix_lr = float(os.environ.get("MATRIX_LR", 0.025))
     scalar_lr = float(os.environ.get("SCALAR_LR", 0.025))
     muon_momentum = float(os.environ.get("MUON_MOMENTUM", 0.99))
-    muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 7))
+    muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 5))
     muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.92))
     muon_momentum_warmup_steps = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 1500))
     beta1 = float(os.environ.get("BETA1", 0.9))
@@ -174,11 +174,10 @@ class Hyperparameters:
     compile_mode = os.environ.get("COMPILE_MODE", "").strip()
     compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
     mlp_kernel_mode = os.environ.get("MLP_KERNEL_MODE", "").strip().lower()
-    loader_mode = os.environ.get("LOADER_MODE", "coprime").strip().lower()
+    loader_mode = os.environ.get("LOADER_MODE", "sequential").strip().lower()
     coprime_max_loaded_shards = int(os.environ.get("COPRIME_MAX_LOADED_SHARDS", 4))
-    coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", 1))
+    coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", 4))
     coprime_shard_hold_steps = int(os.environ.get("COPRIME_SHARD_HOLD_STEPS", 64))
-    # SLOT removed for Rascal III — clean base, no eval hacks
 
 
 def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = ""):
@@ -414,10 +413,6 @@ class Muon(torch.optim.Optimizer):
                 else:
                     update = buf
 
-                # MuonEq-R: row-normalize before Newton-Schulz
-                row_norms = update.float().norm(dim=-1, keepdim=True).clamp_min(1e-7)
-                update = update / row_norms.to(update.dtype)
-
                 update = zeropower_via_newtonschulz5(update, steps=backend_steps)
 
                 if sharded:
@@ -537,19 +532,6 @@ def eval_val(
 
 # --- Quantization helpers ---
 
-SUPPORTED_QUANT_BITS = {4, 5, 6, 7, 8, 16}
-def normalize_quant_bits(bits: int) -> int:
-    if bits not in SUPPORTED_QUANT_BITS:
-        raise ValueError(f"Unsupported quant bits: {bits}. Expected one of {sorted(SUPPORTED_QUANT_BITS)}")
-    return bits
-def quant_clip_range(bits: int) -> int:
-    bits = normalize_quant_bits(bits)
-    if bits == 8:
-        return 127
-    if bits >= 16:
-        raise ValueError("Float passthrough does not use a clip range")
-    return (1 << (bits - 1)) - 1
-
 CONTROL_TENSOR_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
@@ -571,6 +553,7 @@ INT8_KEEP_FLOAT_STORE_DTYPE = torch.float16
 INT8_PER_ROW_SCALE_DTYPE = torch.float16
 INT8_CLIP_PERCENTILE = 99.99984
 INT8_CLIP_Q = INT8_CLIP_PERCENTILE / 100.0
+SUPPORTED_QUANT_BITS = {4, 5, 6, 7, 8, 16}
 def tensor_nbytes(t: Tensor) -> int:
     return int(t.numel()) * int(t.element_size())
 def keep_float_tensor(name: str, t: Tensor, passthrough_orig_dtypes: dict[str, str]) -> Tensor:
@@ -596,6 +579,17 @@ def quantize_float_tensor(t: Tensor) -> tuple[Tensor, Tensor]:
     scale = torch.tensor(clip_abs / 127.0 if clip_abs > 0 else 1.0, dtype=torch.float32)
     q = torch.clamp(torch.round(torch.clamp(t32, -clip_abs, clip_abs) / scale), -127, 127).to(torch.int8).contiguous()
     return q, scale
+def normalize_quant_bits(bits: int) -> int:
+    if bits not in SUPPORTED_QUANT_BITS:
+        raise ValueError(f"Unsupported quant bits: {bits}. Expected one of {sorted(SUPPORTED_QUANT_BITS)}")
+    return bits
+def quant_clip_range(bits: int) -> int:
+    bits = normalize_quant_bits(bits)
+    if bits == 8:
+        return 127
+    if bits >= 16:
+        raise ValueError("Float passthrough does not use a clip range")
+    return (1 << (bits - 1)) - 1
 def _classify_param(name: str) -> str:
     if "tok_emb" in name or "lm_head" in name:
         return "embed"
@@ -1959,6 +1953,7 @@ def eval_val_sliding(
 def main() -> None:
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
+    quant_policy = build_quant_policy(args)
     # zeropower_via_newtonschulz5 runs eagerly with bmm -- do NOT compile
     distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     rank = int(os.environ.get("RANK", "0"))
@@ -2182,11 +2177,16 @@ def main() -> None:
         f"fullgraph={int(args.compile_fullgraph)}"
     )
     log0(f"mlp_kernel_mode:{args.mlp_kernel_mode or 'eager'}")
-    log0(f"quant_policy:attn={args.quant_attn_bits} mlp={args.quant_mlp_bits} aux={args.quant_aux_bits} embed={args.quant_embed_bits} other={args.quant_other_bits}")
     log0(
         f"scale_init:attn={args.attn_scale_init:.4f} mlp={args.mlp_scale_init:.4f} "
         f"resid_mix=({args.resid_mix_x_init:.4f},{args.resid_mix_x0_init:.4f}) "
         f"ln_scale={int(args.ln_scale)}"
+    )
+    log0(
+        "quant_policy:"
+        f"attn={quant_policy['attn']} mlp={quant_policy['mlp']} "
+        f"aux={quant_policy['aux']} embed={quant_policy['embed']} "
+        f"other={quant_policy['other']} artifact={args.quant_artifact_path}"
     )
     log0(f"seed:{args.seed}")
     train_loader = build_train_loader(args, rank, world_size, device)
@@ -2197,8 +2197,9 @@ def main() -> None:
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
     # GPTQ calibration reads training data — it must complete within the wallclock budget.
     # We stop the training loop early (by GPTQ_RESERVE_MS) so GPTQ runs before the cap.
-    _skip_gptq = int(os.environ.get("SKIP_GPTQ", "1"))
-    _gptq_reserve_ms = float(os.environ.get("GPTQ_RESERVE_MS", "30000")) if (max_wallclock_ms is not None and not _skip_gptq) else 0.0
+    _skip_gptq = int(os.environ.get("SKIP_GPTQ", "0"))
+    _needs_lowbit_gptq = any(bits < 8 for bits in quant_policy.values())
+    _gptq_reserve_ms = float(os.environ.get("GPTQ_RESERVE_MS", "30000")) if (max_wallclock_ms is not None and not _skip_gptq and _needs_lowbit_gptq) else 0.0
     effective_max_wallclock_ms = (max_wallclock_ms - _gptq_reserve_ms) if max_wallclock_ms is not None else None
     def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
@@ -2359,7 +2360,10 @@ def main() -> None:
     # GPTQ calibration: reads training data — must complete within MAX_WALLCLOCK_SECONDS.
     # Training loop stopped GPTQ_RESERVE_MS early so this runs inside the budget.
     if _skip_gptq:
-        log0("gptq:SKIPPED (SKIP_GPTQ=1) — will use naive int6")
+        log0("gptq:SKIPPED (SKIP_GPTQ=1)")
+        gptq_hessians: dict[str, Tensor] = {}
+    elif not _needs_lowbit_gptq:
+        log0("gptq:SKIPPED (all quant categories are int8 or float passthrough)")
         gptq_hessians: dict[str, Tensor] = {}
     else:
         log0("gptq:calibrating with training data...")
@@ -2410,7 +2414,6 @@ def main() -> None:
         log0(f"Code size: {code_bytes} bytes")
     sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
     # GPTQ quantization using Hessians collected from training data
-    quant_policy = build_quant_policy(args)
     quant_result, quant_meta = mixed_quantize_gptq(sd_cpu, quant_policy, gptq_hessians)
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
@@ -2424,14 +2427,14 @@ def main() -> None:
     else:
         quant_blob = _zlib_module.compress(quant_raw, 9)
     if master_process:
-        with open("final_model.mixed.ptz", "wb") as f:
+        with open(args.quant_artifact_path, "wb") as f:
             f.write(quant_blob)
         quant_file_bytes = len(quant_blob)
         log0(f"Serialized model mixed+{_COMPRESSOR}: {quant_file_bytes} bytes")
         log0(f"Total submission size mixed+{_COMPRESSOR}: {quant_file_bytes + code_bytes} bytes")
     if distributed:
         dist.barrier()
-    with open("final_model.mixed.ptz", "rb") as f:
+    with open(args.quant_artifact_path, "rb") as f:
         quant_blob_disk = f.read()
     if _COMPRESSOR == "brotli":
         raw = brotli.decompress(quant_blob_disk)
@@ -2474,10 +2477,10 @@ def main() -> None:
     )
     torch.cuda.synchronize()
     log0(
-        f"final_int6_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
+        f"final_quant_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
-    log0(f"final_int6_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+    log0(f"final_quant_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
     del eval_model, deq_state, quant_state, sd_cpu
     torch.cuda.empty_cache()
     sw_seq_len = effective_eval_seq_len

@@ -710,13 +710,33 @@ def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
     F.linear = _instrumented_linear
     stream = TokenStream(train_pattern)
     model.eval()
+    # Cast entire model to float32 for calibration so .to(x.dtype) is a no-op
+    # and bank data_ptrs are preserved through F.linear calls.
+    model.float()
+    # Rebuild ptr map after float() to get correct data_ptrs
+    bank_ptr_map.clear()
+    for bank_name in ("qo_bank", "kv_bank", "mlp_up_bank", "mlp_down_bank"):
+        bank = getattr(model, bank_name, None)
+        if bank is not None:
+            for i in range(bank.shape[0]):
+                bank_ptr_map[bank[i].data_ptr()] = f"{bank_name}.{i}"
     with torch.no_grad():
         for _ in range(n_samples):
             tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
             x = tokens[:-1].unsqueeze(0)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model.forward_logits(x)
+            # No autocast — float32 throughout so bank data_ptrs match
+            model.forward_logits(x)
     F.linear = original_linear
+    # Restore model to bfloat16, then banks back to float32
+    model.bfloat16()
+    for bank_name in ("qo_bank", "kv_bank", "mlp_up_bank", "mlp_down_bank"):
+        bank = getattr(model, bank_name, None)
+        if bank is not None:
+            bank.data = bank.data.float()
+    for module in model.modules():
+        if isinstance(module, CastedLinear):
+            module.float()
+    restore_low_dim_params_to_fp32(model)
     for h in hooks:
         h.remove()
     for name in hessians:

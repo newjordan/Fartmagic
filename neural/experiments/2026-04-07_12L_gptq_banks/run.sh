@@ -19,5 +19,5 @@ export QUANT_ATTN_BITS=5
 export QUANT_MLP_BITS=6
 export QUANT_EMBED_BITS=8
 export NUM_LAYERS=12
-export GPTQ_RESERVE_MS=45000
+export GPTQ_RESERVE_MS=30000
 torchrun --standalone --nproc_per_node="${NPROC_PER_NODE}" "$SCRIPT_DIR/train_gpt.py"

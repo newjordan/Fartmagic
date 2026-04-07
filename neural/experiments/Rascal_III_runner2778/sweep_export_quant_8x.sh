@@ -13,6 +13,9 @@ export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 export CKPT_SEARCH_ROOTS="${CKPT_SEARCH_ROOTS:-/workspace/parameter-golf:${REPO_ROOT}}"
 export QUANT_ROUNDTRIP_EVAL="${QUANT_ROUNDTRIP_EVAL:-1}"
 export SKIP_FINAL_EVAL="${SKIP_FINAL_EVAL:-1}"
+export SWEEP_BASELINE_NAME="${SWEEP_BASELINE_NAME:-q0_base}"
+export SWEEP_MAX_BPB_DELTA="${SWEEP_MAX_BPB_DELTA:-0.015}"
+export SWEEP_SIZE_CAP_BYTES="${SWEEP_SIZE_CAP_BYTES:-16777216}"
 
 # Never run final sliding/ngram eval inside this sweep unless explicitly overridden.
 if [ "${SKIP_FINAL_EVAL}" != "1" ]; then
@@ -103,11 +106,12 @@ echo -e "name\tattn\tmlp\taux\tembed\tother\tartifact_bytes\ttotal_bytes\troundt
 CONFIGS=(
   "q0_base 5 6 6 8 8"
   "q1_mlp5 5 5 6 8 8"
-  "q2_attn4_mlp5_aux5 4 5 5 8 8"
-  "q3_attn4_mlp4_aux5 4 4 5 8 8"
+  "q2_attn4 4 6 6 8 8"
+  "q3_attn4_aux5 4 6 5 8 8"
+  "q4_attn4_mlp5_aux6 4 5 6 8 8"
 )
 
-echo "sweep:start checkpoint=${INIT_MODEL_PATH} out_dir=${OUT_DIR} configs=${#CONFIGS[@]}"
+echo "sweep:start checkpoint=${INIT_MODEL_PATH} out_dir=${OUT_DIR} configs=${#CONFIGS[@]} baseline=${SWEEP_BASELINE_NAME} max_bpb_delta=${SWEEP_MAX_BPB_DELTA} size_cap=${SWEEP_SIZE_CAP_BYTES}"
 
 for cfg in "${CONFIGS[@]}"; do
   read -r name attn mlp aux embed other <<< "${cfg}"
@@ -145,12 +149,14 @@ for cfg in "${CONFIGS[@]}"; do
   fi
 done
 
-python3 - <<'PY' "${SUMMARY}" "${RANKED}" "${BEST}"
+python3 - <<'PY' "${SUMMARY}" "${RANKED}" "${BEST}" "${SWEEP_BASELINE_NAME}" "${SWEEP_MAX_BPB_DELTA}" "${SWEEP_SIZE_CAP_BYTES}"
 import csv
 import math
 import sys
 
-summary, ranked, best = sys.argv[1], sys.argv[2], sys.argv[3]
+summary, ranked, best, baseline_name, max_delta_str, size_cap_str = sys.argv[1:7]
+max_delta = float(max_delta_str)
+size_cap = int(size_cap_str)
 rows = []
 with open(summary, "r", encoding="utf-8") as f:
     rd = csv.DictReader(f, delimiter="\t")
@@ -169,23 +175,67 @@ with open(summary, "r", encoding="utf-8") as f:
         r["_bpb"] = bpb
         rows.append(r)
 
-rows.sort(key=lambda x: (x["_total"], x["_bpb"]))
+baseline = next((r for r in rows if r["name"] == baseline_name), None)
+baseline_bpb = baseline["_bpb"] if baseline is not None else (min((r["_bpb"] for r in rows), default=math.inf))
+
+for r in rows:
+    r["_delta_bpb"] = r["_bpb"] - baseline_bpb
+    r["_quality_ok"] = r["_delta_bpb"] <= max_delta
+    r["_size_ok"] = r["_total"] <= size_cap
+    if r["_quality_ok"] and r["_size_ok"]:
+        r["_tier"] = 0
+    elif r["_quality_ok"]:
+        r["_tier"] = 1
+    elif r["_size_ok"]:
+        r["_tier"] = 2
+    else:
+        r["_tier"] = 3
+
+def sort_key(r):
+    # Tier 0: quality+size pass -> prefer smaller.
+    if r["_tier"] == 0:
+        return (0, r["_total"], r["_bpb"])
+    # Tier 1: quality pass but oversize -> prefer closer to cap then better bpb.
+    if r["_tier"] == 1:
+        return (1, r["_total"], r["_bpb"])
+    # Tier 2: size pass but quality fail -> prefer better quality first.
+    if r["_tier"] == 2:
+        return (2, r["_bpb"], r["_total"])
+    # Tier 3: fail both -> prefer better quality first.
+    return (3, r["_bpb"], r["_total"])
+
+rows.sort(key=sort_key)
 
 with open(ranked, "w", encoding="utf-8", newline="") as f:
     wr = csv.writer(f, delimiter="\t")
-    wr.writerow(["rank","name","attn","mlp","aux","embed","other","total_bytes","roundtrip_bpb","log_path"])
+    wr.writerow([
+        "rank","name","attn","mlp","aux","embed","other",
+        "total_bytes","roundtrip_bpb","delta_bpb","quality_ok","size_ok","tier","log_path"
+    ])
     for i, r in enumerate(rows, start=1):
-        wr.writerow([i, r["name"], r["attn"], r["mlp"], r["aux"], r["embed"], r["other"], r["total_bytes"], r["roundtrip_bpb"], r["log_path"]])
+        wr.writerow([
+            i, r["name"], r["attn"], r["mlp"], r["aux"], r["embed"], r["other"],
+            r["total_bytes"], r["roundtrip_bpb"],
+            f"{r['_delta_bpb']:.8f}", int(r["_quality_ok"]), int(r["_size_ok"]), r["_tier"], r["log_path"]
+        ])
 
 with open(best, "w", encoding="utf-8") as f:
     if not rows:
         f.write("no_successful_runs\n")
     else:
         r = rows[0]
+        f.write(f"baseline_name={baseline_name}\n")
+        f.write(f"baseline_bpb={baseline_bpb:.8f}\n")
+        f.write(f"max_bpb_delta={max_delta:.8f}\n")
+        f.write(f"size_cap_bytes={size_cap}\n")
         f.write(f"best_name={r['name']}\n")
         f.write(f"bits={r['attn']}/{r['mlp']}/{r['aux']}/{r['embed']}/{r['other']}\n")
         f.write(f"total_bytes={r['total_bytes']}\n")
         f.write(f"roundtrip_bpb={r['roundtrip_bpb']}\n")
+        f.write(f"delta_bpb={r['_delta_bpb']:.8f}\n")
+        f.write(f"quality_ok={int(r['_quality_ok'])}\n")
+        f.write(f"size_ok={int(r['_size_ok'])}\n")
+        f.write(f"tier={r['_tier']}\n")
         f.write(f"log_path={r['log_path']}\n")
 PY
 

@@ -1,0 +1,105 @@
+============================================
+  RASCAL II — Brotli + Mixed-Int Quant, Full 600s, 8xH100
+  Seed: 444
+  Loader mode: coprime | no trigram | no n-gram eval
+  SKIP_GPTQ=1 | COMPRESSOR=brotli | Parallel Muon | XSA-all-11
+  Quant policy: attn=5 mlp=6 aux=6 embed=8 other=8
+  Bigram 2048 | RoPE 16
+============================================
+logs/d2b1d660-906d-4002-995c-c31921b4bee5.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:80
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+model_params:26993756
+mtp_num_heads:0 mtp_loss_weight:0.2 mtp_params:0
+XSA:last_11 active_layers:[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+world_size:8 grad_accum_steps:1
+sdp_backends:cudnn=False flash=True mem_efficient=False math=False
+attention_mode:gqa num_heads:8 num_kv_heads:4
+tie_embeddings:True embed_lr:0.035 head_lr:0.0 matrix_lr:0.025 scalar_lr:0.025
+train_batch_tokens:786432 train_seq_len:2048 iterations:20000 warmup_steps:20 max_wallclock_seconds:600.000
+compile:enabled=1 mode:default fullgraph=1
+mlp_kernel_mode:eager
+scale_init:attn=1.0000 mlp=1.0000 resid_mix=(1.0000,0.0000) ln_scale=1
+quant_policy:attn=5 mlp=6 aux=6 embed=8 other=8 artifact=final_model.mixed.ptz
+seed:444
+loader:coprime shards:80 blocks:3906240 seq_len:2048 shards_per_batch:1 cache:4 batch_stride:47 hold_steps:64
+warmup_step:1/20
+warmup_step:2/20
+warmup_step:3/20
+warmup_step:4/20
+warmup_step:5/20
+warmup_step:6/20
+warmup_step:7/20
+warmup_step:8/20
+warmup_step:9/20
+warmup_step:10/20
+warmup_step:11/20
+warmup_step:12/20
+warmup_step:13/20
+warmup_step:14/20
+warmup_step:15/20
+warmup_step:16/20
+warmup_step:17/20
+warmup_step:18/20
+warmup_step:19/20
+warmup_step:20/20
+loader_reset:loader:coprime shards:80 blocks:3906240 seq_len:2048 shards_per_batch:1 cache:4 batch_stride:47 hold_steps:64
+step:0/20000 val_loss:6.9326 val_bpb:4.1058 train_time:0ms step_avg:0.01ms
+step:1/20000 train_loss:6.9321 train_time:370ms step_avg:369.90ms
+step:2/20000 train_loss:8.8444 train_time:401ms step_avg:200.52ms
+step:3/20000 train_loss:8.0881 train_time:485ms step_avg:161.64ms
+step:4/20000 train_loss:7.0038 train_time:570ms step_avg:142.54ms
+step:5/20000 train_loss:7.0451 train_time:655ms step_avg:130.96ms
+step:6/20000 train_loss:6.9973 train_time:740ms step_avg:123.28ms
+step:7/20000 train_loss:6.8808 train_time:825ms step_avg:117.87ms
+step:8/20000 train_loss:6.7679 train_time:912ms step_avg:113.97ms
+step:9/20000 train_loss:6.5983 train_time:1000ms step_avg:111.10ms
+step:10/20000 train_loss:6.3985 train_time:1089ms step_avg:108.92ms
+step:500/20000 train_loss:2.3575 train_time:44919ms step_avg:89.84ms
+step:1000/20000 train_loss:2.2141 train_time:90118ms step_avg:90.12ms
+step:1500/20000 train_loss:2.1862 train_time:135395ms step_avg:90.26ms
+step:2000/20000 train_loss:2.0784 train_time:180683ms step_avg:90.34ms
+step:2500/20000 train_loss:2.0751 train_time:226040ms step_avg:90.42ms
+step:3000/20000 train_loss:2.1360 train_time:271003ms step_avg:90.33ms
+step:3500/20000 train_loss:2.0146 train_time:316217ms step_avg:90.35ms
+step:4000/20000 train_loss:1.9761 train_time:361403ms step_avg:90.35ms
+step:4000/20000 val_loss:2.0258 val_bpb:1.1998 train_time:361453ms step_avg:90.36ms
+step:4500/20000 train_loss:2.0246 train_time:406563ms step_avg:90.35ms
+step:5000/20000 train_loss:2.0105 train_time:451718ms step_avg:90.34ms
+step:5500/20000 train_loss:1.9781 train_time:496589ms step_avg:90.29ms
+swa:start step:5950
+step:6000/20000 train_loss:1.9732 train_time:541786ms step_avg:90.30ms
+late_qat:enabled step:6117 scale:0.1498
+step:6500/20000 train_loss:1.9329 train_time:587588ms step_avg:90.40ms
+step:6636/20000 val_loss:1.9157 val_bpb:1.1346 train_time:600058ms step_avg:90.42ms
+stopping_early: wallclock_cap train_time:600058ms step:6636/20000
+peak memory allocated: 22850 MiB reserved: 23004 MiB
+gptq:SKIPPED (SKIP_GPTQ=1)
+ema:applying EMA weights
+DIAGNOSTIC post_ema val_loss:1.9142 val_bpb:1.1337 eval_time:2069ms
+Serialized model: 106158518 bytes
+Code size: 124025 bytes
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 4 naive tensors int5:2 int6:2 int8:3
+Serialized model mixed+brotli: 14318002 bytes
+Total submission size mixed+brotli: 14442027 bytes
+final_quant_roundtrip val_loss:1.9382 val_bpb:1.1479 eval_time:6170ms
+final_quant_roundtrip_exact val_loss:1.93824729 val_bpb:1.14793922
+final_sliding_window val_loss:1.8746 val_bpb:1.1102 stride:64 eval_time:79070ms
+final_sliding_window_exact val_loss:1.87460460 val_bpb:1.11024938
+============================================
+  DONE — Brotli+Mixed-Int vs baselines:
+  SW BPB: 1.11024938 vs 1.10986874 (baseline zstd) vs 1.10942102 (brotli only)
+  Size:   14,442,027 vs 15,554,053 (baseline) vs 15,419,486 (brotli only)
+  Saved:  1,112,026 bytes vs baseline (1.09 MB)
+  Headroom to 16MB: 2,335,189 bytes (2.23 MB)
+  Quant gap: 0.01424 (post-EMA 1.1337 -> roundtrip 1.1479)
+  Note: GPTQ was OFF (naive quant). GPTQ should recover quant loss.
+============================================

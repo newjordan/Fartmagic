@@ -53,11 +53,22 @@ bash test_lab/PR_sidelane_8x_linked/run_v1_non_ngram.sh
 Optional overrides:
 
 ```bash
-SEED=446 ITERATIONS=800 NPROC_PER_NODE=8 MAX_WALLCLOCK_SECONDS=2400 \
+SEED=446 SUBMISSION_PROFILE=track_10min_16mb NPROC_PER_NODE=8 \
 TOKENIZER_PATH=/workspace/parameter-golf/data/tokenizers/fineweb_1024_bpe.model \
 DATA_PATH=/workspace/parameter-golf/data/datasets/fineweb10B_sp1024 \
 bash test_lab/PR_sidelane_8x_linked/run_v1_non_ngram.sh
 ```
+
+Profiles:
+
+- `SUBMISSION_PROFILE=track_10min_16mb` (default):
+  - `ITERATIONS` defaults to `20000`
+  - `MAX_WALLCLOCK_SECONDS` defaults to `590`
+- `SUBMISSION_PROFILE=longform`:
+  - `ITERATIONS` defaults to `20000`
+  - `MAX_WALLCLOCK_SECONDS` defaults to `2400`
+
+This lane is not fixed to 800 steps.
 
 ## Outputs
 

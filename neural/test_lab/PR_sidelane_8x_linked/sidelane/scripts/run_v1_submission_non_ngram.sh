@@ -82,14 +82,29 @@ SEED="${SEED:-445}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 TS="$(date +%Y%m%d_%H%M%S)"
 RUNS_SUBDIR="${RUNS_SUBDIR:-v1_submission_non_ngram}"
+SUBMISSION_PROFILE="${SUBMISSION_PROFILE:-track_10min_16mb}"
 OUT_DIR="${ROOT_DIR}/runs/${RUNS_SUBDIR}/${TS}_s${SEED}"
 mkdir -p "${OUT_DIR}"
 LOG_PATH="${OUT_DIR}/v1_longctx_ttt_densehash_non_ngram.log"
 SUMMARY="${OUT_DIR}/summary.tsv"
 
 export DATA_PATH TOKENIZER_PATH SEED
-export ITERATIONS="${ITERATIONS:-800}"
-export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-2400}"
+case "${SUBMISSION_PROFILE}" in
+  track_10min_16mb)
+    # Drive by wallclock for legal 10-minute style attempts.
+    export ITERATIONS="${ITERATIONS:-20000}"
+    export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-590}"
+    ;;
+  longform)
+    # Extended diagnostic profile.
+    export ITERATIONS="${ITERATIONS:-20000}"
+    export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-2400}"
+    ;;
+  *)
+    echo "Unsupported SUBMISSION_PROFILE=${SUBMISSION_PROFILE}. Use track_10min_16mb or longform." >&2
+    exit 1
+    ;;
+esac
 export TRAIN_LOG_EVERY="${TRAIN_LOG_EVERY:-100}"
 export VAL_LOSS_EVERY="${VAL_LOSS_EVERY:-0}"
 export WARMUP_STEPS="${WARMUP_STEPS:-0}"
@@ -130,6 +145,7 @@ echo "data_path: ${DATA_PATH}"
 echo "tokenizer_path: ${TOKENIZER_PATH}"
 echo "seed: ${SEED}"
 echo "nproc_per_node: ${NPROC_PER_NODE}"
+echo "submission_profile: ${SUBMISSION_PROFILE}"
 echo "iterations: ${ITERATIONS}"
 echo "max_wallclock_seconds: ${MAX_WALLCLOCK_SECONDS}"
 echo "============================================================"

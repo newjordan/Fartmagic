@@ -2071,17 +2071,30 @@ def main() -> None:
             raise RuntimeError("INIT_MODEL_PATH did not contain a model state_dict")
         if any(k.startswith("module.") for k in init_state.keys()):
             init_state = {k[len("module."):]: v for k, v in init_state.items()}
+        # Handle shape mismatches (e.g., skip_weights when layer count differs)
+        model_sd = base_model.state_dict()
+        shape_fixed = []
+        for k in list(init_state.keys()):
+            if k in model_sd and init_state[k].shape != model_sd[k].shape:
+                src, dst = init_state[k], model_sd[k]
+                log0(f"init_model:shape_mismatch {k} ckpt={list(src.shape)} model={list(dst.shape)}")
+                # Copy overlapping region
+                slices = tuple(slice(0, min(s, d)) for s, d in zip(src.shape, dst.shape))
+                dst[slices] = src[slices]
+                init_state[k] = dst
+                shape_fixed.append(k)
         missing, unexpected = base_model.load_state_dict(init_state, strict=False)
         missing_non_mtp = [k for k in missing if not k.startswith("mtp_heads.")]
         if missing_non_mtp or unexpected:
-            raise RuntimeError(
-                "INIT_MODEL_PATH incompatible with current model "
-                f"(missing_non_mtp={len(missing_non_mtp)} unexpected={len(unexpected)})"
+            log0(
+                f"init_model:warnings "
+                f"missing_non_mtp={len(missing_non_mtp)} unexpected={len(unexpected)}"
             )
         log0(
             "init_model:loaded "
             f"missing_mtp={len(missing) - len(missing_non_mtp)} "
-            f"missing_non_mtp={len(missing_non_mtp)} unexpected={len(unexpected)}"
+            f"missing_non_mtp={len(missing_non_mtp)} unexpected={len(unexpected)} "
+            f"shape_fixed={len(shape_fixed)}"
         )
     if args.complement_alpha > 0:
         tracker = TrainNgramTracker(args.vocab_size, device, complement_alpha=args.complement_alpha)

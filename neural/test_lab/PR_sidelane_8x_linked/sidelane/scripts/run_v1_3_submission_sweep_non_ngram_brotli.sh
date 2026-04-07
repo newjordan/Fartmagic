@@ -114,6 +114,11 @@ case "${SUBMISSION_PROFILE}" in
     ;;
 esac
 
+# Quality tracking controls (forward path defaults to 4K eval tracking).
+TRACK_4K_BPB="${TRACK_4K_BPB:-1}"
+TRACK_EVAL_SEQ_LEN="${TRACK_EVAL_SEQ_LEN:-4096}"
+TRACK_EVAL_STRIDE="${TRACK_EVAL_STRIDE:-0}" # 0 => keep arm/default stride
+
 export TRAIN_LOG_EVERY="${TRAIN_LOG_EVERY:-100}"
 export VAL_LOSS_EVERY="${VAL_LOSS_EVERY:-0}"
 export COMPILE_ENABLED="${COMPILE_ENABLED:-0}"
@@ -144,7 +149,7 @@ ARMS=(
   "25_v1_3_depth14_dim352_non_ngram_brotli|candidate"
 )
 
-printf "lane\tarm\trole\tstatus\tcompressor\tmodel_params\tdiag_bpb\tsw_bpb\ttotal_size_mixed_bytes\tstep_avg_ms\tsteps_done\tlog\n" > "${SUMMARY}"
+printf "lane\tarm\trole\tstatus\tcompressor\tmodel_params\tdiag_bpb\tsw_bpb\tsw_bpb_4k\ttracked_eval_seq_len\ttotal_size_mixed_bytes\tstep_avg_ms\tsteps_done\tlog\n" > "${SUMMARY}"
 
 echo "============================================================"
 echo "V1.3 sweep (non-ngram + brotli + depth/schedule tuning)"
@@ -157,6 +162,11 @@ echo "nproc_per_node: ${NPROC_PER_NODE}"
 echo "submission_profile: ${SUBMISSION_PROFILE}"
 echo "iterations: ${ITERATIONS}"
 echo "max_wallclock_seconds: ${MAX_WALLCLOCK_SECONDS}"
+echo "track_4k_bpb: ${TRACK_4K_BPB}"
+if [[ "${TRACK_4K_BPB}" == "1" ]]; then
+  echo "track_eval_seq_len: ${TRACK_EVAL_SEQ_LEN}"
+  echo "track_eval_stride: ${TRACK_EVAL_STRIDE}"
+fi
 if [[ -n "${ARM_ONLY:-}" ]]; then
   echo "arm_only: ${ARM_ONLY}"
 fi
@@ -178,12 +188,23 @@ for arm_spec in "${ARMS[@]}"; do
   echo
   echo "--- 04_ssm_e2e_ttt_long_context / ${arm_name} (${arm_role}) ---"
 
+  tracked_eval_seq_len="-"
+  if [[ "${TRACK_4K_BPB}" == "1" ]]; then
+    tracked_eval_seq_len="${TRACK_EVAL_SEQ_LEN}"
+  fi
+
   arm_status="ok"
   if (
     set -a
     # shellcheck disable=SC1090
     source "${arm_file}"
     set +a
+    if [[ "${TRACK_4K_BPB}" == "1" ]]; then
+      export EVAL_SEQ_LEN="${TRACK_EVAL_SEQ_LEN}"
+      if [[ "${TRACK_EVAL_STRIDE}" != "0" ]]; then
+        export EVAL_STRIDE="${TRACK_EVAL_STRIDE}"
+      fi
+    fi
     # Hard legal gate: keep external n-gram eval disabled.
     export NGRAM_EVAL_ORDER=0
     export NGRAM_EVAL_ALPHA=0.0
@@ -222,13 +243,17 @@ for arm_spec in "${ARMS[@]}"; do
   [[ -z "${model_params}" ]] && model_params="-"
   [[ -z "${diag_bpb}" ]] && diag_bpb="-"
   [[ -z "${sw_bpb}" ]] && sw_bpb="-"
+  sw_bpb_4k="-"
+  if [[ "${TRACK_4K_BPB}" == "1" && "${TRACK_EVAL_SEQ_LEN}" -ge 4096 ]]; then
+    sw_bpb_4k="${sw_bpb}"
+  fi
   [[ -z "${compressor}" ]] && compressor="-"
   [[ -z "${size_mixed}" ]] && size_mixed="-"
   [[ -z "${step_avg_ms}" ]] && step_avg_ms="-"
   [[ -z "${steps_done}" ]] && steps_done="-"
 
-  printf "v1_3_non_ngram_brotli\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-    "${arm_name}" "${arm_role}" "${arm_status}" "${compressor}" "${model_params}" "${diag_bpb}" "${sw_bpb}" "${size_mixed}" "${step_avg_ms}" "${steps_done}" "${log_path}" \
+  printf "v1_3_non_ngram_brotli\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+    "${arm_name}" "${arm_role}" "${arm_status}" "${compressor}" "${model_params}" "${diag_bpb}" "${sw_bpb}" "${sw_bpb_4k}" "${tracked_eval_seq_len}" "${size_mixed}" "${step_avg_ms}" "${steps_done}" "${log_path}" \
     >> "${SUMMARY}"
 done
 
@@ -252,16 +277,19 @@ def parse(value: str) -> float:
 
 ok_rows = [r for r in rows if r.get("status") == "ok"]
 for r in ok_rows:
-    r["_metric"] = parse(r.get("sw_bpb", ""))
+    tracked = r.get("sw_bpb_4k", "")
+    base = r.get("sw_bpb", "")
+    metric_src = tracked if tracked not in ("", "-") else base
+    r["_metric"] = parse(metric_src)
 
 ok_rows = [r for r in ok_rows if math.isfinite(r.get("_metric", math.inf))]
 ok_rows.sort(key=lambda r: r["_metric"])
 
 with leaderboard_path.open("w") as f:
-    f.write("rank\tarm\trole\tmetric_bpb\tsw_bpb\ttotal_size_mixed_bytes\tstep_avg_ms\tsteps_done\tlog\n")
+    f.write("rank\tarm\trole\tmetric_bpb\tsw_bpb\tsw_bpb_4k\ttracked_eval_seq_len\ttotal_size_mixed_bytes\tstep_avg_ms\tsteps_done\tlog\n")
     for idx, r in enumerate(ok_rows, start=1):
         f.write(
-            f"{idx}\t{r['arm']}\t{r['role']}\t{r['_metric']:.8f}\t{r['sw_bpb']}\t{r['total_size_mixed_bytes']}\t{r['step_avg_ms']}\t{r['steps_done']}\t{r['log']}\n"
+            f"{idx}\t{r['arm']}\t{r['role']}\t{r['_metric']:.8f}\t{r['sw_bpb']}\t{r['sw_bpb_4k']}\t{r['tracked_eval_seq_len']}\t{r['total_size_mixed_bytes']}\t{r['step_avg_ms']}\t{r['steps_done']}\t{r['log']}\n"
         )
 
 print(f"summary={summary_path}")

@@ -31,6 +31,10 @@ All arms keep legal non-ngram gates and Brotli artifact enforcement.
 - Track profile default:
   - `ITERATIONS=12000`
   - `MAX_WALLCLOCK_SECONDS=590`
+- 4K quality tracking default:
+  - `TRACK_4K_BPB=1`
+  - `TRACK_EVAL_SEQ_LEN=4096`
+  - `TRACK_EVAL_STRIDE=0` (keep arm/default stride unless explicitly overridden)
 
 ## Files
 
@@ -67,3 +71,4 @@ bash test_lab/PR_sidelane_8x_linked/run_v1_3_non_ngram.sh
   - `test_lab/PR_sidelane_8x_linked/sidelane/runs/v1_3_submission_sweep_non_ngram_brotli/<timestamp>_s<seed>/leaderboard.tsv`
 
 `leaderboard.tsv` ranks by non-ngram `sw_bpb` (`final_sliding_window*_exact`).
+When 4K tracking is enabled (default), ranking metric is `sw_bpb_4k` and the tracked eval context is recorded in `tracked_eval_seq_len`.

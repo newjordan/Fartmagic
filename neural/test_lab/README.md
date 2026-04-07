@@ -15,6 +15,7 @@ Current launch targets:
 - `test_lab/Rascal_III_runner2778/run.sh`
 - `test_lab/PR_sidelane_8x_linked/run.sh`
 - `test_lab/PR_sidelane_8x_linked/run_v1_non_ngram.sh`
+- `test_lab/PR_sidelane_8x_linked/run_v1_2_non_ngram.sh`
 - `test_lab/today.sh`
 
 Examples:

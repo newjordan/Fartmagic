@@ -92,7 +92,7 @@ SEED="${SEED:-445}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 TS="$(date +%Y%m%d_%H%M%S)"
 PROJECT_CODENAME="${PROJECT_CODENAME:-longworm}"
-RUNS_SUBDIR="${RUNS_SUBDIR:-${PROJECT_CODENAME}_v1_3_submission_sweep_non_ngram_brotli}"
+RUNS_SUBDIR="${RUNS_SUBDIR:-${PROJECT_CODENAME}_v1_4_power_sweep_brotli}"
 SUBMISSION_PROFILE="${SUBMISSION_PROFILE:-track_10min_16mb}"
 OUT_DIR="${ROOT_DIR}/runs/${RUNS_SUBDIR}/${TS}_s${SEED}"
 mkdir -p "${OUT_DIR}"
@@ -102,7 +102,7 @@ LEADERBOARD="${OUT_DIR}/leaderboard.tsv"
 export DATA_PATH TOKENIZER_PATH SEED
 case "${SUBMISSION_PROFILE}" in
   track_10min_16mb)
-    export ITERATIONS="${ITERATIONS:-12000}"
+    export ITERATIONS="${ITERATIONS:-16000}"
     export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-590}"
     ;;
   longform)
@@ -145,16 +145,16 @@ export VE_LAYERS="${VE_LAYERS:-7,8}"
 export DTG_ENABLED="${DTG_ENABLED:-0}"
 
 ARMS=(
-  "23_v1_3_schedule_control_non_ngram_brotli|control"
-  "24_v1_3_depth12_non_ngram_brotli|candidate"
-  "25_v1_3_depth14_dim352_non_ngram_brotli|candidate"
+  "31_v1_4_power_l13_d408_non_ngram_brotli|control"
+  "32_v1_4_power_l14_d420_non_ngram_brotli|candidate"
+  "33_v1_4_power_l12_d456_non_ngram_brotli|candidate"
 )
 
 printf "lane\tarm\trole\tstatus\tcompressor\tmodel_params\tdiag_bpb\tsw_bpb\tsw_bpb_4k\ttracked_eval_seq_len\ttotal_size_mixed_bytes\tstep_avg_ms\tsteps_done\tlog\n" > "${SUMMARY}"
 
 echo "============================================================"
 echo "Project: ${PROJECT_CODENAME}"
-echo "V1.3 sweep (non-ngram + brotli + depth/schedule tuning)"
+echo "V1.4 power sweep (brotli + higher dim/layers + higher matrix lr)"
 echo "out_dir: ${OUT_DIR}"
 echo "train_py: ${TRAIN_PY}"
 echo "data_path: ${DATA_PATH}"
@@ -207,7 +207,7 @@ for arm_spec in "${ARMS[@]}"; do
         export EVAL_STRIDE="${TRACK_EVAL_STRIDE}"
       fi
     fi
-    export RUN_ID="${PROJECT_CODENAME}_v1_3_non_ngram_brotli_04_longctx_${arm_name}_s${SEED}_${TS}"
+    export RUN_ID="${PROJECT_CODENAME}_v1_4_power_brotli_04_longctx_${arm_name}_s${SEED}_${TS}"
     "${TORCHRUN[@]}" --standalone --nproc_per_node="${NPROC_PER_NODE}" "${TRAIN_PY}"
   ) 2>&1 | tee "${log_path}"; then
     arm_status="ok"
@@ -244,7 +244,7 @@ for arm_spec in "${ARMS[@]}"; do
   [[ -z "${step_avg_ms}" ]] && step_avg_ms="-"
   [[ -z "${steps_done}" ]] && steps_done="-"
 
-  printf "%s_v1_3_non_ngram_brotli\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+  printf "%s_v1_4_power_brotli\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
     "${PROJECT_CODENAME}" "${arm_name}" "${arm_role}" "${arm_status}" "${compressor}" "${model_params}" "${diag_bpb}" "${sw_bpb}" "${sw_bpb_4k}" "${tracked_eval_seq_len}" "${size_mixed}" "${step_avg_ms}" "${steps_done}" "${log_path}" \
     >> "${SUMMARY}"
 done
@@ -294,6 +294,6 @@ else:
 PY
 
 echo
-echo "${PROJECT_CODENAME}_v1_3_sweep_complete"
+echo "${PROJECT_CODENAME}_v1_4_power_sweep_complete"
 echo "summary: ${SUMMARY}"
 echo "leaderboard: ${LEADERBOARD}"

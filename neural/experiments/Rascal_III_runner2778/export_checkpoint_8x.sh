@@ -60,17 +60,39 @@ pip install brotli -q 2>/dev/null || true
 python3 - <<'PY'
 import os, sys, torch
 p = os.environ["INIT_MODEL_PATH"]
-state = torch.load(p, map_location="cpu")
-if not isinstance(state, dict):
-    print(f"ERROR: INIT_MODEL_PATH is not a state_dict dict: {type(state)}", file=sys.stderr)
+obj = torch.load(p, map_location="cpu")
+if isinstance(obj, dict) and "state_dict" in obj and isinstance(obj["state_dict"], dict):
+    state = obj["state_dict"]
+elif isinstance(obj, dict) and "model" in obj and isinstance(obj["model"], dict):
+    state = obj["model"]
+elif isinstance(obj, dict):
+    state = obj
+else:
+    print(f"ERROR: INIT_MODEL_PATH is not a state_dict-like dict: {type(obj)}", file=sys.stderr)
     sys.exit(2)
+prefixes = ("module.", "_orig_mod.", "model.", "base_model.")
+normalized = {}
+for k, v in state.items():
+    if not isinstance(v, torch.Tensor):
+        continue
+    nk = k
+    changed = True
+    while changed:
+        changed = False
+        for pfx in prefixes:
+            if nk.startswith(pfx):
+                nk = nk[len(pfx):]
+                changed = True
+    normalized[nk] = v
 required = ["tok_emb.weight", "skip_weights", "bigram.ngram_gate", "qo_bank", "kv_bank", "mlp_up_bank", "mlp_down_bank"]
-missing = [k for k in required if k not in state]
+missing = [k for k in required if k not in normalized]
 if missing:
     print("ERROR: checkpoint does not look like Rascal_III_runner2778 state_dict", file=sys.stderr)
     print("missing_required_keys:", missing, file=sys.stderr)
+    sample = sorted(list(normalized.keys()))[:20]
+    print("sample_keys:", sample, file=sys.stderr)
     sys.exit(3)
-print(f"ckpt_preflight:ok keys={len(state)} skip_weights_shape={tuple(state['skip_weights'].shape)}")
+print(f"ckpt_preflight:ok keys={len(normalized)} skip_weights_shape={tuple(normalized['skip_weights'].shape)}")
 PY
 
 TRAIN_SCRIPT="${REPO_ROOT}/neural/experiments/Rascal_III_runner2778/train_gpt.py"

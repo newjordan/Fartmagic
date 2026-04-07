@@ -1682,10 +1682,37 @@ def main() -> None:
         init_path = Path(args.init_model_path)
         if not init_path.exists():
             raise FileNotFoundError(f"INIT_MODEL_PATH does not exist: {init_path}")
-        init_state = torch.load(str(init_path), map_location="cpu")
-        if not isinstance(init_state, dict):
-            raise ValueError(f"INIT_MODEL_PATH must point to a state_dict .pt file, got: {type(init_state)}")
-        base_model.load_state_dict(init_state, strict=True)
+        init_obj = torch.load(str(init_path), map_location="cpu")
+        if isinstance(init_obj, dict) and "state_dict" in init_obj and isinstance(init_obj["state_dict"], dict):
+            init_state = init_obj["state_dict"]
+        elif isinstance(init_obj, dict) and "model" in init_obj and isinstance(init_obj["model"], dict):
+            init_state = init_obj["model"]
+        elif isinstance(init_obj, dict):
+            init_state = init_obj
+        else:
+            raise ValueError(f"INIT_MODEL_PATH must point to a state_dict .pt file, got: {type(init_obj)}")
+        normalize_prefixes = ("module.", "_orig_mod.", "model.", "base_model.")
+        normalized_state: dict[str, Tensor] = {}
+        for k, v in init_state.items():
+            if not isinstance(v, torch.Tensor):
+                continue
+            nk = k
+            changed = True
+            while changed:
+                changed = False
+                for pfx in normalize_prefixes:
+                    if nk.startswith(pfx):
+                        nk = nk[len(pfx):]
+                        changed = True
+            normalized_state[nk] = v
+        required = ("tok_emb.weight", "skip_weights", "bigram.ngram_gate", "qo_bank", "kv_bank", "mlp_up_bank", "mlp_down_bank")
+        missing_required = [k for k in required if k not in normalized_state]
+        if missing_required:
+            sample = sorted(list(normalized_state.keys()))[:16]
+            raise RuntimeError(
+                f"INIT_MODEL_PATH not compatible with Rascal_III_runner2778; missing_required={missing_required} sample_keys={sample}"
+            )
+        base_model.load_state_dict(normalized_state, strict=True)
     # No DDP -- Parallel Muon handles bank grad communication via reduce-scatter,
     # and non-bank grads are manually all-reduced before Adam steps.
     compiled_model = maybe_compile(

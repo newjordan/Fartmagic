@@ -158,6 +158,7 @@ ARMS=(
   "33_v1_4_power_l12_d456_non_ngram_brotli|candidate"
   "34_v1_4_power_l11_d528_h12_kv4_non_ngram_brotli|candidate"
   "35_v1_5_longworm_context_mech_l11_d528_h12_kv4_non_ngram_brotli|candidate"
+  "36_v1_6_longworm_fast_l8_d480_h12_kv4_non_ngram_brotli|candidate"
 )
 
 printf "lane\tarm\trole\tstatus\tcompressor\tmodel_params\tdiag_bpb\tsw_bpb\tsw_bpb_4k\ttracked_eval_seq_len\ttotal_size_mixed_bytes\tstep_avg_ms\tsteps_done\tlog\n" > "${SUMMARY}"

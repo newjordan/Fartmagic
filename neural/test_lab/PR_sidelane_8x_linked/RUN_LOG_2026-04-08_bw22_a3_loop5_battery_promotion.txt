@@ -1,0 +1,19 @@
+BW22 A3 Loop5 Battery Promotion Note
+Date: 2026-04-08
+Owner: crawler track
+Source: legs/2026-04-07_BW22_LoopDepth_9F
+
+Summary:
+- A3_loop5_battery is the top quality arm from BW22 loop-depth gate.
+- Control A0 int6_sw_bpb: 1.24352055
+- A3 int6_sw_bpb: 1.24091238
+- Delta vs control: -0.00260817 (~0.21% relative quality gain)
+
+Throughput tradeoff:
+- Control step_ms: 110.28
+- A3 step_ms: 128.88
+- Delta: +18.60ms (+16.87%)
+
+Recommendation:
+- Promote A3_loop5_battery as quality-priority candidate.
+- Keep loop3/rk2-fast line active for step-speed constraint.

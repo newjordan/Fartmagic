@@ -33,3 +33,14 @@ Gate run: seed=444, 8xGPU, 2000 steps per arm
 - Quality-first: `A3_loop5_battery`.
 - Compression-first with strong quality: `A4_loop5_prog`.
 - If throughput is the primary constraint, keep loop3 control and test RK2/RK4 hybrid in `Crawler_Katta`.
+
+## Up-Chain Escalation (2026-04-08)
+
+- Candidate to elevate: `A3_loop5_battery`.
+- Why:
+- best quality in this gate (`int6_sw_bpb=1.24091238`, delta vs control `-0.00260817`)
+- meaningful relative quality gain vs control (~0.21% better bpb)
+- Tradeoff:
+- step time increased from `110.28ms` to `128.88ms` (`+18.60ms`, `+16.87%`)
+- Recommendation:
+- carry this arm forward as a quality-priority branch while RK speed work continues in `Crawler_Katta`

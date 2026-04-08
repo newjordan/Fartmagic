@@ -1,0 +1,13 @@
+test_id	priority	lane	profile	max_wallclock_seconds	description	env_overrides
+midnight_control_screen	1	control	screen	240	Sequential loader control screen baseline.	(none)
+midnight_warmdown_3000_screen	1	warmdown_3000	screen	240	Sequential loader + warmdown 3000 screen.	(none)
+midnight_no_midrun_eval_screen	1	control	screen	240	Sequential loader; remove mid-run eval overhead.	VAL_LOSS_EVERY=0
+midnight_muon_backend4_screen	1	control	screen	240	Sequential loader; Muon backend steps 4 throughput probe.	MUON_BACKEND_STEPS=4
+midnight_batch_tokens_640k_screen	1	control	screen	240	Sequential loader; train batch tokens 655360 throughput probe.	TRAIN_BATCH_TOKENS=655360
+midnight_attn6_screen	1	attn6	screen	240	Sequential loader; attention precision to int6.	(none)
+midnight_adaptive_embed_25_6_attn6_screen	1	adaptive_embed_25_6_attn6	screen	240	Sequential loader; adaptive embed + attn6 combo.	(none)
+midnight_xsa_12_screen	2	xsa_12	screen	240	Sequential loader; XSA on all 12 layers.	(none)
+midnight_ve_10_11_screen	2	ve_10_11	screen	240	Sequential loader; VE layers 10,11.	(none)
+midnight_warmdown_2500_screen	2	warmdown_2500	screen	240	Sequential loader; aggressive warmdown 2500.	(none)
+midnight_control_full	2	control	full	600	Sequential loader control full-fidelity run.	(none)
+midnight_warmdown_3000_full	2	warmdown_3000	full	600	Sequential loader warmdown 3000 full-fidelity run.	(none)

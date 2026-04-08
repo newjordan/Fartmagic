@@ -1,0 +1,11 @@
+test_id	priority	lane	profile	max_wallclock_seconds	description	env_overrides
+midnight_corpus_control_screen	1	control	screen	240	Corpus matrix control screen baseline.	(none)
+midnight_corpus_warmdown_3000_screen	1	warmdown_3000	screen	240	Corpus matrix warmdown 3000 screen.	(none)
+midnight_corpus_int5_embed25_screen	1	control	screen	240	Adaptive embed int5 (top 25% high precision) quick screen.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.25 ADAPTIVE_EMBED_LOW_BITS=5
+midnight_corpus_int5_embed25_attn6_screen	1	control	screen	240	Adaptive embed int5 + attn int6 quick screen.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.25 ADAPTIVE_EMBED_LOW_BITS=5 QUANT_ATTN_BITS=6
+midnight_corpus_int5_embed25_attn6_aux7_screen	1	control	screen	240	Adaptive embed int5 + attn int6 + aux int7 stability probe.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.25 ADAPTIVE_EMBED_LOW_BITS=5 QUANT_ATTN_BITS=6 QUANT_AUX_BITS=7
+midnight_corpus_no_midrun_eval_screen	1	control	screen	240	Remove mid-run eval overhead for step-rate probe.	VAL_LOSS_EVERY=0
+midnight_corpus_control_full	2	control	full	600	Corpus matrix control full-fidelity run.	(none)
+midnight_corpus_warmdown_3000_full	2	warmdown_3000	full	600	Corpus matrix warmdown 3000 full-fidelity run.	(none)
+midnight_corpus_int5_embed25_attn6_full	2	control	full	600	Adaptive embed int5 + attn int6 full-fidelity run.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.25 ADAPTIVE_EMBED_LOW_BITS=5 QUANT_ATTN_BITS=6
+midnight_corpus_int5_embed25_attn6_aux7_full	2	control	full	600	Adaptive embed int5 + attn int6 + aux int7 full-fidelity run.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.25 ADAPTIVE_EMBED_LOW_BITS=5 QUANT_ATTN_BITS=6 QUANT_AUX_BITS=7

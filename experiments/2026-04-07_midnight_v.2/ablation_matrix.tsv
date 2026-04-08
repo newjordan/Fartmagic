@@ -1,0 +1,13 @@
+lane	priority	hypothesis	env_overrides
+control	1	Baseline Midnight 12L control.	(none)
+warmdown_3000	1	Shorter warmdown can preserve higher LR deeper into 600s at 12L step rate.	WARMDOWN_ITERS=3000
+warmdown_2500	2	More aggressive warmdown reduction; high upside, higher instability risk.	WARMDOWN_ITERS=2500
+warmdown_4200	2	Longer warmdown can stabilize late-phase quantization behavior.	WARMDOWN_ITERS=4200
+xsa_12	1	12L may benefit from XSA on all layers instead of last 11.	XSA_LAST_N=12
+xsa_10	2	Backing off one deep layer can reduce over-constraint from XSA.	XSA_LAST_N=10
+ve_10_11	1	Shift VE upward for 12L depth layout.	VE_LAYERS=10,11
+ve_8_9_10	2	Broaden VE coverage across deeper stack.	VE_LAYERS=8,9,10
+adaptive_embed_25_6	1	Adaptive embedding precision: top 25% rows at int8, remainder at int6.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.25 ADAPTIVE_EMBED_LOW_BITS=6
+adaptive_embed_40_6	2	Adaptive embedding precision with larger protected set.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.40 ADAPTIVE_EMBED_LOW_BITS=6
+attn6	1	Spend available size/compression budget on attention precision.	QUANT_ATTN_BITS=6
+adaptive_embed_25_6_attn6	1	Use adaptive embed precision to offset attn=int6 pressure.	ADAPTIVE_EMBED_PRECISION=1 ADAPTIVE_EMBED_KEEP_FRAC=0.25 ADAPTIVE_EMBED_LOW_BITS=6 QUANT_ATTN_BITS=6

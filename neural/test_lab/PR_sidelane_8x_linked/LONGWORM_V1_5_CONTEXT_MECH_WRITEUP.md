@@ -17,7 +17,7 @@ This variant prioritizes long-context mechanism quality over generic depth expan
 ## Default submission arm
 
 - `35_v1_5_longworm_context_mech_l11_d528_h12_kv4_non_ngram_brotli`
-- Shape: `11L x 528d`, heads `12/4`
+- Shape: `11L x 480d`, heads `12/4`
 - Submission-safe defaults:
   - no forced 4K ranking metric
   - primary leaderboard metric remains submission-path `sw_bpb`

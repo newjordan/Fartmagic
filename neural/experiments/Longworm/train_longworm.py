@@ -1112,6 +1112,13 @@ class CausalSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = dim // num_heads
+        if flash_attn_3_func is not None and self.head_dim % 8 != 0:
+            required = num_heads * 8
+            raise ValueError(
+                f"FlashAttention-3 requires head_dim % 8 == 0; got head_dim={self.head_dim} "
+                f"(model_dim={dim}, num_heads={num_heads}). "
+                f"Set model_dim to a multiple of {required}."
+            )
         if self.head_dim % 2 != 0:
             raise ValueError("head_dim must be even for RoPE")
         # No CastedLinear -- weights come from banks

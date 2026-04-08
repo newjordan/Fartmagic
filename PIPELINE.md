@@ -1,10 +1,22 @@
 # Lab Pipeline — Ranked Hypothesis Queue
 
-**Updated:** 2026-03-31 (end of day)
-**Crawler champion:** 1.18672385 BPB · 8.61MB · `crawler/2026-03-29_BW5/`
+**Updated:** 2026-04-08 (forensic sync)
+**Crawler champion:** 1.13867894 BPB · 15,239,617 bytes · `records/track_10min_16mb/2026-04-02_Bandit_Wagon_X_9F_8xH100/`
 **Neural champion:** 1.10986874 BPB · 15.44MB · `neural/2026-03-30_Rascal_II/`
 
 Ranked by estimated potential impact. One variable per test, always. Gate before 8x, always.
+
+---
+
+## Current Crawler Status (2026-04-08)
+
+- Working in-tree promotion baseline: BWX 9F (`1.13867894`, seed 444).
+- Helix_ab_3 gate: hard fail (`+0.13954768` int6_sw_bpb vs control).
+- BW22 loop-depth gate: all arms beat control; `A3_loop5_battery` is quality-first candidate.
+- Crawler_Katta gate and 1x medium sweep: pending filled metrics.
+- Ouroboros PR lineage (`#1283`/`#1308`) exists outside this branch lineage; keep as external reference until imported/reconciled into `TEST_LAB`.
+
+Status note: the queue below remains valuable but was authored before BWX/BW22 updates and should be treated as historical backlog until reprioritized.
 
 ---
 

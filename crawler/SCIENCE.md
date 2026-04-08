@@ -1,9 +1,19 @@
 # Crawler Science Board
 
 Track: Bandit_Wagon lineage · Goal: best int6_sw_bpb + smallest artifact ≤ 16MB
-Champion: **1.18672385 BPB** (seed 444) · **8.61MB** · `crawler/2026-03-29_BW5/`
+Champion: **1.13867894 BPB** (seed 444) · **15,239,617 bytes** · `records/track_10min_16mb/2026-04-02_Bandit_Wagon_X_9F_8xH100/`
 
 Legend: → PROMOTED · ✓ PASS · ✗ FAIL · ⏳ PENDING · — n/a
+
+---
+
+## Status Sync (2026-04-08)
+
+- In-tree promotion baseline is BWX 9F full run: `1.13867894` int6_sw_bpb, `15,239,617` bytes (seed 444).
+- Helix_ab_3 gate result is a hard fail: `+0.13954768` int6_sw_bpb vs control.
+- BW22 loop-depth gate promoted a quality candidate: `A3_loop5_battery` (`-0.00260817` vs control, with ~16.9% step-time cost).
+- Crawler_Katta gate and 1x medium sweep are staged but still pending filled metrics.
+- Ouroboros PR lineage exists externally (`#1283` / `#1308`) but corresponding record folders are not present in this `TEST_LAB` tree, so not used as in-tree baseline.
 
 ---
 
@@ -24,7 +34,7 @@ Hypothesis: `torch.compile(fullgraph=True)` eliminates graph breaks → faster s
 
 | Date | Leg | Change vs Parent | 1GPU Gate | 8GPU Gate | BPB (seed 444) | Size | Verdict | Key Finding |
 |------|-----|-----------------|-----------|-----------|----------------|------|---------|-------------|
-| 2026-03-29 | **BW5** (CHAMPION) | BW4 + COMPILE_FULLGRAPH=1 | — | ✓ 74.52ms | **1.18672385** | **8.61MB** | → PROMOTED | −0.00058 vs BW4. 0 graph breaks. Roundtrip eval 2.77× faster. Seed=300 ⚠️ +0.00012 vs Leg 3 (mean still better). |
+| 2026-03-29 | **BW5** (former champion) | BW4 + COMPILE_FULLGRAPH=1 | — | ✓ 74.52ms | **1.18672385** | **8.61MB** | → PROMOTED | −0.00058 vs BW4. 0 graph breaks. Roundtrip eval 2.77× faster. Seed=300 ⚠️ +0.00012 vs Leg 3 (mean still better). |
 
 Notes: BW5 seed=300 does NOT individually confirm vs Leg 3. Mean is better (1.18715 vs 1.18743). A future leg should try to close this seed disparity.
 
@@ -174,7 +184,9 @@ Next: BW9_Anchor — test ANCHOR_DIM=32 on top of BW8 (TAP) baseline.
 
 | Leg | BPB (seed 444) | Size | Mean BPB | Status |
 |-----|----------------|------|----------|--------|
+| **BWX 9F** | **1.13867894** | **15.24MB** | pending (seed 300) | **Current in-tree leader** |
 | Leg 3 | 1.18720 | 8.84MB | 1.18743 (3-seed) | Former champion |
 | BW4 | 1.18731 | 8.97MB | — | Superseded |
-| **BW5** | **1.18672** | **8.61MB** | **1.18715** | **CHAMPION** |
+| BW5 | 1.18672 | 8.61MB | 1.18715 | Former champion |
 | BW8_Tap | pending full run | ~9.5MB est | — | working baseline (TAP baked in) |
+| BW22 A3 gate arm | 1.24091238 (2k gate) | gate-only | — | promoted quality candidate for 4h path |

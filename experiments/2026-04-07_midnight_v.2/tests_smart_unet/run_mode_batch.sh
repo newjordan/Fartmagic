@@ -16,6 +16,7 @@ BUDGET_MINUTES="${BUDGET_MINUTES:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 REUSE_DONE="${REUSE_DONE:-1}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
+STREAM_RUNNER_LOGS="${STREAM_RUNNER_LOGS:-1}"
 
 if [[ ! -x "${RUN_ONE}" ]]; then
   echo "FATAL: missing run script: ${RUN_ONE}" >&2
@@ -43,12 +44,13 @@ control_bpb=""
 echo "batch_dir=${BATCH_DIR}"
 echo "profile=${PROFILE} seed=${SEED} nproc=${NPROC} priority_max=${PRIORITY_MAX} budget_minutes=${BUDGET_MINUTES}"
 echo "reuse_done=${REUSE_DONE} dry_run=${DRY_RUN}"
+echo "stream_runner_logs=${STREAM_RUNNER_LOGS}"
 echo "lane_order=${ORDERED[*]}"
 
 afloat() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.8f", (a - b)}'; }
 extract_proxy_line() {
   local f="$1"
-  awk 'match($0,/^step:[0-9]+\/20000 val_loss:[0-9.]+ val_bpb:[0-9.]+/){line=$0} END{if(line!="")print line}' "$f"
+  awk 'match($0,/^step:[0-9]+\/[0-9]+ val_loss:[0-9.]+ val_bpb:[0-9.]+/){line=$0} END{if(line!="")print line}' "$f"
 }
 latest_lane_log() {
   local lane="$1"
@@ -57,7 +59,7 @@ latest_lane_log() {
 log_is_done() {
   local f="$1"
   [[ -f "$f" ]] || return 1
-  grep -qE "stopping_early: wallclock_cap|step:20000/20000" "$f"
+  grep -qE "Total submission size mixed\\+brotli|final_eval:skipped|stopping_early: wallclock_cap" "$f"
 }
 
 for i in "${!ORDERED[@]}"; do
@@ -77,7 +79,7 @@ for i in "${!ORDERED[@]}"; do
     reused_log="$(latest_lane_log "${lane}")"
     if [[ -n "${reused_log}" ]] && log_is_done "${reused_log}"; then
       proxy_line="$(extract_proxy_line "${reused_log}")"
-      step="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step:\([0-9][0-9]*\)\/20000.*/\1/p')"
+      step="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step:\([0-9][0-9]*\)\/[0-9][0-9]*.*/\1/p')"
       proxy_bpb="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*val_bpb:\([0-9.][0-9.]*\).*/\1/p')"
       train_time_ms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*train_time:\([0-9][0-9]*\)ms.*/\1/p')"
       [[ -z "${control_bpb}" && "${lane}" == "control" ]] && control_bpb="${proxy_bpb}"
@@ -98,8 +100,13 @@ for i in "${!ORDERED[@]}"; do
 
   echo "[${idx}/${#ORDERED[@]}] Running ${lane} (${PROFILE})..."
   set +e
-  SEED="${SEED}" NPROC_PER_NODE="${NPROC}" bash "${RUN_ONE}" "${lane}" "${PROFILE}" > "${BATCH_DIR}/${idx}_${lane}.runner.log" 2>&1
-  rc="$?"
+  if [[ "${STREAM_RUNNER_LOGS}" == "1" ]]; then
+    SEED="${SEED}" NPROC_PER_NODE="${NPROC}" bash "${RUN_ONE}" "${lane}" "${PROFILE}" 2>&1 | tee "${BATCH_DIR}/${idx}_${lane}.runner.log"
+    rc="${PIPESTATUS[0]}"
+  else
+    SEED="${SEED}" NPROC_PER_NODE="${NPROC}" bash "${RUN_ONE}" "${lane}" "${PROFILE}" > "${BATCH_DIR}/${idx}_${lane}.runner.log" 2>&1
+    rc="$?"
+  fi
   set -e
 
   run_end_s="$(date +%s)"
@@ -110,7 +117,7 @@ for i in "${!ORDERED[@]}"; do
   [[ "${rc}" -ne 0 ]] && status="FAIL" && note="runner_exit_${rc}"
 
   proxy_line="$(extract_proxy_line "${lane_log}")"
-  step="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step:\([0-9][0-9]*\)\/20000.*/\1/p')"
+  step="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step:\([0-9][0-9]*\)\/[0-9][0-9]*.*/\1/p')"
   proxy_bpb="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*val_bpb:\([0-9.][0-9.]*\).*/\1/p')"
   train_time_ms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*train_time:\([0-9][0-9]*\)ms.*/\1/p')"
 

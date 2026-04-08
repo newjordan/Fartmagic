@@ -2183,7 +2183,7 @@ def main() -> None:
         if logfile is not None:
             with open(logfile, "a", encoding="utf-8") as f:
                 print(msg, file=f)
-    if args.smart_unet_mode in {"hard", "competitive"} and args.compile_enabled:
+    if args.smart_unet_mode != "off" and args.compile_enabled:
         args.compile_enabled = False
         log0(
             f"smart_unet:compile_forced_off mode={args.smart_unet_mode} "

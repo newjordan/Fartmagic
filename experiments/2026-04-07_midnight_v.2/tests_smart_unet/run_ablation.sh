@@ -78,6 +78,7 @@ case "${LANE}" in
       SMART_UNET_QUALITY_THRESHOLD=0.975
       SMART_UNET_QUALITY_SHARPNESS=24
       SMART_UNET_MIN_GATE=0.35
+      COMPILE_ENABLED=0
     )
     ;;
   hard_routing)
@@ -158,7 +159,7 @@ echo ""
 echo "Summary (${LOG_FILE}):"
 grep -E "smart_unet:|step:500/|step:1000/|step:2000/|stopping_early|late_qat:enabled|Total submission size mixed\+" "${LOG_FILE}" | tail -60 || true
 echo ""
-proxy_line="$(grep -E '^step:[0-9]+/20000 val_loss:[0-9.]+ val_bpb:[0-9.]+' "${LOG_FILE}" | tail -1 || true)"
+proxy_line="$(grep -E '^step:[0-9]+/[0-9]+ val_loss:[0-9.]+ val_bpb:[0-9.]+' "${LOG_FILE}" | tail -1 || true)"
 if [[ -n "${proxy_line}" ]]; then
   echo "Proxy metric (latest train-time val): ${proxy_line}"
 fi

@@ -1,0 +1,35 @@
+logs/bb90c6f9-22ea-4643-9053-219f486b0921.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:1
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+model_params:26270292
+f1_corr:rank=0 params=0 est_int6_bytes~0
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+XSA:last_11 world_size:1 grad_accum_steps:8
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:393216 train_seq_len:2048 iterations:10 warmup_steps:20 max_wallclock_seconds:30.000
+ablate:skip_train=0 init_model_path:- gptq_cal_samples:128 gptq_cal_seq_len:2048
+compile:enabled=1 fullgraph=1 optimize_ddp=0
+ddp:find_unused_parameters=1
+seed:444
+[rank0]:W0402 01:38:25.298000 3688082 site-packages/torch/_inductor/utils.py:1731] [0/0] Not enough SMs to use max_autotune_gemm mode
+warmup_step:1/20
+warmup_step:2/20
+warmup_step:3/20
+warmup_step:4/20
+warmup_step:5/20
+warmup_step:6/20
+warmup_step:7/20
+warmup_step:8/20
+warmup_step:9/20
+warmup_step:10/20
+warmup_step:11/20
+warmup_step:12/20
+warmup_step:13/20
+warmup_step:14/20
+warmup_step:15/20
+warmup_step:16/20
+warmup_step:17/20
+warmup_step:18/20
+warmup_step:19/20
+warmup_step:20/20

@@ -96,15 +96,18 @@ and confirms bytes_total is legal. Fix any errors before continuing.
 
 ---
 
-## Step 3 — Create the submission branch (private, never origin)
+## Step 3 — Create a clean submission branch (private, never origin)
 
 ```bash
-# From TEST_LAB
-git checkout -b submission/<name>
-# Example: git checkout -b submission/rascal-iii
+# From TEST_LAB after validate passes
+git fetch upstream
+git checkout -b submission/<name> upstream/main
+git checkout TEST_LAB -- records/track_10min_16mb/YYYY-MM-DD_<Name>_8xH100/
+# Example: git checkout -b submission/rascal-iii upstream/main
 ```
 
 The branch name should be short and match the PR name. Use kebab-case.
+The submission branch must be based on `upstream/main` so the PR diff stays clean.
 
 Commit ONLY the records folder. Nothing else:
 ```bash
@@ -138,6 +141,8 @@ gh pr create \
 ```
 
 Edit the body template BEFORE running this. Replace all `<placeholders>`.
+If `seed_42` exists in `submission.json`, include seed 42 in the PR Results table
+(not only seeds 444 and 300).
 
 PR title format: `<ModelName> — <exact_bpb> val_bpb (seed 444)`
 Example: `Rascal III — 1.10812345 val_bpb (seed 444)`
@@ -161,7 +166,7 @@ Example: `Rascal III — 1.10812345 val_bpb (seed 444)`
 | Missing training logs | PR closed |
 | Wrong train_gpt.py (wrong file, wrong size) | Invalid submission, score rejected |
 | bytes_total > 16MB | Disqualified |
-| Submitting from TEST_LAB | PR from wrong fork, confusing reviewers |
+| Submitting with TEST_LAB ancestry | Huge noisy PR diff, low reviewer trust |
 | Touching a merged PR | Reopens old issues, breaks submission record |
 | COPRIME_MAX_LOADED_SHARDS != 1 | Wrong training trajectory, worse BPB |
 
@@ -175,4 +180,4 @@ Example: `Rascal III — 1.10812345 val_bpb (seed 444)`
 | newjordan/parameter-golf-1 | `fork1` | Submission branches ONLY |
 | openai/parameter-golf | `upstream` | Competition target — PRs go here |
 
-Branch flow: `TEST_LAB` → `submission/<name>` → push `fork1` → PR to `upstream/main`
+Branch flow: `TEST_LAB (prep + validate)` → `submission/<name>` from `upstream/main` → push `fork1` → PR to `upstream/main`

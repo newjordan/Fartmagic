@@ -9,21 +9,25 @@ This is the highest-stakes operation in the lab. Slow down. Verify everything.
 
 1. The run must be DONE. Both seeds (444 + 300) complete. Logs saved locally.
 2. The model must beat the current LEADER.md score.
-3. You must be on TEST_LAB (not in the middle of an experiment).
+3. Records prep and validate must be complete on TEST_LAB (not in the middle of an experiment).
 4. A merged PR MUST NEVER be touched again. Check `gh pr list --repo openai/parameter-golf` first.
 
 ## The only workflow
 
 ```
 bash submissions/validate.sh records/track_10min_16mb/<records_dir>/
-  ↓ all checks pass
-git checkout -b submission/<name>
+  ↓ all checks pass on TEST_LAB
+git fetch upstream
+git checkout -b submission/<name> upstream/main
+git checkout TEST_LAB -- records/track_10min_16mb/<records_dir>/
 git add records/track_10min_16mb/<records_dir>/
 git commit -m "Add <Name> submission — <BPB> BPB, <size>MB"
 git push fork1 submission/<name>
   ↓ verify on https://github.com/newjordan/parameter-golf-1/branches
 gh pr create --repo openai/parameter-golf --head "newjordan:submission/<name>" ...
 ```
+
+This keeps submission PRs clean: one records folder, no rolling TEST_LAB history.
 
 ## Remotes (memorize this)
 
@@ -49,6 +53,7 @@ gh pr create --repo openai/parameter-golf --head "newjordan:submission/<name>" .
 - `bytes_code` must match `Code size:` line in training log
 - `val_bpb_exact` must match `final_sliding_window_exact val_bpb=` in log
 - `date` is the run date, not submission date
+- If `seed_42` exists, include seed 42 in both README and PR Results tables
 
 ## What killed past PRs
 

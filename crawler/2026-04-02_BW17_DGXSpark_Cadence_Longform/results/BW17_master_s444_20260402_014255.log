@@ -1,0 +1,10 @@
+
+----------------------------------------------------------------
+  RAPID WINDOW BW17DGX-00: control: 9F, 1 crawler layer, loops=3, inst=32, rope=(9,1,1), smear=0
+  source_arm: BW17DGX-00
+  log: /home/frosty40/parameter-golf-lab/crawler/2026-04-02_BW17_DGXSpark_Cadence_Longform/results/BW17DGX-00_s444_20260402_014255.log
+----------------------------------------------------------------
+logs/44f9c944-1340-449d-8b95-3517095342f8.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:1
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632

@@ -1,0 +1,8 @@
+
+----------------------------------------------------------------
+  RAPID WINDOW BW17DGX-00: control: 9F, 1 crawler layer, loops=3, inst=32, rope=(9,1,1), smear=0
+  source_arm: BW17DGX-00
+  log: /home/frosty40/parameter-golf-lab/crawler/2026-04-02_BW17_DGXSpark_Cadence_Longform/results/BW17DGX-00_s444_20260402_013453.log
+----------------------------------------------------------------
+/home/frosty40/parameter-golf-lab/crawler/2026-04-01_BW12_Interaction_2k/train_gpt_ablate.py:19: UserWarning: zstandard not found — falling back to zlib. Artifact will be ~1.5MB larger! pip install zstandard
+  warnings.warn("zstandard not found — falling back to zlib. Artifact will be ~1.5MB larger! pip install zstandard")

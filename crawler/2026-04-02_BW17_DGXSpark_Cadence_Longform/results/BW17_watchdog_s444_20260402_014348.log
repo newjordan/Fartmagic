@@ -1,0 +1,2 @@
+[2026-04-02T01:44:45-05:00] watchdog(session) start pid=3703500 ts=20260402_014348 sleep=1800s
+[2026-04-02T01:44:45-05:00] alive pid=3703500 latest=BW17DGX-00_s444_20260402_014348.log :: warmup_step:13/20

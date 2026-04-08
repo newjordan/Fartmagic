@@ -1,0 +1,2 @@
+arm	num_flat_layers	model_params	raw_bpb	int6_sw_bpb	step_ms	bytes	log
+BW16DS-10SOLO	10	28632156	1.2636	1.24294950	299.98	17833044	/workspace/parameter-golf-lab/crawler/2026-04-02_BW16_DepthSweep_2k/results/BW16DS-10SOLO_s444_20260402_142554.log

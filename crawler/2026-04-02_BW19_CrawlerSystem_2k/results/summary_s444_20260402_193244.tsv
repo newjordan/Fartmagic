@@ -1,0 +1,2 @@
+stage	lane	arm	source_arm	desc	must_retrain	source_ckpt	exit_code	model_params	raw_bpb	int6_sw_bpb	step_ms	bytes	bytes_mb	size_per_bpb_mb	bpb_x_mb	gptq_layers	gptq_cal_sec	delta_vs_control	delta_bytes_vs_control	log	ckpt
+QUICK	WINDOW	BW19CS-C00	C00	control: 9F floor + crawler(1x3), tap-off, anchor-off, smear-off	1	-	0	123	1.2500	1.2400	100.0	10000000	10.000	8.0645	12.4000	0	-	+0.000000	+0	/tmp/fake.log	/tmp/fake.pt

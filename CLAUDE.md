@@ -33,9 +33,10 @@ the result is uninterpretable and the money is gone.
 **Gate before 8x.** Every hypothesis runs a 1-GPU 2000-step gate (~$0.50) before
 an 8×H100 full run (~$3-4). Never skip the gate.
 
-**Never submit from TEST_LAB.** Submissions go: `submissions/` zone only.
+**Never submit from TEST_LAB directly.** Build and validate records on `TEST_LAB`,
+then cut a clean submission branch from `upstream/main`.
 Read `submissions/PROTOCOL.md`. Run `bash submissions/validate.sh <records_dir>` first.
-Branch flow: `submission/<name>` → push `fork1` → PR to `openai/parameter-golf`.
+Branch flow: `TEST_LAB (prep)` -> `submission/<name>` from `upstream/main` -> push `fork1` -> PR to `openai/parameter-golf`.
 
 ## RunPod workflow
 1. Pod always pulls from `TEST_LAB` branch

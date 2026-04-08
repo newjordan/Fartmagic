@@ -19,6 +19,8 @@ Current launch targets:
 - `test_lab/PR_sidelane_8x_linked/run_v1_3_non_ngram.sh`
 - `test_lab/PR_sidelane_8x_linked/run_longworm.sh`
 - `test_lab/PR_sidelane_8x_linked/run_v1_4_power.sh`
+- `test_lab/PR_sidelane_8x_linked/run_longworm_submission.sh`
+- `test_lab/PR_sidelane_8x_linked/run_longworm_rk.sh`
 - `test_lab/today.sh`
 
 Examples:

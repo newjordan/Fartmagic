@@ -1,0 +1,5 @@
+[2026-04-02T01:34:53-05:00] watchdog start pid=3678401 sleep=1800s
+[2026-04-02T01:34:53-05:00] alive pid=3678401 latest=BW17_watchdog_s444_20260402_013453.log :: [2026-04-02T01:34:53-05:00] watchdog start pid=3678401 sleep=1800s
+[2026-04-02T01:35:25-05:00] watchdog(restart) pid=3678401 sleep=1800s
+[2026-04-02T01:35:25-05:00] run finished pid=3678401
+[2026-04-02T01:35:25-05:00] latest-summary=crawler/2026-04-02_BW17_DGXSpark_Cadence_Longform/results/summary_s444_20260402_013453.tsv

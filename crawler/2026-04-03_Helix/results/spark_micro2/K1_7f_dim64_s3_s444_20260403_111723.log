@@ -1,0 +1,63 @@
+logs/85e70636-2ac5-48dc-967e-c8375d4fc811.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:1
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+model_params:5367076
+f1_corr:rank=0 params=0 est_int6_bytes~0
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+helix:enabled dim=64 stride=3 crawler_fires=2x
+XSA:last_0 world_size:1 grad_accum_steps:8
+num_heads:4 num_kv_heads:2 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:131072 train_seq_len:512 iterations:200 warmup_steps:20 max_wallclock_seconds:0.000
+ablate:skip_train=0 init_model_path:- gptq_cal_samples:256 gptq_cal_seq_len:512
+compile:enabled=0 fullgraph=0 optimize_ddp=1
+ddp:find_unused_parameters=1
+seed:444
+warmup_step:1/20
+warmup_step:2/20
+warmup_step:3/20
+warmup_step:4/20
+warmup_step:5/20
+warmup_step:6/20
+warmup_step:7/20
+warmup_step:8/20
+warmup_step:9/20
+warmup_step:10/20
+warmup_step:11/20
+warmup_step:12/20
+warmup_step:13/20
+warmup_step:14/20
+warmup_step:15/20
+warmup_step:16/20
+warmup_step:17/20
+warmup_step:18/20
+warmup_step:19/20
+warmup_step:20/20
+step:0/200 val_loss:6.9288 val_bpb:4.1036 train_time:0ms step_avg:0.01ms
+step:1/200 train_loss:6.9298 train_time:879ms step_avg:879.15ms
+step:2/200 train_loss:6.4152 train_time:1736ms step_avg:868.23ms
+step:3/200 train_loss:6.5019 train_time:2584ms step_avg:861.37ms
+step:4/200 train_loss:6.3626 train_time:3441ms step_avg:860.15ms
+step:5/200 train_loss:6.3229 train_time:4293ms step_avg:858.63ms
+step:6/200 train_loss:6.1970 train_time:5148ms step_avg:857.97ms
+step:7/200 train_loss:6.0317 train_time:5995ms step_avg:856.48ms
+step:8/200 train_loss:5.9417 train_time:6846ms step_avg:855.74ms
+step:9/200 train_loss:5.8706 train_time:7699ms step_avg:855.46ms
+step:10/200 train_loss:5.7522 train_time:8552ms step_avg:855.17ms
+step:50/200 train_loss:3.9976 train_time:42683ms step_avg:853.65ms
+step:100/200 train_loss:3.7584 train_time:85386ms step_avg:853.86ms
+step:150/200 train_loss:3.3887 train_time:128050ms step_avg:853.66ms
+swa:start step:200
+step:200/200 train_loss:3.2469 train_time:170738ms step_avg:853.69ms
+step:200/200 val_loss:3.2045 val_bpb:1.8979 train_time:170802ms step_avg:854.01ms
+peak memory allocated: 2334 MiB reserved: 2576 MiB
+gptq:SKIPPED (SKIP_GPTQ=1) — using naive int6
+ema:SKIPPED (SKIP_EMA=1) — using live model weights
+DIAGNOSTIC post_ema val_loss:3.2045 val_bpb:1.8979 eval_time:130623ms
+Serialized model: 20516058 bytes
+Code size: 129863 bytes
+Serialized model int6+brotli: 4455028 bytes
+Total submission size int6+brotli: 4584891 bytes
+Total submission size int8+zlib: 4584891 bytes
+final_int6_roundtrip val_loss:3.2315 val_bpb:1.9139 eval_time:130449ms
+final_int6_roundtrip_exact val_loss:3.23146944 val_bpb:1.91385822

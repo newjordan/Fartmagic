@@ -1,0 +1,2 @@
+[2026-04-02T01:37:32-05:00] watchdog start pid=3685858 sleep=1800s
+[2026-04-02T01:37:32-05:00] alive pid=3685858 latest=BW17DGX-00_s444_20260402_013453.log ::   warnings.warn("zstandard not found — falling back to zlib. Artifact will be ~1.5MB larger! pip install zstandard")

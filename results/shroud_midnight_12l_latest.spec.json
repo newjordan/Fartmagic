@@ -1,0 +1,65 @@
+{
+  "model_name": "Midnight 12L",
+  "architecture": "Rascal II",
+  "summary": "12-layer Rascal II tower with 8/4 GQA, int5 attention, int6 MLP and aux, int8 embeddings and other paths, RoPE-16, Bigram 2048, and XSA active on the last 11 layers.",
+  "tags": [
+    "12 layers",
+    "8/4 GQA",
+    "attn int5",
+    "mlp int6",
+    "aux int6",
+    "embed int8",
+    "other int8",
+    "RoPE 16",
+    "Bigram 2048",
+    "XSA last 11",
+    "Brotli artifact"
+  ],
+  "facts": {
+    "layers": 12,
+    "query_heads": 8,
+    "kv_heads": 4,
+    "gqa_ratio": 2.0,
+    "quant_bits": {
+      "attn": 5,
+      "mlp": 6,
+      "aux": 6,
+      "embed": 8,
+      "other": 8
+    },
+    "rope_dims": 16,
+    "bigram_dim": 2048,
+    "xsa_last_n": 11,
+    "hardware": "8xH100 SXM",
+    "train_time_s": 600,
+    "bytes_code": 124698,
+    "bytes_total": 15631603
+  },
+  "layout": {
+    "layer_spacing": 0.74,
+    "core_radius": 2.95,
+    "head_q_radius": 4.18,
+    "head_kv_radius": 3.24,
+    "rope_radius": 2.18,
+    "base_y": 1.70,
+    "bigram_y": 0.00,
+    "embed_y": 0.72,
+    "artifact_y": 12.25,
+    "bar_spacing": 0.16,
+    "bar_point_spacing": 0.12,
+    "bar_height_scale": 0.34
+  },
+  "palette": {
+    "bigram": [0.49, 0.72, 0.54],
+    "rope": [0.53, 0.74, 0.56],
+    "embed": [0.58, 0.72, 0.56],
+    "layer": [0.70, 0.60, 0.54],
+    "attn_q": [0.57, 0.80, 0.58],
+    "attn_kv": [0.09, 0.82, 0.52],
+    "mlp": [0.83, 0.68, 0.54],
+    "aux": [0.32, 0.70, 0.55],
+    "other": [0.90, 0.67, 0.54],
+    "xsa": [0.15, 0.82, 0.56],
+    "artifact": [0.68, 0.76, 0.60]
+  }
+}

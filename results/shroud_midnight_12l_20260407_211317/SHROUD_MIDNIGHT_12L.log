@@ -1,0 +1,47 @@
+logs/SHROUD_MIDNIGHT_12L_20260407_211317.txt
+nitrust:disabled NITRUST_ENABLE=0
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:1
+val_loader:shards pattern=/home/frosty40/parameter-golf-lab/junkyard/experiments/pr779_asap_test/data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:4096
+shroud:enabled path=/home/frosty40/parameter-golf-lab/results/shroud_midnight_12l_20260407_211317/SHROUD_MIDNIGHT_12L.trace.jsonl step_every=1 max_events=600000
+shroud:head_trace=1 head_max_tokens=64
+model_params:7780196
+f1_corr:rank=0 params=0 est_int6_bytes~0
+mlp_act:relu_sq mlp_leaky_slope:0.5
+XSA:last_11 world_size:1 grad_accum_steps:8
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.025
+train_batch_tokens:8192 train_seq_len:256 iterations:12 warmup_steps:0 max_wallclock_seconds:25.000
+compile:enabled=0 fullgraph=0 optimize_ddp=1
+ddp:find_unused_parameters=1
+seed:444
+step:0/12 val_loss:6.9357 val_bpb:3.8837 train_time:0ms step_avg:0.02ms
+[rank0]:[W407 21:13:20.057609153 reducer.cpp:1502] Warning: find_unused_parameters=True was specified in DDP constructor, but did not find any unused parameters in the forward pass. This flag results in an extra traversal of the autograd graph every iteration,  which can adversely affect performance. If your model indeed never has any unused parameters in the forward pass, consider turning this flag off. Note that this warning may be a false positive if your model has flow control causing later iterations to have unused parameters. (function operator())
+step:1/12 train_loss:6.9349 train_time:328ms step_avg:327.55ms
+late_qat:enabled step:1 scale:0.0215
+step:2/12 train_loss:6.9200 train_time:644ms step_avg:322.19ms
+step:3/12 train_loss:6.8881 train_time:899ms step_avg:299.76ms
+step:4/12 train_loss:6.8386 train_time:1153ms step_avg:288.27ms
+step:5/12 train_loss:6.7781 train_time:1410ms step_avg:281.90ms
+step:6/12 train_loss:6.7118 train_time:1665ms step_avg:277.42ms
+step:7/12 train_loss:6.6423 train_time:1923ms step_avg:274.72ms
+step:8/12 train_loss:6.5723 train_time:2182ms step_avg:272.74ms
+step:9/12 train_loss:6.4772 train_time:2440ms step_avg:271.09ms
+step:10/12 train_loss:6.4079 train_time:2694ms step_avg:269.44ms
+step:11/12 train_loss:6.3416 train_time:2950ms step_avg:268.15ms
+step:12/12 train_loss:6.2769 train_time:3204ms step_avg:266.99ms
+step:12/12 val_loss:7.4940 val_bpb:4.1964 train_time:3204ms step_avg:267.02ms
+peak memory allocated: 364 MiB reserved: 384 MiB
+gptq:starting calibration at elapsed=0ms (budget=25000ms)
+gptq:SKIPPED (SKIP_GPTQ=1) — will use naive int6
+ema:SKIPPED (SKIP_EMA=1) — using live model weights
+DIAGNOSTIC post_ema val_loss:7.4940 val_bpb:4.1964 eval_time:20ms
+Serialized model: 29851355 bytes
+Code size: 202268 bytes
+Serialized model int6+zstd: 5072132 bytes
+Total submission size int6+zstd: 5274400 bytes
+Total submission size int8+zlib: 5274400 bytes
+final_int6_roundtrip val_loss:7.5025 val_bpb:4.2011 eval_time:20ms
+final_int6_roundtrip_exact val_loss:7.50251913 val_bpb:4.20112555
+final_int6_sliding_window val_loss:7.4976 val_bpb:4.2120 stride:64 eval_time:66ms
+final_int6_sliding_window_exact val_loss:7.49757353 val_bpb:4.21195620
+final_int8_zlib_roundtrip_exact val_loss:7.49757353 val_bpb:4.21195620

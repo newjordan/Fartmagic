@@ -50,7 +50,7 @@ bash experiments/Rascal_IV/run_8x_clean.sh
 Clean profile details:
 - forces `RASCAL_IV_ARM=control` (no ablation branches)
 - `SKIP_GPTQ=1` (no GPTQ calibration pass)
-- keeps `EXPORT_RESERVE_MS=30000` so wallclock training budget stays aligned
+- defaults `EXPORT_RESERVE_MS=0` to avoid losing training time when GPTQ and roundtrip eval are disabled
 - `NGRAM_EVAL_ORDER=0` and related n-gram eval knobs off
 - `QUANT_ROUNDTRIP_EVAL=0` (skip dequant roundtrip eval pass; artifact still exported)
 

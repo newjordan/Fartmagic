@@ -1,0 +1,2 @@
+/home/frosty40/parameter-golf-lab/crawler/2026-04-01_BW12_Interaction_2k/train_gpt_ablate.py:19: UserWarning: zstandard not found — falling back to zlib. Artifact will be ~1.5MB larger! pip install zstandard
+  warnings.warn("zstandard not found — falling back to zlib. Artifact will be ~1.5MB larger! pip install zstandard")

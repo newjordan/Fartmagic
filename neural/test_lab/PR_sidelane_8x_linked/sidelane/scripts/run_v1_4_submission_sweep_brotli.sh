@@ -15,6 +15,7 @@ PG_LAB_ROOT="${PG_LAB_ROOT:-${REPO_ROOT}/neural}"
 
 if [[ -z "${TRAIN_PY:-}" ]]; then
   for candidate in \
+    "${PG_LAB_ROOT}/experiments/Longworm/train_longworm.py" \
     "${PG_LAB_ROOT}/experiments/rascal_hunt_2k/train_gpt.py" \
     "${PG_LAB_ROOT}/experiments/Rascal_III/train_gpt.py" \
     "${REPO_ROOT}/train_gpt.py"; do
@@ -47,6 +48,7 @@ fi
 
 if [[ -z "${TRAIN_PY:-}" || ! -f "${TRAIN_PY}" ]]; then
   echo "TRAIN_PY not found. Set TRAIN_PY=/abs/path/to/train_gpt.py" >&2
+  echo "Recommended for Longworm: ${PG_LAB_ROOT}/experiments/Longworm/train_longworm.py" >&2
   exit 1
 fi
 if [[ -z "${TOKENIZER_PATH:-}" || ! -f "${TOKENIZER_PATH}" ]]; then
@@ -115,10 +117,16 @@ case "${SUBMISSION_PROFILE}" in
     ;;
 esac
 
-# Quality tracking controls (forward path defaults to 4K eval tracking).
-TRACK_4K_BPB="${TRACK_4K_BPB:-1}"
+# Quality tracking controls.
+# For strict submission profile, default to off so primary metric is 2k-compatible.
+if [[ "${SUBMISSION_PROFILE}" == "track_10min_16mb" ]]; then
+  TRACK_4K_BPB="${TRACK_4K_BPB:-0}"
+else
+  TRACK_4K_BPB="${TRACK_4K_BPB:-1}"
+fi
 TRACK_EVAL_SEQ_LEN="${TRACK_EVAL_SEQ_LEN:-4096}"
 TRACK_EVAL_STRIDE="${TRACK_EVAL_STRIDE:-0}" # 0 => keep arm/default stride
+LEADERBOARD_METRIC_PREF="${LEADERBOARD_METRIC_PREF:-submission}" # submission|tracked_4k
 
 export TRAIN_LOG_EVERY="${TRAIN_LOG_EVERY:-100}"
 export VAL_LOSS_EVERY="${VAL_LOSS_EVERY:-0}"
@@ -148,6 +156,8 @@ ARMS=(
   "31_v1_4_power_l13_d408_non_ngram_brotli|control"
   "32_v1_4_power_l14_d420_non_ngram_brotli|candidate"
   "33_v1_4_power_l12_d456_non_ngram_brotli|candidate"
+  "34_v1_4_power_l11_d528_h12_kv4_non_ngram_brotli|candidate"
+  "35_v1_5_longworm_context_mech_l11_d528_h12_kv4_non_ngram_brotli|candidate"
 )
 
 printf "lane\tarm\trole\tstatus\tcompressor\tmodel_params\tdiag_bpb\tsw_bpb\tsw_bpb_4k\ttracked_eval_seq_len\ttotal_size_mixed_bytes\tstep_avg_ms\tsteps_done\tlog\n" > "${SUMMARY}"
@@ -165,6 +175,7 @@ echo "submission_profile: ${SUBMISSION_PROFILE}"
 echo "iterations: ${ITERATIONS}"
 echo "max_wallclock_seconds: ${MAX_WALLCLOCK_SECONDS}"
 echo "track_4k_bpb: ${TRACK_4K_BPB}"
+echo "leaderboard_metric_pref: ${LEADERBOARD_METRIC_PREF}"
 if [[ "${TRACK_4K_BPB}" == "1" ]]; then
   echo "track_eval_seq_len: ${TRACK_EVAL_SEQ_LEN}"
   echo "track_eval_stride: ${TRACK_EVAL_STRIDE}"
@@ -249,7 +260,7 @@ for arm_spec in "${ARMS[@]}"; do
     >> "${SUMMARY}"
 done
 
-python3 - "${SUMMARY}" "${LEADERBOARD}" <<'PY'
+python3 - "${SUMMARY}" "${LEADERBOARD}" "${LEADERBOARD_METRIC_PREF}" <<'PY'
 import csv
 import math
 import sys
@@ -257,6 +268,7 @@ from pathlib import Path
 
 summary_path = Path(sys.argv[1])
 leaderboard_path = Path(sys.argv[2])
+metric_pref = (sys.argv[3] if len(sys.argv) > 3 else "submission").strip().lower()
 
 with summary_path.open() as f:
     rows = list(csv.DictReader(f, delimiter="\t"))
@@ -271,7 +283,10 @@ ok_rows = [r for r in rows if r.get("status") == "ok"]
 for r in ok_rows:
     tracked = r.get("sw_bpb_4k", "")
     base = r.get("sw_bpb", "")
-    metric_src = tracked if tracked not in ("", "-") else base
+    if metric_pref == "tracked_4k":
+        metric_src = tracked if tracked not in ("", "-") else base
+    else:
+        metric_src = base if base not in ("", "-") else tracked
     r["_metric"] = parse(metric_src)
 
 ok_rows = [r for r in ok_rows if math.isfinite(r.get("_metric", math.inf))]

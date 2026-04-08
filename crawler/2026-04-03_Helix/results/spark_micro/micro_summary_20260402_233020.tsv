@@ -1,0 +1,17 @@
+arm	params	raw_bpb	int6_sw_bpb	step_ms
+A0_ctrl_3flat_2loop	2949652	1.9044	?	514.90
+A1_helix_s1_3flat	2966292	1.9223	?	631.22
+A2_helix_s1_3flat_1loop	2954004	1.9144	?	629.14
+B0_ctrl_5flat_2loop	4131612	1.9080	?	690.08
+B1_helix_s1_5flat	4148252	1.9102	?	1013.91
+B2_helix_s1_7flat	5330212	1.8972	?	1407.48
+C0_helix_5f_s1	4135964	1.9065	?	1003.03
+C1_helix_5f_s2	4135964	1.9056	?	681.39
+C2_helix_5f_s5	4135964	1.8973	?	586.14
+D0_helix_dim8	4127772	1.9103	?	985.70
+D1_helix_dim16	4135964	1.9067	?	980.45
+D2_helix_dim32	4152348	1.8987	?	980.28
+D3_helix_dim64	4185116	1.8616	?	984.40
+E0_helix_inst32	4160540	1.9061	?	981.80
+E1_helix_anchor16	4164636	1.9064	?	984.69
+E2_helix_tap16	4152348	1.9106	?	982.40

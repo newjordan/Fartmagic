@@ -1,0 +1,113 @@
+logs/f9812e3a-041e-4796-a01c-04e281239e4d.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:1
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+model_params:26286676
+f1_corr:rank=0 params=0 est_int6_bytes~0
+mlp_act:relu_sq mlp_leaky_slope:0.5 crawler_mlp_leaky_slope:0.5 crawler_mlp_choke_dim:0 choke_shape:flat choke_groups:8 crawler_loop_smear:False crawler_tap_dim:0 crawler_tap_loop_specific:True crawler_tap_layers:all crawler_loop_rope_scales:(9, 1, 1)
+XSA:last_11 world_size:1 grad_accum_steps:8
+num_heads:8 num_kv_heads:4 embed_lr:0.035 matrix_lr:0.03
+train_batch_tokens:393216 train_seq_len:2048 iterations:12000 warmup_steps:20 max_wallclock_seconds:240.000
+ablate:skip_train=0 init_model_path:- gptq_cal_samples:128 gptq_cal_seq_len:2048
+compile:enabled=1 fullgraph=1 optimize_ddp=0
+ddp:find_unused_parameters=1
+seed:444
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/_dynamo/variables/lists.py", line 135, in getitem_const
+[rank0]:     return self.items[index]
+[rank0]:            ~~~~~~~~~~^^^^^^^
+[rank0]: IndexError: list index out of range
+
+[rank0]: During handling of the above exception, another exception occurred:
+
+[rank0]: torch._dynamo.exc.ObservedIndexError: list index out of range
+
+[rank0]: The above exception was the direct cause of the following exception:
+
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/frosty40/parameter-golf-lab/crawler/2026-04-01_BW12_Interaction_2k/train_gpt_ablate.py", line 2450, in <module>
+[rank0]:     main()
+[rank0]:     ~~~~^^
+[rank0]:   File "/home/frosty40/parameter-golf-lab/crawler/2026-04-01_BW12_Interaction_2k/train_gpt_ablate.py", line 2147, in main
+[rank0]:     warmup_loss = model(x, y)
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/nn/parallel/distributed.py", line 1699, in forward
+[rank0]:     else self._run_ddp_forward(*inputs, **kwargs)
+[rank0]:          ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/nn/parallel/distributed.py", line 1524, in _run_ddp_forward
+[rank0]:     return self.module(*inputs, **kwargs)  # type: ignore[index]
+[rank0]:            ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/_dynamo/eval_frame.py", line 472, in __call__
+[rank0]:     return super().__call__(*args, **kwargs)
+[rank0]:            ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:   File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/_dynamo/eval_frame.py", line 1034, in compile_wrapper
+[rank0]:     raise e.with_traceback(None) from e.__cause__  # User compiler error
+[rank0]:     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: torch._dynamo.exc.Unsupported: Observed exception
+[rank0]:   Explanation: Dynamo found no exception handler at the top-level compiled function when encountering an exception. Exception will propagate outside the compiled region.
+[rank0]:   Hint: Your code may result in an error when running in eager. Please double check that your code doesn't contain a similar error when actually running eager/uncompiled. You can do this by removing the `torch.compile` call, or by using `torch.compiler.set_stance("force_eager")`. 
+[rank0]:   Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
+
+[rank0]:   Developer debug context: raised exception IndexError([ConstantVariable(str: 'list index out of range')])
+
+[rank0]:  For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0088.html
+
+[rank0]: from user code:
+[rank0]:    File "/home/frosty40/parameter-golf-lab/crawler/2026-04-01_BW12_Interaction_2k/train_gpt_ablate.py", line 1401, in forward
+[rank0]:     x = self._run_crawler(x, x0, input_ids, ve_cache, enc_outputs=skips)
+[rank0]:   File "/home/frosty40/parameter-golf-lab/crawler/2026-04-01_BW12_Interaction_2k/train_gpt_ablate.py", line 1364, in _run_crawler
+[rank0]:     lcs = loop_cos_sin[loop] if loop_cos_sin is not None else None
+
+[rank0]: Set TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS="+dynamo"
+
+[rank0]:[W402 05:24:46.349754366 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0402 05:24:47.910000 85309 site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 85337) of binary: /home/frosty40/miniconda3/bin/python3.13
+Traceback (most recent call last):
+  File "/home/frosty40/miniconda3/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+    ~~~^^^^^^
+  File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+    ~~~~~~~~~~~~~~~
+        config=config,
+        ~~~~~~~~~~~~~~
+        entrypoint=cmd,
+        ~~~~~~~~~~~~~~~
+    )(*cmd_args)
+    ~^^^^^^^^^^^
+  File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/home/frosty40/miniconda3/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+    ...<2 lines>...
+    )
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/frosty40/parameter-golf-lab/crawler/2026-04-01_BW12_Interaction_2k/train_gpt_ablate.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-04-02_05:24:47
+  host      : localhost
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 85337)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

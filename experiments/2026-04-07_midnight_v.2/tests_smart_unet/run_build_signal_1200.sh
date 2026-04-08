@@ -17,21 +17,36 @@ SKIP_FINAL_EVAL="${SKIP_FINAL_EVAL:-1}"
 POST_EMA_DIAGNOSTIC="${POST_EMA_DIAGNOSTIC:-0}"
 SKIP_QUANT_ROUNDTRIP_EVAL="${SKIP_QUANT_ROUNDTRIP_EVAL:-1}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-0}"
-LANES="${LANES:-control soft_gating hard_routing competitive_routing}"
+LANES="${LANES:-soft_gating hard_routing competitive_routing}"
+REUSE_DONE="${REUSE_DONE:-1}"
+ALLOW_CONTROL_RERUN="${ALLOW_CONTROL_RERUN:-0}"
+BASELINE_CONTROL_LOG="${BASELINE_CONTROL_LOG:-}"
+CONTROL_PROXY_BPB="${CONTROL_PROXY_BPB:-}"
+CONTROL_TRAIN_TIME_MS="${CONTROL_TRAIN_TIME_MS:-}"
+ALLOW_MISSING_BASELINE="${ALLOW_MISSING_BASELINE:-0}"
 TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-180}"
+LANE_TIMEOUT_SECONDS="${LANE_TIMEOUT_SECONDS:-$((MAX_WALLCLOCK_SECONDS + 210))}"
 
 if [[ ! -x "${RUN_ONE}" ]]; then
   echo "FATAL: missing run script: ${RUN_ONE}" >&2
   exit 1
 fi
 
+for lane in ${LANES}; do
+  if [[ "${lane}" == "control" && "${ALLOW_CONTROL_RERUN}" != "1" ]]; then
+    echo "FATAL: lane list includes control but ALLOW_CONTROL_RERUN!=1 (cost guard)." >&2
+    echo "Set ALLOW_CONTROL_RERUN=1 only if you explicitly want to pay for a new control run." >&2
+    exit 2
+  fi
+done
+
 mkdir -p "${OUT_ROOT}"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 BATCH_DIR="${OUT_ROOT}/${STAMP}"
 mkdir -p "${BATCH_DIR}"
 SUMMARY="${BATCH_DIR}/summary.tsv"
-printf "idx\tlane\tstatus\tstep\tproxy_val_bpb\tdelta_vs_control_bpb\ttrain_time_ms\tstep_avg_ms\tsmart_active_decoders\telapsed_s\tlane_log\tnote\n" > "${SUMMARY}"
+printf "idx\tlane\tstatus\tstep\tproxy_val_bpb\tdelta_vs_control_bpb\ttrain_time_ms\tstep_avg_ms\tspeed_vs_control_x\tsmart_active_decoders\telapsed_s\tlane_log\tnote\n" > "${SUMMARY}"
 
 afloat() { awk -v a="$1" -v b="$2" 'BEGIN {printf "%.8f", (a - b)}'; }
 aratio() { awk -v a="$1" -v b="$2" 'BEGIN {if (b <= 0) print ""; else printf "%.6f", (a / b)}'; }
@@ -42,6 +57,16 @@ extract_proxy_line() {
 latest_lane_log() {
   local lane="$1"
   ls -1t "${RUN_LOG_DIR}/${lane}_seed${SEED}_"*.log 2>/dev/null | head -n1 || true
+}
+log_is_done() {
+  local f="$1"
+  [[ -f "$f" ]] || return 1
+  grep -qE "Total submission size mixed\\+brotli|final_eval:skipped|stopping_early: wallclock_cap" "$f"
+}
+log_has_target_iteration() {
+  local f="$1"
+  [[ -f "$f" ]] || return 1
+  grep -qE "^step:[0-9]+/${ITERATIONS} val_loss:[0-9.]+ val_bpb:[0-9.]+" "$f"
 }
 extract_smart_stats() {
   local f="$1"
@@ -67,34 +92,108 @@ extract_smart_stats() {
     }
   ' "$f"
 }
+hydrate_control_baseline() {
+  if [[ -n "${CONTROL_PROXY_BPB}" && -n "${CONTROL_TRAIN_TIME_MS}" ]]; then
+    return
+  fi
+  local f=""
+  if [[ -n "${BASELINE_CONTROL_LOG}" ]]; then
+    f="${BASELINE_CONTROL_LOG}"
+  else
+    f="$(latest_lane_log control)"
+  fi
+  [[ -n "${f}" && -f "${f}" ]] || return
+  local proxy_line
+  proxy_line="$(extract_proxy_line "${f}")"
+  local bpb
+  local tms
+  bpb="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*val_bpb:\([0-9.][0-9.]*\).*/\1/p')"
+  tms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*train_time:\([0-9][0-9]*\)ms.*/\1/p')"
+  if [[ -n "${bpb}" && -n "${tms}" ]]; then
+    CONTROL_PROXY_BPB="${bpb}"
+    CONTROL_TRAIN_TIME_MS="${tms}"
+  fi
+}
 
+hydrate_control_baseline
 echo "build_signal_batch_dir=${BATCH_DIR}"
 echo "profile=${PROFILE} seed=${SEED} nproc=${NPROC} iterations=${ITERATIONS} val_loss_every=${VAL_LOSS_EVERY}"
-echo "max_wallclock_seconds=${MAX_WALLCLOCK_SECONDS} stop_on_fail=${STOP_ON_FAIL}"
+echo "max_wallclock_seconds=${MAX_WALLCLOCK_SECONDS} lane_timeout_seconds=${LANE_TIMEOUT_SECONDS} stop_on_fail=${STOP_ON_FAIL}"
+echo "reuse_done=${REUSE_DONE}"
 echo "lanes=${LANES}"
 echo "nccl_async_error_handling=${TORCH_NCCL_ASYNC_ERROR_HANDLING} nccl_heartbeat_timeout_sec=${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC}"
+echo "control_baseline_bpb=${CONTROL_PROXY_BPB:-NA} control_baseline_train_time_ms=${CONTROL_TRAIN_TIME_MS:-NA}"
+echo "allow_missing_baseline=${ALLOW_MISSING_BASELINE}"
 
 idx=0
-control_bpb=""
-control_train_ms=""
+control_bpb="${CONTROL_PROXY_BPB}"
+control_train_ms="${CONTROL_TRAIN_TIME_MS}"
+if [[ "${ALLOW_MISSING_BASELINE}" != "1" && ( -z "${control_bpb}" || -z "${control_train_ms}" ) ]]; then
+  echo "FATAL: missing control baseline (cost guard)." >&2
+  echo "Provide BASELINE_CONTROL_LOG or CONTROL_PROXY_BPB + CONTROL_TRAIN_TIME_MS." >&2
+  echo "Or explicitly allow spending for baseline refresh: ALLOW_CONTROL_RERUN=1 LANES='control ...'" >&2
+  exit 3
+fi
 for lane in ${LANES}; do
   idx="$((idx + 1))"
+  lane_log=""
+  if [[ "${REUSE_DONE}" == "1" ]]; then
+    maybe_log="$(latest_lane_log "${lane}")"
+    if [[ -n "${maybe_log}" ]] && log_is_done "${maybe_log}" && log_has_target_iteration "${maybe_log}"; then
+      lane_log="${maybe_log}"
+      proxy_line="$(extract_proxy_line "${lane_log}")"
+      step="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step:\([0-9][0-9]*\)\/[0-9][0-9]*.*/\1/p')"
+      proxy_bpb="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*val_bpb:\([0-9.][0-9.]*\).*/\1/p')"
+      train_time_ms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*train_time:\([0-9][0-9]*\)ms.*/\1/p')"
+      step_avg_ms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step_avg:\([0-9.][0-9.]*\)ms.*/\1/p')"
+      smart_stats="$(extract_smart_stats "${lane_log}")"
+      [[ -z "${smart_stats}" ]] && smart_stats="NA"
+      delta_bpb=""
+      [[ -n "${control_bpb}" && -n "${proxy_bpb}" ]] && delta_bpb="$(afloat "${proxy_bpb}" "${control_bpb}")"
+      speed_vs_control=""
+      [[ -n "${control_train_ms}" && -n "${train_time_ms}" ]] && speed_vs_control="$(aratio "${control_train_ms}" "${train_time_ms}")"
+      printf "%s\t%s\tREUSED\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t%s\treused_completed_log\n" \
+        "${idx}" "${lane}" "${step}" "${proxy_bpb}" "${delta_bpb}" "${train_time_ms}" \
+        "${step_avg_ms}" "${speed_vs_control}" "${smart_stats}" "${lane_log}" >> "${SUMMARY}"
+      echo "[${idx}] ${lane} status=REUSED proxy_bpb=${proxy_bpb:-NA} train_time_ms=${train_time_ms:-NA} smart=${smart_stats}"
+      continue
+    fi
+  fi
+
   run_start_s="$(date +%s)"
   echo "[${idx}] running ${lane}..."
 
   set +e
-  ITERATIONS="${ITERATIONS}" \
-  SEED="${SEED}" \
-  NPROC_PER_NODE="${NPROC}" \
-  VAL_LOSS_EVERY="${VAL_LOSS_EVERY}" \
-  SKIP_FINAL_EVAL="${SKIP_FINAL_EVAL}" \
-  POST_EMA_DIAGNOSTIC="${POST_EMA_DIAGNOSTIC}" \
-  SKIP_QUANT_ROUNDTRIP_EVAL="${SKIP_QUANT_ROUNDTRIP_EVAL}" \
-  MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS}" \
-  TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING}" \
-  TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC}" \
-  bash "${RUN_ONE}" "${lane}" "${PROFILE}" 2>&1 | tee "${BATCH_DIR}/${idx}_${lane}.runner.log"
-  rc="${PIPESTATUS[0]}"
+  if command -v timeout >/dev/null 2>&1; then
+    env \
+      ITERATIONS="${ITERATIONS}" \
+      SEED="${SEED}" \
+      NPROC_PER_NODE="${NPROC}" \
+      VAL_LOSS_EVERY="${VAL_LOSS_EVERY}" \
+      SKIP_FINAL_EVAL="${SKIP_FINAL_EVAL}" \
+      POST_EMA_DIAGNOSTIC="${POST_EMA_DIAGNOSTIC}" \
+      SKIP_QUANT_ROUNDTRIP_EVAL="${SKIP_QUANT_ROUNDTRIP_EVAL}" \
+      MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS}" \
+      TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING}" \
+      TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC}" \
+      timeout --signal=TERM --kill-after=30s "${LANE_TIMEOUT_SECONDS}s" \
+      bash "${RUN_ONE}" "${lane}" "${PROFILE}" 2>&1 | tee "${BATCH_DIR}/${idx}_${lane}.runner.log"
+    rc="${PIPESTATUS[0]}"
+  else
+    env \
+      ITERATIONS="${ITERATIONS}" \
+      SEED="${SEED}" \
+      NPROC_PER_NODE="${NPROC}" \
+      VAL_LOSS_EVERY="${VAL_LOSS_EVERY}" \
+      SKIP_FINAL_EVAL="${SKIP_FINAL_EVAL}" \
+      POST_EMA_DIAGNOSTIC="${POST_EMA_DIAGNOSTIC}" \
+      SKIP_QUANT_ROUNDTRIP_EVAL="${SKIP_QUANT_ROUNDTRIP_EVAL}" \
+      MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS}" \
+      TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING}" \
+      TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC}" \
+      bash "${RUN_ONE}" "${lane}" "${PROFILE}" 2>&1 | tee "${BATCH_DIR}/${idx}_${lane}.runner.log"
+    rc="${PIPESTATUS[0]}"
+  fi
   set -e
 
   run_end_s="$(date +%s)"
@@ -105,6 +204,9 @@ for lane in ${LANES}; do
   if [[ "${rc}" -ne 0 ]]; then
     status="FAIL"
     note="runner_exit_${rc}"
+    if [[ "${rc}" -eq 124 || "${rc}" -eq 137 ]]; then
+      note="${note},lane_timeout_${LANE_TIMEOUT_SECONDS}s"
+    fi
   fi
 
   proxy_line="$(extract_proxy_line "${lane_log}")"
@@ -114,11 +216,6 @@ for lane in ${LANES}; do
   step_avg_ms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step_avg:\([0-9.][0-9.]*\)ms.*/\1/p')"
   smart_stats="$(extract_smart_stats "${lane_log}")"
   [[ -z "${smart_stats}" ]] && smart_stats="NA"
-
-  if [[ "${lane}" == "control" ]]; then
-    [[ -n "${proxy_bpb}" ]] && control_bpb="${proxy_bpb}"
-    [[ -n "${train_time_ms}" ]] && control_train_ms="${train_time_ms}"
-  fi
 
   delta_bpb=""
   [[ -n "${control_bpb}" && -n "${proxy_bpb}" ]] && delta_bpb="$(afloat "${proxy_bpb}" "${control_bpb}")"
@@ -134,17 +231,9 @@ for lane in ${LANES}; do
     fi
   fi
 
-  if [[ -n "${speed_vs_control}" ]]; then
-    if [[ -n "${note}" ]]; then
-      note="${note},speed_vs_control=${speed_vs_control}x"
-    else
-      note="speed_vs_control=${speed_vs_control}x"
-    fi
-  fi
-
-  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
     "${idx}" "${lane}" "${status}" "${step}" "${proxy_bpb}" "${delta_bpb}" \
-    "${train_time_ms}" "${step_avg_ms}" "${smart_stats}" "${elapsed_s}" "${lane_log}" "${note}" >> "${SUMMARY}"
+    "${train_time_ms}" "${step_avg_ms}" "${speed_vs_control}" "${smart_stats}" "${elapsed_s}" "${lane_log}" "${note}" >> "${SUMMARY}"
 
   echo "[${idx}] ${lane} status=${status} proxy_bpb=${proxy_bpb:-NA} train_time_ms=${train_time_ms:-NA} smart=${smart_stats}"
   if [[ "${status}" == "FAIL" && "${STOP_ON_FAIL}" == "1" ]]; then
@@ -163,7 +252,7 @@ fi
 
 best_lane="$(
   tail -n +2 "${SUMMARY}" \
-    | awk -F'\t' '($3=="OK" && $5!="" && $6!="" && $7!=""){if(!best || ($7+0)<best_t){best=$2;best_t=$7+0;best_bpb=$5;best_d=$6;best_s=$9}} END{if(best!="") printf "%s\t%.4f\t%+.6f\t%.0f\t%s", best, best_bpb, best_d, best_t, best_s}'
+    | awk -F'\t' '($3=="OK" || $3=="REUSED"){if($5!="" && $7!=""){if(!best || ($7+0)<best_t){best=$2;best_t=$7+0;best_bpb=$5;best_d=$6;best_s=$10}}} END{if(best!="") printf "%s\t%.4f\t%s\t%.0f\t%s", best, best_bpb, (best_d==""?"NA":best_d), best_t, best_s}'
 )"
 if [[ -n "${best_lane}" ]]; then
   IFS=$'\t' read -r blane bbpb bdelta btime bsmart <<< "${best_lane}"

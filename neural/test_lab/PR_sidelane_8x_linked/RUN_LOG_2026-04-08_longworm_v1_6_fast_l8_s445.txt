@@ -1,0 +1,110 @@
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed.
+*****************************************
+logs/longworm_v1_4_power_brotli_04_longctx_36_v1_6_longworm_fast_l8_d480_h12_kv4_non_ngram_brotli_s445_20260408_031005.txt
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=/workspace/parameter-golf/data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:80
+val_loader:shards pattern=/workspace/parameter-golf/data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+model_params:18439404
+mtp_num_heads:0 mtp_loss_weight:0.2 mtp_params:0
+XSA:last_4 active_layers:[4, 5, 6, 7]
+transition_integrator:hybrid_k2_k4(last_n=1) rk2_layers:[0, 1, 2, 3, 4, 5, 6] rk4_layers:[7]
+longctx_taps:enabled=1 blocks=[0, 1, 2, 3, 4, 5, 6, 7] offsets:[16, 64, 256, 1024] prefix_mean=1 norm=1
+world_size:8 grad_accum_steps:1
+sdp_backends:cudnn=False flash=True mem_efficient=False math=False
+attention_mode:gqa num_heads:12 num_kv_heads:4
+tie_embeddings:True embed_lr:0.035 head_lr:0.0 matrix_lr:0.029 scalar_lr:0.025
+train_batch_tokens:131072 train_seq_len:2048 iterations:16000 warmup_steps:144 max_wallclock_seconds:590.000
+compile:enabled=0 mode:default fullgraph=0
+mlp_kernel_mode:eager
+scale_init:attn=1.0000 mlp=1.0000 resid_mix=(1.0000,0.0000) ln_scale=1
+quant_policy:attn=6 mlp=7 aux=7 embed=8 other=8 artifact=final_model.mixed.ptz
+seed:445
+loader:coprime shards:80 blocks:3906240 seq_len:2048 shards_per_batch:1 cache:4 batch_stride:9 hold_steps:64
+warmup_step:10/144
+warmup_step:20/144
+warmup_step:30/144
+warmup_step:40/144
+warmup_step:50/144
+warmup_step:60/144
+warmup_step:70/144
+warmup_step:80/144
+warmup_step:90/144
+warmup_step:100/144
+warmup_step:110/144
+warmup_step:120/144
+warmup_step:130/144
+warmup_step:140/144
+warmup_step:144/144
+loader_reset:loader:coprime shards:80 blocks:3906240 seq_len:2048 shards_per_batch:1 cache:4 batch_stride:9 hold_steps:64
+step:1/16000 train_loss:6.9005 train_time:390ms step_avg:389.67ms
+step:2/16000 train_loss:7.7962 train_time:519ms step_avg:259.53ms
+step:3/16000 train_loss:7.6741 train_time:662ms step_avg:220.64ms
+step:4/16000 train_loss:7.2966 train_time:805ms step_avg:201.21ms
+step:5/16000 train_loss:7.0403 train_time:949ms step_avg:189.77ms
+step:6/16000 train_loss:7.0476 train_time:1092ms step_avg:181.98ms
+step:7/16000 train_loss:7.0979 train_time:1235ms step_avg:176.37ms
+step:8/16000 train_loss:6.9483 train_time:1378ms step_avg:172.20ms
+step:9/16000 train_loss:6.7581 train_time:1521ms step_avg:168.97ms
+step:10/16000 train_loss:6.5325 train_time:1664ms step_avg:166.40ms
+step:100/16000 train_loss:3.5064 train_time:14775ms step_avg:147.75ms
+step:200/16000 train_loss:3.1608 train_time:29536ms step_avg:147.68ms
+step:300/16000 train_loss:2.8270 train_time:44103ms step_avg:147.01ms
+step:400/16000 train_loss:2.6689 train_time:58918ms step_avg:147.30ms
+step:500/16000 train_loss:2.6431 train_time:73484ms step_avg:146.97ms
+step:600/16000 train_loss:2.6746 train_time:88297ms step_avg:147.16ms
+step:700/16000 train_loss:2.5997 train_time:102871ms step_avg:146.96ms
+step:800/16000 train_loss:2.5796 train_time:117772ms step_avg:147.21ms
+step:900/16000 train_loss:2.4350 train_time:132586ms step_avg:147.32ms
+step:1000/16000 train_loss:2.4699 train_time:147162ms step_avg:147.16ms
+step:1100/16000 train_loss:2.4133 train_time:161974ms step_avg:147.25ms
+step:1200/16000 train_loss:2.5116 train_time:176537ms step_avg:147.11ms
+step:1300/16000 train_loss:2.5060 train_time:191354ms step_avg:147.20ms
+step:1400/16000 train_loss:2.3272 train_time:205918ms step_avg:147.08ms
+step:1500/16000 train_loss:2.5596 train_time:220725ms step_avg:147.15ms
+step:1600/16000 train_loss:2.4972 train_time:235281ms step_avg:147.05ms
+step:1700/16000 train_loss:2.4057 train_time:250084ms step_avg:147.11ms
+step:1800/16000 train_loss:2.3423 train_time:264970ms step_avg:147.21ms
+step:1900/16000 train_loss:2.2409 train_time:279528ms step_avg:147.12ms
+step:2000/16000 train_loss:2.5291 train_time:294335ms step_avg:147.17ms
+step:2100/16000 train_loss:2.3515 train_time:308898ms step_avg:147.09ms
+step:2200/16000 train_loss:2.3585 train_time:323708ms step_avg:147.14ms
+step:2300/16000 train_loss:2.2434 train_time:338272ms step_avg:147.07ms
+step:2400/16000 train_loss:2.2786 train_time:353081ms step_avg:147.12ms
+step:2500/16000 train_loss:2.2882 train_time:367889ms step_avg:147.16ms
+step:2600/16000 train_loss:2.3570 train_time:382454ms step_avg:147.10ms
+step:2700/16000 train_loss:2.2285 train_time:397265ms step_avg:147.14ms
+step:2800/16000 train_loss:2.2181 train_time:411830ms step_avg:147.08ms
+step:2900/16000 train_loss:2.2598 train_time:426719ms step_avg:147.14ms
+step:3000/16000 train_loss:2.1776 train_time:441281ms step_avg:147.09ms
+step:3100/16000 train_loss:2.1350 train_time:456088ms step_avg:147.13ms
+step:3200/16000 train_loss:1.9950 train_time:470645ms step_avg:147.08ms
+late_qat:enabled step:3243 scale:0.2399
+step:3300/16000 train_loss:2.1824 train_time:485476ms step_avg:147.11ms
+step:3400/16000 train_loss:2.1048 train_time:500298ms step_avg:147.15ms
+step:3500/16000 train_loss:2.2869 train_time:514881ms step_avg:147.11ms
+step:3600/16000 train_loss:2.2263 train_time:529705ms step_avg:147.14ms
+step:3700/16000 train_loss:2.1468 train_time:544289ms step_avg:147.11ms
+step:3800/16000 train_loss:2.0225 train_time:559187ms step_avg:147.15ms
+step:3900/16000 train_loss:2.1859 train_time:573856ms step_avg:147.14ms
+step:4000/16000 train_loss:2.0443 train_time:588687ms step_avg:147.17ms
+step:4009/16000 val_loss:2.1372 val_bpb:1.2658 train_time:589992ms step_avg:147.17ms
+stopping_early: wallclock_cap train_time:589992ms step:4009/16000
+peak memory allocated: 12864 MiB reserved: 13362 MiB
+gptq:SKIPPED (SKIP_GPTQ=1)
+ema:applying EMA weights
+DIAGNOSTIC post_ema val_loss:2.1366 val_bpb:1.2654 eval_time:24755ms
+Serialized model: 70961602 bytes
+Code size: 135495 bytes
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+mixed_quantize: 0 GPTQ tensors, 5 naive tensors int6:3 int7:2 int8:3
+Serialized model mixed+brotli: 11347042 bytes
+Total submission size mixed+brotli: 11482537 bytes
+final_quant_roundtrip val_loss:2.1417 val_bpb:1.2684 eval_time:24669ms
+final_quant_roundtrip_exact val_loss:2.14165161 val_bpb:1.26840671

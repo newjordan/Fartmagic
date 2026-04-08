@@ -88,6 +88,13 @@ SEED=444 NPROC_PER_NODE=8 PROFILE=screen PRIORITY_MAX=1 \
 bash experiments/2026-04-07_midnight_v.2/run_screen_batch.sh
 ```
 
+Prune/resume entrypoint (skip already-run lanes first):
+
+```bash
+SEED=444 NPROC_PER_NODE=8 \
+bash experiments/2026-04-07_midnight_v.2/run_prune_batch.sh
+```
+
 Useful knobs:
 
 - `BUDGET_MINUTES=45`: hard budget cap for the batch
@@ -95,11 +102,39 @@ Useful knobs:
 - `CONTROL_AT_END=1`: rerun control at end to detect drift
 - `GATE_COMBO=1`: skip combo lane when parent lanes show no improvement
 - `MAX_WALLCLOCK_SECONDS=210`: override per-lane time cap
+- `REUSE_DONE=1`: reuse prior lane logs instead of rerunning
+- `REUSE_MAX_AGE_MIN=0`: allow reuse regardless of log age (default in prune script)
+- `REUSE_MIN_STEP=1000`: treat a lane as reusable once it has reached that val step
 
 Dry-run preview:
 
 ```bash
 DRY_RUN=1 bash experiments/2026-04-07_midnight_v.2/run_screen_batch.sh
+```
+
+## Latest Decision Record
+
+- Saved screen batch record: `results/2026-04-08_screen_seed444_priority1.tsv`
+- Approval log: `results/APPROVALS.md`
+- Marked `approved_to_add`: `warmdown_3000`
+
+## Smart U-Net Routing Ablation (Isolated)
+
+To avoid touching baseline files, smart routing tests are isolated in:
+
+- `experiments/2026-04-07_midnight_v.2/tests_smart_unet/`
+
+Modes in this ablation:
+
+- `soft_gating`
+- `hard_routing`
+- `competitive_routing`
+
+Run all routing modes in one batch:
+
+```bash
+SEED=444 NPROC_PER_NODE=8 PROFILE=screen PRIORITY_MAX=1 BUDGET_MINUTES=45 \
+bash experiments/2026-04-07_midnight_v.2/tests_smart_unet/run_smart_unet_screen.sh
 ```
 
 Adaptive embedding precision is now supported for v.2 export lanes:

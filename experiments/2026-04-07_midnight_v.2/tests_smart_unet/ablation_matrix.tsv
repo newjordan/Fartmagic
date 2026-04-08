@@ -1,0 +1,5 @@
+lane	priority	hypothesis	env_overrides
+control	1	Baseline Midnight v2 behavior (no smart U-Net routing).	SMART_UNET_MODE=off
+soft_gating	1	Scale U-Net skip injection by batch quality (no layer skipping).	SMART_UNET_MODE=soft SMART_UNET_QUALITY_THRESHOLD=0.975 SMART_UNET_QUALITY_SHARPNESS=24 SMART_UNET_MIN_GATE=0.35
+hard_routing	1	Skip low-priority decoder layers when quality is low to push more steps out.	SMART_UNET_MODE=hard SMART_UNET_MAX_DECODER_SKIPS=2
+competitive_routing	1	Decoder layers compete by learned skip importance under quality-based budget.	SMART_UNET_MODE=competitive SMART_UNET_MAX_DECODER_SKIPS=2

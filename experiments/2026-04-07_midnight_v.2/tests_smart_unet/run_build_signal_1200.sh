@@ -18,6 +18,8 @@ POST_EMA_DIAGNOSTIC="${POST_EMA_DIAGNOSTIC:-0}"
 SKIP_QUANT_ROUNDTRIP_EVAL="${SKIP_QUANT_ROUNDTRIP_EVAL:-1}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-0}"
 LANES="${LANES:-control soft_gating hard_routing competitive_routing}"
+TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
+TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC:-180}"
 
 if [[ ! -x "${RUN_ONE}" ]]; then
   echo "FATAL: missing run script: ${RUN_ONE}" >&2
@@ -70,6 +72,7 @@ echo "build_signal_batch_dir=${BATCH_DIR}"
 echo "profile=${PROFILE} seed=${SEED} nproc=${NPROC} iterations=${ITERATIONS} val_loss_every=${VAL_LOSS_EVERY}"
 echo "max_wallclock_seconds=${MAX_WALLCLOCK_SECONDS} stop_on_fail=${STOP_ON_FAIL}"
 echo "lanes=${LANES}"
+echo "nccl_async_error_handling=${TORCH_NCCL_ASYNC_ERROR_HANDLING} nccl_heartbeat_timeout_sec=${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC}"
 
 idx=0
 control_bpb=""
@@ -88,6 +91,8 @@ for lane in ${LANES}; do
   POST_EMA_DIAGNOSTIC="${POST_EMA_DIAGNOSTIC}" \
   SKIP_QUANT_ROUNDTRIP_EVAL="${SKIP_QUANT_ROUNDTRIP_EVAL}" \
   MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS}" \
+  TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING}" \
+  TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC="${TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC}" \
   bash "${RUN_ONE}" "${lane}" "${PROFILE}" 2>&1 | tee "${BATCH_DIR}/${idx}_${lane}.runner.log"
   rc="${PIPESTATUS[0]}"
   set -e

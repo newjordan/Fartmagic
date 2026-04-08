@@ -349,7 +349,12 @@ class Muon(torch.optim.Optimizer):
         self._built = True
 
     def launch_reduce_scatters(self):
-        """Phase 1: launch async reduce-scatter for all banks. Call right after backward."""
+        """Phase 1: launch async reduce-scatter for all banks. Call right after backward.
+
+        Important: in routed modes, some params can be unused on some ranks for a step.
+        We still launch collectives for every bank in identical order by reducing zeros
+        when grad is missing; otherwise ranks can diverge and deadlock NCCL.
+        """
         if not self._built:
             self._build()
         if not self._distributed:
@@ -357,11 +362,11 @@ class Muon(torch.optim.Optimizer):
         self._rs_futures = []
         for m in self._bank_meta:
             p = m['p']
-            if p.grad is None:
-                self._rs_futures.append(None)
-                continue
             pg = m['padded_grad']
-            pg[:m['B']].copy_(p.grad.bfloat16())
+            if p.grad is None:
+                pg[:m['B']].zero_()
+            else:
+                pg[:m['B']].copy_(p.grad.bfloat16())
             if pg.shape[0] > m['B']:
                 pg[m['B']:].zero_()
             fut = dist.reduce_scatter_tensor(m['shard'], pg, op=dist.ReduceOp.AVG, async_op=True)
@@ -392,7 +397,7 @@ class Muon(torch.optim.Optimizer):
 
             for i, m in enumerate(self._bank_meta):
                 p = m['p']
-                if p.grad is None:
+                if not sharded and p.grad is None:
                     continue
 
                 if prev_ag_handle is not None:
@@ -403,7 +408,7 @@ class Muon(torch.optim.Optimizer):
                         pp.data.mul_(1.0 - lr * wd)
                     pp.add_(upd.to(dtype=pp.dtype), alpha=-lr * prev_m['scale'])
 
-                if sharded and self._rs_futures[i] is not None:
+                if sharded:
                     self._rs_futures[i].wait()
                     g = m['shard']
                     buf = m['shard_mom']
@@ -2478,8 +2483,9 @@ def main() -> None:
             # All-reduce all grads for warmup (simple, not optimized)
             if distributed:
                 for p in base_model.parameters():
-                    if p.grad is not None:
-                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+                    if p.grad is None:
+                        p.grad = torch.zeros_like(p)
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
             for opt in optimizers:
                 opt.step()
             zero_grad_all()
@@ -2593,8 +2599,9 @@ def main() -> None:
         # Phase 2: All-reduce non-bank grads + step Adam (while bank RS is in-flight)
         if distributed:
             for p in replicated_params:
-                if p.grad is not None:
-                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+                if p.grad is None:
+                    p.grad = torch.zeros_like(p)
+                dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
         optimizer_tok.step()
         optimizer_scalar.step()
         if optimizer_head is not None:

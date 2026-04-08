@@ -152,6 +152,7 @@ class Hyperparameters:
     value_residual = bool(int(os.environ.get("VALUE_RESIDUAL", "0")))  # VRL with sigmoid gates (off by default, risky)
     smart_unet_mode = os.environ.get("SMART_UNET_MODE", "off").strip().lower()
     smart_unet_quality_threshold = float(os.environ.get("SMART_UNET_QUALITY_THRESHOLD", 0.975))
+    smart_unet_skip_margin = float(os.environ.get("SMART_UNET_SKIP_MARGIN", 0.004))
     smart_unet_quality_sharpness = float(os.environ.get("SMART_UNET_QUALITY_SHARPNESS", 24.0))
     smart_unet_min_gate = float(os.environ.get("SMART_UNET_MIN_GATE", 0.35))
     smart_unet_max_decoder_skips = int(os.environ.get("SMART_UNET_MAX_DECODER_SKIPS", 2))
@@ -1423,6 +1424,7 @@ class GPT(nn.Module):
         value_residual: bool = False,
         smart_unet_mode: str = "off",
         smart_unet_quality_threshold: float = 0.975,
+        smart_unet_skip_margin: float = 0.004,
         smart_unet_quality_sharpness: float = 24.0,
         smart_unet_min_gate: float = 0.35,
         smart_unet_max_decoder_skips: int = 2,
@@ -1439,6 +1441,7 @@ class GPT(nn.Module):
         if self.smart_unet_mode not in {"off", "soft", "hard", "competitive"}:
             raise ValueError(f"SMART_UNET_MODE must be one of off|soft|hard|competitive, got {smart_unet_mode!r}")
         self.smart_unet_quality_threshold = max(float(smart_unet_quality_threshold), 1e-6)
+        self.smart_unet_skip_margin = max(float(smart_unet_skip_margin), 1e-6)
         self.smart_unet_quality_sharpness = max(float(smart_unet_quality_sharpness), 1e-3)
         self.smart_unet_min_gate = min(max(float(smart_unet_min_gate), 0.0), 1.0)
         self.smart_unet_max_decoder_skips = max(int(smart_unet_max_decoder_skips), 0)
@@ -1557,7 +1560,7 @@ class GPT(nn.Module):
             return self.num_decoder_layers
         q = float(quality.detach().to(dtype=torch.float32).item())
         deficit = max(self.smart_unet_quality_threshold - q, 0.0)
-        frac = min(max(deficit / self.smart_unet_quality_threshold, 0.0), 1.0)
+        frac = min(max(deficit / self.smart_unet_skip_margin, 0.0), 1.0)
         skip_count = int(round(self.smart_unet_max_decoder_skips * frac))
         return max(1, self.num_decoder_layers - skip_count)
 
@@ -2183,7 +2186,7 @@ def main() -> None:
         if logfile is not None:
             with open(logfile, "a", encoding="utf-8") as f:
                 print(msg, file=f)
-    if args.smart_unet_mode != "off" and args.compile_enabled:
+    if args.smart_unet_mode in {"hard", "competitive"} and args.compile_enabled:
         args.compile_enabled = False
         log0(
             f"smart_unet:compile_forced_off mode={args.smart_unet_mode} "
@@ -2250,6 +2253,7 @@ def main() -> None:
         value_residual=args.value_residual,
         smart_unet_mode=args.smart_unet_mode,
         smart_unet_quality_threshold=args.smart_unet_quality_threshold,
+        smart_unet_skip_margin=args.smart_unet_skip_margin,
         smart_unet_quality_sharpness=args.smart_unet_quality_sharpness,
         smart_unet_min_gate=args.smart_unet_min_gate,
         smart_unet_max_decoder_skips=args.smart_unet_max_decoder_skips,
@@ -2432,6 +2436,7 @@ def main() -> None:
     log0(
         f"smart_unet:mode={args.smart_unet_mode} "
         f"quality_threshold:{args.smart_unet_quality_threshold:.4f} "
+        f"skip_margin:{args.smart_unet_skip_margin:.4f} "
         f"sharpness:{args.smart_unet_quality_sharpness:.2f} "
         f"min_gate:{args.smart_unet_min_gate:.3f} "
         f"max_decoder_skips:{args.smart_unet_max_decoder_skips}"
@@ -2510,7 +2515,7 @@ def main() -> None:
         active = base_model.num_decoder_layers
         if args.smart_unet_mode in {"hard", "competitive"} and args.smart_unet_max_decoder_skips > 0:
             deficit = max(args.smart_unet_quality_threshold - quality, 0.0)
-            frac = min(max(deficit / max(args.smart_unet_quality_threshold, 1e-6), 0.0), 1.0)
+            frac = min(max(deficit / max(args.smart_unet_skip_margin, 1e-6), 0.0), 1.0)
             skip_count = int(round(args.smart_unet_max_decoder_skips * frac))
             active = max(1, base_model.num_decoder_layers - skip_count)
         return quality, gate, active

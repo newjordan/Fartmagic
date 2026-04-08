@@ -189,9 +189,9 @@ for i in "${!ORDERED[@]}"; do
   if [[ -f "${lane_log}" ]]; then
     proxy_line="$(extract_proxy_line "${lane_log}")"
     if [[ -n "${proxy_line}" ]]; then
-      step="$(awk 'match($0,/step:([0-9]+)\/20000/,m){print m[1]}' <<< "${proxy_line}")"
-      proxy_bpb="$(awk 'match($0,/val_bpb:([0-9.]+)/,m){print m[1]}' <<< "${proxy_line}")"
-      train_time_ms="$(awk 'match($0,/train_time:([0-9]+)ms/,m){print m[1]}' <<< "${proxy_line}")"
+      step="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step:\([0-9][0-9]*\)\/20000.*/\1/p')"
+      proxy_bpb="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*val_bpb:\([0-9.][0-9.]*\).*/\1/p')"
+      train_time_ms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*train_time:\([0-9][0-9]*\)ms.*/\1/p')"
     else
       note="${note:+${note};}no_proxy_line"
     fi

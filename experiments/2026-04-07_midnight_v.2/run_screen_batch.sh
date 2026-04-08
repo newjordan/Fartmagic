@@ -6,6 +6,7 @@ EXP_DIR="${ROOT}/experiments/2026-04-07_midnight_v.2"
 RUN_ONE="${EXP_DIR}/run_ablation.sh"
 MATRIX="${EXP_DIR}/ablation_matrix.tsv"
 OUT_ROOT="${EXP_DIR}/logs/screen_batches"
+DONE_LOG_DIR="${EXP_DIR}/logs/ablation_runs"
 
 SEED="${SEED:-444}"
 NPROC="${NPROC_PER_NODE:-8}"
@@ -16,6 +17,8 @@ SCREEN_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-}"
 CONTROL_AT_END="${CONTROL_AT_END:-1}"
 STOP_ON_FAIL="${STOP_ON_FAIL:-1}"
 DRY_RUN="${DRY_RUN:-0}"
+REUSE_DONE="${REUSE_DONE:-1}"
+REUSE_MAX_AGE_MIN="${REUSE_MAX_AGE_MIN:-180}"
 
 # If combo arm doesn't look promising from parent signals, skip it to save cost.
 GATE_COMBO="${GATE_COMBO:-1}"
@@ -65,6 +68,8 @@ echo "nproc=${NPROC}"
 echo "priority_max=${PRIORITY_MAX}"
 echo "budget_minutes=${BUDGET_MINUTES}"
 echo "dry_run=${DRY_RUN}"
+echo "reuse_done=${REUSE_DONE}"
+echo "reuse_max_age_min=${REUSE_MAX_AGE_MIN}"
 echo "stop_on_fail=${STOP_ON_FAIL}"
 echo "gate_combo=${GATE_COMBO} margin=${COMBO_GATE_MARGIN}"
 if [[ -n "${SCREEN_WALLCLOCK_SECONDS}" ]]; then
@@ -107,6 +112,35 @@ extract_proxy_line() {
   ' "${f}"
 }
 
+latest_lane_log() {
+  local lane="${1}"
+  ls -1t "${DONE_LOG_DIR}/${lane}_seed${SEED}_"*.log 2>/dev/null | head -n1 || true
+}
+
+log_is_complete() {
+  local f="${1}"
+  [[ -f "${f}" ]] || return 1
+  grep -qE "stopping_early: wallclock_cap|step:20000/20000" "${f}"
+}
+
+log_within_age_limit() {
+  local f="${1}"
+  if [[ "${REUSE_MAX_AGE_MIN}" == "0" ]]; then
+    return 0
+  fi
+  local now_s mtime_s age_min
+  now_s="$(date +%s)"
+  mtime_s="$(stat -c %Y "${f}" 2>/dev/null || true)"
+  if [[ -z "${mtime_s}" ]]; then
+    mtime_s="$(stat -f %m "${f}" 2>/dev/null || true)"
+  fi
+  if [[ -z "${mtime_s}" ]]; then
+    return 1
+  fi
+  age_min="$(( (now_s - mtime_s) / 60 ))"
+  (( age_min <= REUSE_MAX_AGE_MIN ))
+}
+
 for i in "${!ORDERED[@]}"; do
   lane="${ORDERED[$i]}"
   idx="$((i + 1))"
@@ -138,6 +172,35 @@ for i in "${!ORDERED[@]}"; do
       note="combo_gated_off_no_parent_improvement"
       append_row "${idx}" "${lane}" "SKIPPED" "" "" "" "" "" "" "" "${note}"
       echo "[${idx}/${#ORDERED[@]}] ${lane} -> SKIPPED (${note})"
+      continue
+    fi
+  fi
+
+  if [[ "${DRY_RUN}" != "1" && "${REUSE_DONE}" == "1" ]]; then
+    reused_log="$(latest_lane_log "${lane}")"
+    if [[ -n "${reused_log}" ]] && log_is_complete "${reused_log}" && log_within_age_limit "${reused_log}"; then
+      proxy_line="$(extract_proxy_line "${reused_log}")"
+      step=""
+      proxy_bpb=""
+      train_time_ms=""
+      if [[ -n "${proxy_line}" ]]; then
+        step="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*step:\([0-9][0-9]*\)\/20000.*/\1/p')"
+        proxy_bpb="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*val_bpb:\([0-9.][0-9.]*\).*/\1/p')"
+        train_time_ms="$(printf '%s\n' "${proxy_line}" | sed -n 's/.*train_time:\([0-9][0-9]*\)ms.*/\1/p')"
+      fi
+      if [[ -z "${control_bpb}" && "${lane}" == "control" && -n "${proxy_bpb}" ]]; then
+        control_bpb="${proxy_bpb}"
+      fi
+      if [[ -n "${proxy_bpb}" ]]; then
+        lane_proxy_bpb["${lane}"]="${proxy_bpb}"
+      fi
+      delta=""
+      if [[ -n "${control_bpb}" && -n "${proxy_bpb}" ]]; then
+        delta="$(float_delta "${proxy_bpb}" "${control_bpb}")"
+      fi
+      note="reused_completed_log"
+      append_row "${idx}" "${lane}" "REUSED" "${step}" "${proxy_bpb}" "${delta}" "${train_time_ms}" "0" "${reused_log}" "(reused)" "${note}"
+      echo "[${idx}/${#ORDERED[@]}] ${lane} -> REUSED (${reused_log})"
       continue
     fi
   fi
@@ -224,5 +287,5 @@ echo "Batch summary: ${SUMMARY}"
 echo "Sorted by proxy_val_bpb (lower is better):"
 {
   head -n 1 "${SUMMARY}"
-  tail -n +2 "${SUMMARY}" | awk -F'\t' '$3=="OK" && $5!=""' | sort -t$'\t' -k5,5n
+  tail -n +2 "${SUMMARY}" | awk -F'\t' '($3=="OK" || $3=="REUSED") && $5!=""' | sort -t$'\t' -k5,5n
 } | column -t -s $'\t' || cat "${SUMMARY}"

@@ -7,13 +7,15 @@ Legend: → PROMOTED · ✓ PASS · ✗ FAIL · ⏳ PENDING · — n/a
 
 ---
 
-## Status Sync (2026-04-08)
+## Status Sync (2026-04-09)
 
 - In-tree promotion baseline is BWX 9F full run: `1.13867894` int6_sw_bpb, `15,239,617` bytes (seed 444).
+- **Trapper Keeper 1 (8F+3C)** production gate: `1.13526829` int6_sw_bpb — beats leader by `-0.00341`. BUT artifact `17,948,983` bytes (over 16MB cap with zstd). Brotli recompress pending. Pod lacked FA3 (157ms/step, 3811 steps). With FA3+more steps, quality would likely improve further.
+- Layer relationship grid (5×4, 20 arms) mapped full flat×crawler surface. 8F+3C is quality peak. 3C matches 3-loop symmetry. 4C reverses. Ridge runs 8F+3C → 7F+4C → 7F+3C.
+- Corpus ablation validated: multi-crawler (-0.0119), 4-loop diff battery (-0.0046), anchor (-0.0024), QAT softclamp (-0.0047). Dead: INST_DIM=64, sigmoidste, C>loops symmetry.
+- Safe vs aggressive (3 vs 4 loops on 8F+3C): 3 loops wins on wallclock. 4th loop is waste.
 - Helix_ab_3 gate result is a hard fail: `+0.13954768` int6_sw_bpb vs control.
-- BW22 loop-depth gate promoted a quality candidate: `A3_loop5_battery` (`-0.00260817` vs control, with ~16.9% step-time cost).
-- Crawler_Katta gate and 1x medium sweep are staged but still pending filled metrics.
-- Ouroboros PR lineage exists externally (`#1283` / `#1308`) but corresponding record folders are not present in this `TEST_LAB` tree, so not used as in-tree baseline.
+- Ouroboros PR lineage exists externally (`#1283` / `#1308`) but not in-tree.
 
 ---
 
@@ -180,11 +182,76 @@ Next: BW9_Anchor — test ANCHOR_DIM=32 on top of BW8 (TAP) baseline.
 
 ---
 
+## Thread: Trapper Keeper 1 — Multi-Crawler (8F+3C)
+
+Hypothesis: Optimal crawler config is NUM_FLAT_LAYERS=8, NUM_CRAWLER_LAYERS=3 (C=loops symmetry).
+Based on 20-arm layer relationship grid mapping flat(5-9) × crawler(1-4) surface.
+
+| Date | Leg | Change vs BWX 9F | Environment | int6_sw_bpb | Size | Step_ms | Verdict |
+|------|-----|-------------------|-------------|-------------|------|---------|---------|
+| 2026-04-09 | Grid 8F+3C | FLAT=8, CRAWL=3 | 2xGPU, 1000 steps | 1.39529 | 14.58MB | 181 | grid best |
+| 2026-04-09 | Isolated 8F+3C | FLAT=8, CRAWL=3 | 4xGPU, 1000 steps | 1.34632 | 15.00MB | 574 | confirmed |
+| 2026-04-09 | **TK1 production** | **FLAT=8, CRAWL=3** | **8xH100, 600s, no FA3** | **1.13527** | **17.95MB** | **157** | **QUALITY PASS, SIZE FAIL** |
+
+Production quality beats BWX 9F by -0.00341. Artifact over 16MB with zstd. Brotli recompress pending.
+Pod lacked FA3 — with FA3, step time would be ~110ms → ~5,450 steps (vs 3,811). Quality would improve.
+
+---
+
+## Thread: Layer Relationship Grid
+
+5×4 grid: NUM_FLAT_LAYERS(5-9) × NUM_CRAWLER_LAYERS(1-4), 2xGPU, 1000 steps.
+
+Best int6_sw_bpb per row (delta vs 9F+1C control at 1.41256):
+
+| Config | int6_sw | delta | step_ms | size_MB |
+|--------|---------|-------|---------|---------|
+| 8F+3C | 1.39529 | -0.01727 | 181 | 14.58 |
+| 7F+4C | 1.39547 | -0.01709 | 206 | 15.01 |
+| 9F+3C | 1.39599 | -0.01657 | 198 | 15.33 |
+| 7F+3C | 1.39910 | -0.01346 | 176 | 13.79 |
+| 6F+4C | 1.40000 | -0.01256 | 207 | 13.90 |
+
+Key findings:
+- Quality ridge: 8F+3C → 7F+4C → 7F+3C → 6F+4C
+- 3C is optimal at 3 loops (C=loops symmetry). 4C reverses on 9F row.
+- Below 7F, quality drops off. Crawler can't compensate for too few flat layers.
+- Trading flat for crawler: free at 3C (8F→7F costs nothing), expensive at 1C.
+
+---
+
+## Thread: Corpus Ablations v1
+
+16-arm screen on BWX 9F base (4xGPU, 1500 steps).
+
+| Arm | Change | int6_sw delta | Verdict |
+|-----|--------|---------------|---------|
+| A07 2 crawler layers | NUM_CRAWL=2 | -0.0119 | BREAKTHROUGH |
+| A04 4 loops diff | LOOPS=4, ROPE=9,3,1,1 | -0.0046 | strong |
+| A03 4 loops naive | LOOPS=4, ROPE=9,1,1,1 | -0.0040 | strong |
+| A05 5 loops prog | LOOPS=5, ROPE=9,5,3,1,1 | -0.0037 | good but < A04 |
+| A02 Anchor | ANCHOR_DIM=32 | -0.0024 | positive |
+| A10 QAT softclamp | QAT_SURROGATE=softclamp | -0.0047 vs legacy | strong |
+| A01 TAP shared | TAP_DIM=32 | -0.0010 | mild |
+| A08 Crawler int8 | CRAWLER_QUANT_INT8=1 | -0.0006 | neutral (size tool) |
+| A06 INST_DIM=64 | INST_DIM=64 | +0.0011 | DEAD |
+| A11 QAT sigmoidste | QAT_SURROGATE=sigmoidste | +0.041 | DEAD (unstable) |
+
+---
+
+## Thread: Symmetry (C=LOOPS)
+
+Tested 4×4, 6×6, 8×8 on 8F base. Only 4×4 completed (806ms/step, impractical).
+3×3 confirmed optimal under wallclock pressure. Higher symmetry orders too slow.
+
+---
+
 ## All-Time Reference
 
 | Leg | BPB (seed 444) | Size | Mean BPB | Status |
 |-----|----------------|------|----------|--------|
 | **BWX 9F** | **1.13867894** | **15.24MB** | pending (seed 300) | **Current in-tree leader** |
+| TK1 (8F+3C) | 1.13526829 | 17.95MB (OVER) | — | quality pass, size fail — brotli pending |
 | Leg 3 | 1.18720 | 8.84MB | 1.18743 (3-seed) | Former champion |
 | BW4 | 1.18731 | 8.97MB | — | Superseded |
 | BW5 | 1.18672 | 8.61MB | 1.18715 | Former champion |

@@ -6,32 +6,40 @@ Parent: records/track_10min_16mb/2026-04-02_Bandit_Wagon_X_9F_8xH100/
 
 ## Production gate (8xH100, 600s, seed=444)
 
-Status: [ ] pending  [ ] pass  [ ] fail
+Status: [x] QUALITY PASS — ARTIFACT OVER CAP
 
 Command: `SEED=444 NPROC_PER_NODE=8 bash crawler/2026-04-09_Trapper_Keeper_1/run.sh`
 
 | Metric | Value |
 |--------|-------|
-| model_params | |
-| raw_bpb | |
-| int6_sw_bpb | |
-| step_avg_ms | |
-| steps | |
-| bytes_total | |
-| artifact_legal | |
+| model_params | 31,777,372 |
+| raw_bpb | 1.1522 |
+| int6_sw_bpb | 1.13526829 |
+| step_avg_ms | 157.47 |
+| steps | 3,811 |
+| bytes_total | 17,948,983 (OVER 16MB cap by 1.95MB) |
+| artifact_legal | NO |
 
-Gate: beat 1.13867894 int6_sw_bpb AND <= 16,000,000 bytes
+Gate: beat 1.13867894 int6_sw_bpb — YES (-0.00341)
+Gate: artifact <= 16,000,000 bytes — NO (17,948,983 with zstd)
 
-## Confirmation (8xH100, 600s, seed=300)
+Note: pod did not have FA3. Production step time with FA3 would be ~110ms → ~5,450 steps.
+This run got 3,811 steps at 157ms. Quality would likely be BETTER with FA3+more steps.
 
-Status: [ ] pending
+## Blocker: artifact size
 
-Command: `SEED=300 NPROC_PER_NODE=8 bash crawler/2026-04-09_Trapper_Keeper_1/run.sh`
+zstd compression: 17,948,983 bytes (1.95MB over)
+Brotli patch committed but not yet tested on this artifact.
+Expected brotli savings: 10-15% → ~15.3-16.1MB. Needs verification.
 
-| Metric | Value |
-|--------|-------|
-| int6_sw_bpb | |
-| bytes_total | |
+## Safe vs Aggressive gate (4xGPU, 300s wallclock)
+
+| Arm | Config | steps_in_300s | step_ms | val_bpb | Verdict |
+|-----|--------|---------------|---------|---------|---------|
+| A0 | 3 loops, ROPE=9,1,1 | 548 | 547ms | 3.2425 | WINNER |
+| A1 | 4 loops, ROPE=9,3,1,1 | 439 | 685ms | 3.3202 | LOSES both axes |
+
+3 loops confirmed optimal for 8F+3C. 4th loop is pure waste under wallclock pressure.
 
 ## Screen evidence
 
@@ -40,3 +48,4 @@ Command: `SEED=300 NPROC_PER_NODE=8 bash crawler/2026-04-09_Trapper_Keeper_1/run
 | Grid 2xGPU | 8F+3C | 1.39529 | 2xGPU, 1000 steps |
 | Isolated 4xGPU | 8F+3C | 1.34632 | 4xGPU, 1000 steps |
 | Grid control | 9F+1C | 1.41256 | 2xGPU, 1000 steps |
+| **Production 8xH100** | **8F+3C** | **1.13527** | **8xH100, 600s, 3811 steps (no FA3)** |

@@ -135,7 +135,7 @@ cp -f "${LOG_TS}" "${LOG}"
 # ----------------------------------------------------------------
 raw_bpb="$(grep -oP 'step:[0-9]+/[0-9]+ val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${LOG}" | tail -1 || true)"
 int6_sw_bpb="$(grep -oP 'final_int6_sliding_window_exact val_loss:[0-9.]+ val_bpb:\K[0-9.]+' "${LOG}" | tail -1 || true)"
-bytes_total="$(grep -oP 'Total submission size int6\+(?:zstd|zlib): \K[0-9]+' "${LOG}" | tail -1 || true)"
+bytes_total="$(grep -oP 'Total submission size int6\+(?:zstd|zlib|brotli): \K[0-9]+' "${LOG}" | tail -1 || true)"
 code_bytes="$(grep -oP 'Code size: \K[0-9]+' "${LOG}" | tail -1 || true)"
 step_ms="$(grep -oP 'step_avg:\K[0-9.]+' "${LOG}" | tail -1 || true)"
 model_params="$(grep -oP 'model_params:\K[0-9]+' "${LOG}" | tail -1 || true)"

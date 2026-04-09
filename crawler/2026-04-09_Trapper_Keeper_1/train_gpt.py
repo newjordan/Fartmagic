@@ -12,11 +12,22 @@ import uuid
 import zlib
 from pathlib import Path
 try:
-    import zstandard
-    _COMPRESSOR = "zstd"
+    import brotli as _brotli_module
 except ImportError:
-    import warnings
-    warnings.warn("zstandard not found — falling back to zlib. Artifact will be ~1.5MB larger! pip install zstandard")
+    _brotli_module = None
+try:
+    import zstandard
+except ImportError:
+    zstandard = None
+
+_requested_compressor = os.environ.get("COMPRESSOR", "brotli").strip().lower()
+if _requested_compressor == "brotli" and _brotli_module is not None:
+    _COMPRESSOR = "brotli"
+elif zstandard is not None:
+    _COMPRESSOR = "zstd"
+elif _brotli_module is not None:
+    _COMPRESSOR = "brotli"
+else:
     _COMPRESSOR = "zlib"
 import numpy as np
 import sentencepiece as spm
@@ -2389,7 +2400,12 @@ def main() -> None:
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
     quant_raw = quant_buf.getvalue()
-    quant_blob = zstandard.ZstdCompressor(level=22).compress(quant_raw) if _COMPRESSOR == "zstd" else zlib.compress(quant_raw, 9)
+    if _COMPRESSOR == "brotli":
+        quant_blob = _brotli_module.compress(quant_raw, quality=11)
+    elif _COMPRESSOR == "zstd":
+        quant_blob = zstandard.ZstdCompressor(level=22).compress(quant_raw)
+    else:
+        quant_blob = zlib.compress(quant_raw, 9)
     if master_process:
         with open("final_model.int6.ptz", "wb") as f:
             f.write(quant_blob)
@@ -2402,8 +2418,14 @@ def main() -> None:
         dist.barrier()
     with open("final_model.int6.ptz", "rb") as f:
         quant_blob_disk = f.read()
+    if _COMPRESSOR == "brotli":
+        quant_payload = _brotli_module.decompress(quant_blob_disk)
+    elif _COMPRESSOR == "zstd":
+        quant_payload = zstandard.ZstdDecompressor().decompress(quant_blob_disk)
+    else:
+        quant_payload = zlib.decompress(quant_blob_disk)
     quant_state = torch.load(
-        io.BytesIO(zstandard.ZstdDecompressor().decompress(quant_blob_disk) if _COMPRESSOR == "zstd" else zlib.decompress(quant_blob_disk)),
+        io.BytesIO(quant_payload),
         map_location="cpu",
     )
     deq_state = dequantize_mixed_int6(quant_state["w"], quant_state["m"], sd_cpu)

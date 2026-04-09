@@ -6,7 +6,7 @@ set -euo pipefail
 # A0: 8F+3C, 3 loops, ROPE=9,1,1        (safe — two vars vs leader)
 # A1: 8F+3C, 4 loops, ROPE=9,3,1,1      (aggressive — three vars vs leader)
 #
-# 4xGPU, 2000 steps. Same train_gpt.py for both (zero diff from BWX 9F).
+# 4xGPU, 600s wallclock (matches competition). Steps determined by throughput.
 #
 # Usage:
 #   SEED=444 NPROC_PER_NODE=4 bash crawler/2026-04-09_Trapper_Keeper_1/gate.sh
@@ -20,8 +20,8 @@ export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 
 SEED="${SEED:-444}"
 NPROC="${NPROC_PER_NODE:-4}"
-ITERATIONS="${ITERATIONS:-2000}"
-MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-3600}"
+ITERATIONS="${ITERATIONS:-99999}"
+MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-600}"
 TRAIN_BATCH_TOKENS="${TRAIN_BATCH_TOKENS:-393216}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-262144}"
 EVAL_STRIDE="${EVAL_STRIDE:-64}"

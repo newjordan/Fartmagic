@@ -210,6 +210,8 @@ class Hyperparameters:
     ttt_drift_enabled = bool(int(os.environ.get("TTT_DRIFT_ENABLED", "0")))
     ttt_drift_coeff = float(os.environ.get("TTT_DRIFT_COEFF", 0.50))
     ttt_drift_clamp = float(os.environ.get("TTT_DRIFT_CLAMP", 0.50))
+    ttt_update_clamp = float(os.environ.get("TTT_UPDATE_CLAMP", 1.0))
+    ttt_weight_clamp = float(os.environ.get("TTT_WEIGHT_CLAMP", 6.0))
 
 
 def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = ""):
@@ -1332,6 +1334,8 @@ class TTTChunkAdapter(nn.Module):
         drift_enabled: bool = False,
         drift_coeff: float = 0.50,
         drift_clamp: float = 0.50,
+        update_clamp: float = 1.0,
+        weight_clamp: float = 6.0,
     ):
         super().__init__()
         self.rank = max(8, int(rank))
@@ -1350,6 +1354,8 @@ class TTTChunkAdapter(nn.Module):
         self.drift_enabled = bool(drift_enabled)
         self.drift_coeff = max(0.0, float(drift_coeff))
         self.drift_clamp = max(0.0, float(drift_clamp))
+        self.update_clamp = max(0.0, float(update_clamp))
+        self.weight_clamp = max(0.0, float(weight_clamp))
         self.in_proj = CastedLinear(dim, self.rank, bias=False)
         self.out_proj = CastedLinear(self.rank, dim, bias=False)
         nn.init.normal_(self.in_proj.weight, std=0.02)
@@ -1365,8 +1371,12 @@ class TTTChunkAdapter(nn.Module):
         if not self.adaptive_enabled:
             return self.steps
         signal = float(self.adaptive_err_ema.detach().item())
+        if not math.isfinite(signal):
+            signal = self.adaptive_err_high
         if self.drift_enabled and zc.size(1) > 1:
             drift = (zc[:, 1:, :] - zc[:, :-1, :]).float().square().mean().item()
+            if not math.isfinite(drift):
+                drift = self.drift_clamp
             signal += self.drift_coeff * min(drift, self.drift_clamp)
         alpha = (signal - self.adaptive_err_low) / (self.adaptive_err_high - self.adaptive_err_low)
         alpha = min(1.0, max(0.0, alpha))
@@ -1391,16 +1401,24 @@ class TTTChunkAdapter(nn.Module):
                 with torch.no_grad():
                     pred0 = torch.einsum("bcr,brd->bcd", zc, W)
                     err0 = (pred0 - tc).float().square().mean()
-                    self.adaptive_err_ema.mul_(self.adaptive_ema_decay).add_(
-                        (1.0 - self.adaptive_ema_decay) * err0.to(self.adaptive_err_ema.dtype)
-                    )
+                    if torch.isfinite(err0):
+                        self.adaptive_err_ema.mul_(self.adaptive_ema_decay).add_(
+                            (1.0 - self.adaptive_ema_decay) * err0.to(self.adaptive_err_ema.dtype)
+                        )
             chunk_steps = self._step_budget(zc)
             for _ in range(chunk_steps):
                 pred = torch.einsum("bcr,brd->bcd", zc, W)
                 err = pred - tc
                 grad = torch.einsum("bcr,bcd->brd", zc, err) / max(end - start, 1)
-                W = W - eta * grad
+                grad = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
+                update = eta * grad
+                if self.update_clamp > 0:
+                    update = torch.clamp(update, -self.update_clamp, self.update_clamp)
+                W = torch.nan_to_num(W - update, nan=0.0, posinf=0.0, neginf=0.0)
+                if self.weight_clamp > 0:
+                    W = torch.clamp(W, -self.weight_clamp, self.weight_clamp)
             out[:, start:end, :] = torch.einsum("bcr,brd->bcd", zc, W)
+        out = torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
         return self.out_proj(out)
 
 
@@ -1446,6 +1464,8 @@ class Block(nn.Module):
         ttt_drift_enabled: bool = False,
         ttt_drift_coeff: float = 0.50,
         ttt_drift_clamp: float = 0.50,
+        ttt_update_clamp: float = 1.0,
+        ttt_weight_clamp: float = 6.0,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
@@ -1531,6 +1551,8 @@ class Block(nn.Module):
                 drift_enabled=ttt_drift_enabled,
                 drift_coeff=ttt_drift_coeff,
                 drift_clamp=ttt_drift_clamp,
+                update_clamp=ttt_update_clamp,
+                weight_clamp=ttt_weight_clamp,
             )
             self.ttt_scale = nn.Parameter(torch.full((dim,), ttt_scale_init, dtype=torch.float32))
         else:
@@ -1679,6 +1701,8 @@ class GPT(nn.Module):
         ttt_drift_enabled: bool = False,
         ttt_drift_coeff: float = 0.50,
         ttt_drift_clamp: float = 0.50,
+        ttt_update_clamp: float = 1.0,
+        ttt_weight_clamp: float = 6.0,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)  # kv_dim for value projection
@@ -1755,6 +1779,8 @@ class GPT(nn.Module):
                     ttt_drift_enabled=ttt_drift_enabled,
                     ttt_drift_coeff=ttt_drift_coeff,
                     ttt_drift_clamp=ttt_drift_clamp,
+                    ttt_update_clamp=ttt_update_clamp,
+                    ttt_weight_clamp=ttt_weight_clamp,
                 )
             )
         self.blocks = nn.ModuleList(blocks)
@@ -2490,6 +2516,8 @@ def main() -> None:
         ttt_drift_enabled=args.ttt_drift_enabled,
         ttt_drift_coeff=args.ttt_drift_coeff,
         ttt_drift_clamp=args.ttt_drift_clamp,
+        ttt_update_clamp=args.ttt_update_clamp,
+        ttt_weight_clamp=args.ttt_weight_clamp,
     ).to(device).bfloat16()
     # Banks stay FP32 (like CastedLinear weights), cast to BF16 in forward
     base_model.qo_bank.data = base_model.qo_bank.data.float()
@@ -2710,7 +2738,8 @@ def main() -> None:
             f"adaptive={int(args.ttt_adaptive_enabled)} "
             f"min_steps={args.ttt_adaptive_min_steps} max_steps={args.ttt_adaptive_max_steps} "
             f"err_low={args.ttt_adaptive_err_low:.4f} err_high={args.ttt_adaptive_err_high:.4f} "
-            f"drift={int(args.ttt_drift_enabled)} drift_coeff={args.ttt_drift_coeff:.3f}"
+            f"drift={int(args.ttt_drift_enabled)} drift_coeff={args.ttt_drift_coeff:.3f} "
+            f"update_clamp={args.ttt_update_clamp:.3f} weight_clamp={args.ttt_weight_clamp:.3f}"
         )
     else:
         log0("longworm_ttt:enabled=0")
@@ -3047,6 +3076,8 @@ def main() -> None:
         ttt_drift_enabled=args.ttt_drift_enabled,
         ttt_drift_coeff=args.ttt_drift_coeff,
         ttt_drift_clamp=args.ttt_drift_clamp,
+        ttt_update_clamp=args.ttt_update_clamp,
+        ttt_weight_clamp=args.ttt_weight_clamp,
     ).to(device).bfloat16()
     eval_model.qo_bank.data = eval_model.qo_bank.data.float()
     eval_model.kv_bank.data = eval_model.kv_bank.data.float()

@@ -168,20 +168,14 @@ BASE_ENV=(
 # ----------------------------------------------------------------
 declare -A ARMS_CRAWLERS=(
     [A1]=4
-    [A2]=6
-    [A3]=8
 )
 
 declare -A ARMS_ROPE=(
     [A1]="9,1,1,1"
-    [A2]="9,1,1,1,1,1"
-    [A3]="9,1,1,1,1,1,1,1"
 )
 
 declare -A ARMS_DESC=(
     [A1]="8F+4C, 4 loops (symmetry order 4)"
-    [A2]="8F+6C, 6 loops (symmetry order 6)"
-    [A3]="8F+8C, 8 loops (symmetry order 8)"
 )
 
 echo -e "arm\tdesc\tcrawlers\tloops\tmodel_params\traw_bpb\tint6_sw_bpb\tstep_ms\tbytes\tlog" > "${SUMMARY}"
@@ -189,11 +183,11 @@ echo -e "arm\tdesc\tcrawlers\tloops\tmodel_params\traw_bpb\tint6_sw_bpb\tstep_ms
 echo ""
 echo "========================================"
 echo "  crawler_symmetry_ablation"
-echo "  C = CRAWLER_LOOPS hypothesis (control = grid 8F+3C)"
+echo "  C = CRAWLER_LOOPS: 4x4 only (control = grid 8F+3C)"
 echo "  4xGPU, ${ITERATIONS} steps, seed=${SEED}"
 echo "========================================"
 
-for ARM in A1 A2 A3; do
+for ARM in A1; do
     N="${ARMS_CRAWLERS[$ARM]}"
     ROPE="${ARMS_ROPE[$ARM]}"
     DESC="${ARMS_DESC[$ARM]}"

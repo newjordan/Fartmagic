@@ -188,6 +188,28 @@ class Hyperparameters:
     longctx_tap_logit_init = float(os.environ.get("LONGCTX_TAP_LOGIT_INIT", -2.0))
     longctx_tap_scale_init = float(os.environ.get("LONGCTX_TAP_SCALE_INIT", 0.05))
     longctx_prefix_logit_init = float(os.environ.get("LONGCTX_PREFIX_LOGIT_INIT", -2.0))
+    ssm_enabled = bool(int(os.environ.get("SSM_ENABLED", "0")))
+    ssm_last_n = int(os.environ.get("SSM_LAST_N", 0))
+    ssm_state_dim = int(os.environ.get("SSM_STATE_DIM", 96))
+    ssm_decay_init = float(os.environ.get("SSM_DECAY_INIT", 0.92))
+    ssm_scale_init = float(os.environ.get("SSM_SCALE_INIT", 0.07))
+    ttt_enabled = bool(int(os.environ.get("TTT_ENABLED", "0")))
+    ttt_last_n = int(os.environ.get("TTT_LAST_N", 0))
+    ttt_rank = int(os.environ.get("TTT_RANK", 64))
+    ttt_chunk_size = int(os.environ.get("TTT_CHUNK_SIZE", 64))
+    ttt_steps = int(os.environ.get("TTT_STEPS", 1))
+    ttt_lr_init = float(os.environ.get("TTT_LR_INIT", 0.12))
+    ttt_scale_init = float(os.environ.get("TTT_SCALE_INIT", 0.04))
+    ttt_detach_target = bool(int(os.environ.get("TTT_DETACH_TARGET", "1")))
+    ttt_adaptive_enabled = bool(int(os.environ.get("TTT_ADAPTIVE_ENABLED", "0")))
+    ttt_adaptive_min_steps = int(os.environ.get("TTT_ADAPTIVE_MIN_STEPS", 1))
+    ttt_adaptive_max_steps = int(os.environ.get("TTT_ADAPTIVE_MAX_STEPS", 0))
+    ttt_adaptive_err_low = float(os.environ.get("TTT_ADAPTIVE_ERR_LOW", 0.015))
+    ttt_adaptive_err_high = float(os.environ.get("TTT_ADAPTIVE_ERR_HIGH", 0.060))
+    ttt_adaptive_ema_decay = float(os.environ.get("TTT_ADAPTIVE_EMA_DECAY", 0.95))
+    ttt_drift_enabled = bool(int(os.environ.get("TTT_DRIFT_ENABLED", "0")))
+    ttt_drift_coeff = float(os.environ.get("TTT_DRIFT_COEFF", 0.50))
+    ttt_drift_clamp = float(os.environ.get("TTT_DRIFT_CLAMP", 0.50))
 
 
 def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = ""):
@@ -611,6 +633,8 @@ def _classify_param(name: str) -> str:
         return "mlp"
     if ".mlp." in name:
         return "mlp"
+    if ".ssm." in name or ".ttt_adapter." in name:
+        return "aux"
     if ".attn." in name or (".proj." in name and ".mlp." not in name):
         return "attn"
     return "other"
@@ -1258,6 +1282,128 @@ class MLP(nn.Module):
         x = leaky_relu_sq(x, kernel_mode=self.kernel_mode)
         return F.linear(x, down_w.to(x.dtype))
 
+
+class DiagonalSSM(nn.Module):
+    """Simple diagonal state-space mixer with per-dim decay."""
+
+    def __init__(self, dim: int, state_dim: int, decay_init: float = 0.92):
+        super().__init__()
+        self.in_proj = CastedLinear(dim, state_dim, bias=False)
+        self.out_proj = CastedLinear(state_dim, dim, bias=False)
+        nn.init.normal_(self.in_proj.weight, std=0.02)
+        nn.init.zeros_(self.out_proj.weight)
+        decay_init = min(max(decay_init, 1e-4), 1.0 - 1e-4)
+        decay_logit = math.log(decay_init / (1.0 - decay_init))
+        self.decay_logit = nn.Parameter(torch.full((state_dim,), decay_logit, dtype=torch.float32))
+        self.input_scale = nn.Parameter(torch.ones(state_dim, dtype=torch.float32))
+
+    def forward(self, x: Tensor) -> Tensor:
+        # x: [B, T, D] -> y: [B, T, D]
+        u = self.in_proj(x)
+        bsz, seqlen, sdim = u.shape
+        decay = torch.sigmoid(self.decay_logit).to(dtype=u.dtype)[None, :]
+        inp_scale = self.input_scale.to(dtype=u.dtype)[None, :]
+        state = torch.zeros(bsz, sdim, device=u.device, dtype=u.dtype)
+        states: list[Tensor] = []
+        for t in range(seqlen):
+            state = decay * state + (1.0 - decay) * (u[:, t, :] * inp_scale)
+            states.append(state)
+        s = torch.stack(states, dim=1)
+        return self.out_proj(s)
+
+
+class TTTChunkAdapter(nn.Module):
+    """End-to-end differentiable chunked test-time training adapter."""
+
+    def __init__(
+        self,
+        dim: int,
+        rank: int = 64,
+        chunk_size: int = 64,
+        steps: int = 1,
+        lr_init: float = 0.12,
+        detach_target: bool = True,
+        adaptive_enabled: bool = False,
+        adaptive_min_steps: int = 1,
+        adaptive_max_steps: int = 0,
+        adaptive_err_low: float = 0.015,
+        adaptive_err_high: float = 0.060,
+        adaptive_ema_decay: float = 0.95,
+        drift_enabled: bool = False,
+        drift_coeff: float = 0.50,
+        drift_clamp: float = 0.50,
+    ):
+        super().__init__()
+        self.rank = max(8, int(rank))
+        self.chunk_size = max(8, int(chunk_size))
+        self.steps = max(1, int(steps))
+        self.detach_target = detach_target
+        self.adaptive_enabled = bool(adaptive_enabled)
+        self.adaptive_min_steps = max(1, int(adaptive_min_steps))
+        adaptive_max_steps = int(adaptive_max_steps)
+        if adaptive_max_steps <= 0:
+            adaptive_max_steps = self.steps
+        self.adaptive_max_steps = max(self.adaptive_min_steps, adaptive_max_steps)
+        self.adaptive_err_low = float(adaptive_err_low)
+        self.adaptive_err_high = max(float(adaptive_err_high), self.adaptive_err_low + 1e-6)
+        self.adaptive_ema_decay = min(max(float(adaptive_ema_decay), 0.0), 0.999)
+        self.drift_enabled = bool(drift_enabled)
+        self.drift_coeff = max(0.0, float(drift_coeff))
+        self.drift_clamp = max(0.0, float(drift_clamp))
+        self.in_proj = CastedLinear(dim, self.rank, bias=False)
+        self.out_proj = CastedLinear(self.rank, dim, bias=False)
+        nn.init.normal_(self.in_proj.weight, std=0.02)
+        nn.init.zeros_(self.out_proj.weight)
+        self.lr_logit = nn.Parameter(torch.tensor(math.log(max(lr_init, 1e-5)), dtype=torch.float32))
+        self.register_buffer(
+            "adaptive_err_ema",
+            torch.tensor(self.adaptive_err_high, dtype=torch.float32),
+            persistent=True,
+        )
+
+    def _step_budget(self, zc: Tensor) -> int:
+        if not self.adaptive_enabled:
+            return self.steps
+        signal = float(self.adaptive_err_ema.detach().item())
+        if self.drift_enabled and zc.size(1) > 1:
+            drift = (zc[:, 1:, :] - zc[:, :-1, :]).float().square().mean().item()
+            signal += self.drift_coeff * min(drift, self.drift_clamp)
+        alpha = (signal - self.adaptive_err_low) / (self.adaptive_err_high - self.adaptive_err_low)
+        alpha = min(1.0, max(0.0, alpha))
+        return int(round(self.adaptive_min_steps + alpha * (self.adaptive_max_steps - self.adaptive_min_steps)))
+
+    def forward(self, x: Tensor) -> Tensor:
+        # x: [B, T, D], online-adapt fast weight W per sample via chunked gradient steps.
+        z = self.in_proj(x)
+        bsz, seqlen, rank = z.shape
+        W = torch.zeros(bsz, rank, rank, device=z.device, dtype=z.dtype)
+        target = torch.roll(z, shifts=-1, dims=1)
+        target[:, -1, :] = z[:, -1, :]
+        if self.detach_target:
+            target = target.detach()
+        out = torch.empty_like(z)
+        eta = torch.exp(self.lr_logit).to(dtype=z.dtype)
+        for start in range(0, seqlen, self.chunk_size):
+            end = min(start + self.chunk_size, seqlen)
+            zc = z[:, start:end, :]
+            tc = target[:, start:end, :]
+            if self.adaptive_enabled:
+                with torch.no_grad():
+                    pred0 = torch.einsum("bcr,brd->bcd", zc, W)
+                    err0 = (pred0 - tc).float().square().mean()
+                    self.adaptive_err_ema.mul_(self.adaptive_ema_decay).add_(
+                        (1.0 - self.adaptive_ema_decay) * err0.to(self.adaptive_err_ema.dtype)
+                    )
+            chunk_steps = self._step_budget(zc)
+            for _ in range(chunk_steps):
+                pred = torch.einsum("bcr,brd->bcd", zc, W)
+                err = pred - tc
+                grad = torch.einsum("bcr,bcd->brd", zc, err) / max(end - start, 1)
+                W = W - eta * grad
+            out[:, start:end, :] = torch.einsum("bcr,brd->bcd", zc, W)
+        return self.out_proj(out)
+
+
 class Block(nn.Module):
     def __init__(
         self,
@@ -1280,6 +1426,26 @@ class Block(nn.Module):
         longctx_tap_logit_init: float = -2.0,
         longctx_tap_scale_init: float = 0.05,
         longctx_prefix_logit_init: float = -2.0,
+        ssm_enabled: bool = False,
+        ssm_state_dim: int = 96,
+        ssm_decay_init: float = 0.92,
+        ssm_scale_init: float = 0.07,
+        ttt_enabled: bool = False,
+        ttt_rank: int = 64,
+        ttt_chunk_size: int = 64,
+        ttt_steps: int = 1,
+        ttt_lr_init: float = 0.12,
+        ttt_scale_init: float = 0.04,
+        ttt_detach_target: bool = True,
+        ttt_adaptive_enabled: bool = False,
+        ttt_adaptive_min_steps: int = 1,
+        ttt_adaptive_max_steps: int = 0,
+        ttt_adaptive_err_low: float = 0.015,
+        ttt_adaptive_err_high: float = 0.060,
+        ttt_adaptive_ema_decay: float = 0.95,
+        ttt_drift_enabled: bool = False,
+        ttt_drift_coeff: float = 0.50,
+        ttt_drift_clamp: float = 0.50,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
@@ -1339,6 +1505,38 @@ class Block(nn.Module):
             self.longctx_tap_scale = nn.Parameter(torch.full((dim,), longctx_tap_scale_init, dtype=torch.float32))
         else:
             self.register_parameter("longctx_tap_scale", None)
+        if ssm_enabled:
+            self.ssm_norm = RMSNorm()
+            self.ssm = DiagonalSSM(dim, state_dim=ssm_state_dim, decay_init=ssm_decay_init)
+            self.ssm_scale = nn.Parameter(torch.full((dim,), ssm_scale_init, dtype=torch.float32))
+        else:
+            self.ssm_norm = None
+            self.ssm = None
+            self.register_parameter("ssm_scale", None)
+        if ttt_enabled:
+            self.ttt_norm = RMSNorm()
+            self.ttt_adapter = TTTChunkAdapter(
+                dim=dim,
+                rank=ttt_rank,
+                chunk_size=ttt_chunk_size,
+                steps=ttt_steps,
+                lr_init=ttt_lr_init,
+                detach_target=ttt_detach_target,
+                adaptive_enabled=ttt_adaptive_enabled,
+                adaptive_min_steps=ttt_adaptive_min_steps,
+                adaptive_max_steps=ttt_adaptive_max_steps,
+                adaptive_err_low=ttt_adaptive_err_low,
+                adaptive_err_high=ttt_adaptive_err_high,
+                adaptive_ema_decay=ttt_adaptive_ema_decay,
+                drift_enabled=ttt_drift_enabled,
+                drift_coeff=ttt_drift_coeff,
+                drift_clamp=ttt_drift_clamp,
+            )
+            self.ttt_scale = nn.Parameter(torch.full((dim,), ttt_scale_init, dtype=torch.float32))
+        else:
+            self.ttt_norm = None
+            self.ttt_adapter = None
+            self.register_parameter("ttt_scale", None)
     def _apply_long_context(self, x_state: Tensor) -> Tensor:
         if not self.longctx_taps_enabled or self.longctx_tap_scale is None:
             return x_state
@@ -1380,6 +1578,12 @@ class Block(nn.Module):
         attn_out, raw_v = self.attn(self.attn_norm(x_state) * self.ln_scale_factor, q_w, k_w, v_w, out_w, v_embed=v_embed, v0=v0)
         x_out = x_state + self.attn_scale.to(dtype=x_state.dtype)[None, None, :] * attn_out
         x_out = x_out + self.mlp_scale.to(dtype=x_out.dtype)[None, None, :] * self.mlp(self.mlp_norm(x_out) * self.ln_scale_factor, up_w, down_w)
+        if self.ssm is not None and self.ssm_norm is not None and self.ssm_scale is not None:
+            ssm_out = self.ssm(self.ssm_norm(x_out) * self.ln_scale_factor)
+            x_out = x_out + self.ssm_scale.to(dtype=x_out.dtype)[None, None, :] * ssm_out
+        if self.ttt_adapter is not None and self.ttt_norm is not None and self.ttt_scale is not None:
+            ttt_out = self.ttt_adapter(self.ttt_norm(x_out) * self.ln_scale_factor)
+            x_out = x_out + self.ttt_scale.to(dtype=x_out.dtype)[None, None, :] * ttt_out
         if self.dtg_gate is not None:
             gate = torch.sigmoid(self.dtg_gate(x_state.detach()))
             x_out = x_state + gate * (x_out - x_state)
@@ -1453,6 +1657,28 @@ class GPT(nn.Module):
         longctx_tap_logit_init: float = -2.0,
         longctx_tap_scale_init: float = 0.05,
         longctx_prefix_logit_init: float = -2.0,
+        ssm_enabled: bool = False,
+        ssm_last_n: int = 0,
+        ssm_state_dim: int = 96,
+        ssm_decay_init: float = 0.92,
+        ssm_scale_init: float = 0.07,
+        ttt_enabled: bool = False,
+        ttt_last_n: int = 0,
+        ttt_rank: int = 64,
+        ttt_chunk_size: int = 64,
+        ttt_steps: int = 1,
+        ttt_lr_init: float = 0.12,
+        ttt_scale_init: float = 0.04,
+        ttt_detach_target: bool = True,
+        ttt_adaptive_enabled: bool = False,
+        ttt_adaptive_min_steps: int = 1,
+        ttt_adaptive_max_steps: int = 0,
+        ttt_adaptive_err_low: float = 0.015,
+        ttt_adaptive_err_high: float = 0.060,
+        ttt_adaptive_ema_decay: float = 0.95,
+        ttt_drift_enabled: bool = False,
+        ttt_drift_coeff: float = 0.50,
+        ttt_drift_clamp: float = 0.50,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)  # kv_dim for value projection
@@ -1480,8 +1706,15 @@ class GPT(nn.Module):
         self.kv_bank = nn.Parameter(torch.empty(2 * num_layers, kv_dim, model_dim))
         self.mlp_up_bank = nn.Parameter(torch.empty(num_layers, mlp_dim, model_dim))
         self.mlp_down_bank = nn.Parameter(torch.empty(num_layers, model_dim, mlp_dim))
-        self.blocks = nn.ModuleList(
-            [
+        ssm_last_n = int(ssm_last_n)
+        ttt_last_n = int(ttt_last_n)
+        ssm_split = max(0, num_layers - max(0, ssm_last_n))
+        ttt_split = max(0, num_layers - max(0, ttt_last_n))
+        blocks: list[Block] = []
+        for i in range(num_layers):
+            use_ssm = bool(ssm_enabled and (ssm_last_n <= 0 or i >= ssm_split))
+            use_ttt = bool(ttt_enabled and (ttt_last_n <= 0 or i >= ttt_split))
+            blocks.append(
                 Block(
                     model_dim,
                     num_heads,
@@ -1502,10 +1735,29 @@ class GPT(nn.Module):
                     longctx_tap_logit_init=longctx_tap_logit_init,
                     longctx_tap_scale_init=longctx_tap_scale_init,
                     longctx_prefix_logit_init=longctx_prefix_logit_init,
+                    ssm_enabled=use_ssm,
+                    ssm_state_dim=ssm_state_dim,
+                    ssm_decay_init=ssm_decay_init,
+                    ssm_scale_init=ssm_scale_init,
+                    ttt_enabled=use_ttt,
+                    ttt_rank=ttt_rank,
+                    ttt_chunk_size=ttt_chunk_size,
+                    ttt_steps=ttt_steps,
+                    ttt_lr_init=ttt_lr_init,
+                    ttt_scale_init=ttt_scale_init,
+                    ttt_detach_target=ttt_detach_target,
+                    ttt_adaptive_enabled=ttt_adaptive_enabled,
+                    ttt_adaptive_min_steps=ttt_adaptive_min_steps,
+                    ttt_adaptive_max_steps=ttt_adaptive_max_steps,
+                    ttt_adaptive_err_low=ttt_adaptive_err_low,
+                    ttt_adaptive_err_high=ttt_adaptive_err_high,
+                    ttt_adaptive_ema_decay=ttt_adaptive_ema_decay,
+                    ttt_drift_enabled=ttt_drift_enabled,
+                    ttt_drift_coeff=ttt_drift_coeff,
+                    ttt_drift_clamp=ttt_drift_clamp,
                 )
-                for i in range(num_layers)
-            ]
-        )
+            )
+        self.blocks = nn.ModuleList(blocks)
         mode = transition_integrator.strip().lower()
         if mode in ("hybrid_k2_k4", "k2_4_hybrid", "hybrid"):
             last_n = max(0, min(num_layers, int(transition_hybrid_last_n)))
@@ -2216,6 +2468,28 @@ def main() -> None:
         longctx_tap_logit_init=args.longctx_tap_logit_init,
         longctx_tap_scale_init=args.longctx_tap_scale_init,
         longctx_prefix_logit_init=args.longctx_prefix_logit_init,
+        ssm_enabled=args.ssm_enabled,
+        ssm_last_n=args.ssm_last_n,
+        ssm_state_dim=args.ssm_state_dim,
+        ssm_decay_init=args.ssm_decay_init,
+        ssm_scale_init=args.ssm_scale_init,
+        ttt_enabled=args.ttt_enabled,
+        ttt_last_n=args.ttt_last_n,
+        ttt_rank=args.ttt_rank,
+        ttt_chunk_size=args.ttt_chunk_size,
+        ttt_steps=args.ttt_steps,
+        ttt_lr_init=args.ttt_lr_init,
+        ttt_scale_init=args.ttt_scale_init,
+        ttt_detach_target=args.ttt_detach_target,
+        ttt_adaptive_enabled=args.ttt_adaptive_enabled,
+        ttt_adaptive_min_steps=args.ttt_adaptive_min_steps,
+        ttt_adaptive_max_steps=args.ttt_adaptive_max_steps,
+        ttt_adaptive_err_low=args.ttt_adaptive_err_low,
+        ttt_adaptive_err_high=args.ttt_adaptive_err_high,
+        ttt_adaptive_ema_decay=args.ttt_adaptive_ema_decay,
+        ttt_drift_enabled=args.ttt_drift_enabled,
+        ttt_drift_coeff=args.ttt_drift_coeff,
+        ttt_drift_clamp=args.ttt_drift_clamp,
     ).to(device).bfloat16()
     # Banks stay FP32 (like CastedLinear weights), cast to BF16 in forward
     base_model.qo_bank.data = base_model.qo_bank.data.float()
@@ -2324,6 +2598,11 @@ def main() -> None:
         for name, p in block_named_params
         if p.ndim < 2 or any(pattern in name for pattern in CONTROL_TENSOR_NAME_PATTERNS)
     ]
+    aux_matrix_params = [
+        p
+        for name, p in block_named_params
+        if p.ndim >= 2 and not any(pattern in name for pattern in CONTROL_TENSOR_NAME_PATTERNS)
+    ]
     if base_model.skip_weights.numel() > 0:
         scalar_params.append(base_model.skip_weights)
     scalar_params.append(base_model.smear.gate)
@@ -2358,8 +2637,11 @@ def main() -> None:
     )
     for group in optimizer_muon.param_groups:
         group["base_lr"] = args.matrix_lr
+    scalar_groups = [{"params": scalar_params, "lr": args.scalar_lr, "base_lr": args.scalar_lr}]
+    if aux_matrix_params:
+        scalar_groups.append({"params": aux_matrix_params, "lr": args.matrix_lr, "base_lr": args.matrix_lr})
     optimizer_scalar = torch.optim.AdamW(
-        [{"params": scalar_params, "lr": args.scalar_lr, "base_lr": args.scalar_lr}],
+        scalar_groups,
         betas=(args.beta1, args.beta2),
         eps=args.adam_eps,
         weight_decay=args.adam_wd,
@@ -2370,6 +2652,7 @@ def main() -> None:
     for pg in optimizer_tok.param_groups[1:]:
         replicated_params.extend(pg["params"])
     replicated_params.extend(scalar_params)
+    replicated_params.extend(aux_matrix_params)
 
     optimizer_head = None
     if base_model.lm_head is not None:
@@ -2408,13 +2691,37 @@ def main() -> None:
         )
     else:
         log0("longctx_taps:enabled=0")
+    ssm_blocks = [i for i, b in enumerate(base_model.blocks) if b.ssm is not None]
+    if ssm_blocks:
+        log0(
+            "longworm_ssm:"
+            f"enabled=1 blocks={ssm_blocks} state_dim={args.ssm_state_dim} "
+            f"decay_init={args.ssm_decay_init:.4f} scale_init={args.ssm_scale_init:.4f}"
+        )
+    else:
+        log0("longworm_ssm:enabled=0")
+    ttt_blocks = [i for i, b in enumerate(base_model.blocks) if b.ttt_adapter is not None]
+    if ttt_blocks:
+        log0(
+            "longworm_ttt:"
+            f"enabled=1 blocks={ttt_blocks} rank={args.ttt_rank} chunk={args.ttt_chunk_size} "
+            f"steps={args.ttt_steps} lr_init={args.ttt_lr_init:.4f} "
+            f"detach_target={int(args.ttt_detach_target)} "
+            f"adaptive={int(args.ttt_adaptive_enabled)} "
+            f"min_steps={args.ttt_adaptive_min_steps} max_steps={args.ttt_adaptive_max_steps} "
+            f"err_low={args.ttt_adaptive_err_low:.4f} err_high={args.ttt_adaptive_err_high:.4f} "
+            f"drift={int(args.ttt_drift_enabled)} drift_coeff={args.ttt_drift_coeff:.3f}"
+        )
+    else:
+        log0("longworm_ttt:enabled=0")
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
     log0(
         f"tie_embeddings:{args.tie_embeddings} embed_lr:{token_lr} "
         f"head_lr:{args.head_lr if base_model.lm_head is not None else 0.0} "
-        f"matrix_lr:{args.matrix_lr} scalar_lr:{args.scalar_lr}"
+        f"matrix_lr:{args.matrix_lr} scalar_lr:{args.scalar_lr} "
+        f"aux_matrix_params:{len(aux_matrix_params)}"
     )
     log0(
         f"train_batch_tokens:{args.train_batch_tokens} train_seq_len:{args.train_seq_len} "
@@ -2718,6 +3025,28 @@ def main() -> None:
         longctx_tap_logit_init=args.longctx_tap_logit_init,
         longctx_tap_scale_init=args.longctx_tap_scale_init,
         longctx_prefix_logit_init=args.longctx_prefix_logit_init,
+        ssm_enabled=args.ssm_enabled,
+        ssm_last_n=args.ssm_last_n,
+        ssm_state_dim=args.ssm_state_dim,
+        ssm_decay_init=args.ssm_decay_init,
+        ssm_scale_init=args.ssm_scale_init,
+        ttt_enabled=args.ttt_enabled,
+        ttt_last_n=args.ttt_last_n,
+        ttt_rank=args.ttt_rank,
+        ttt_chunk_size=args.ttt_chunk_size,
+        ttt_steps=args.ttt_steps,
+        ttt_lr_init=args.ttt_lr_init,
+        ttt_scale_init=args.ttt_scale_init,
+        ttt_detach_target=args.ttt_detach_target,
+        ttt_adaptive_enabled=args.ttt_adaptive_enabled,
+        ttt_adaptive_min_steps=args.ttt_adaptive_min_steps,
+        ttt_adaptive_max_steps=args.ttt_adaptive_max_steps,
+        ttt_adaptive_err_low=args.ttt_adaptive_err_low,
+        ttt_adaptive_err_high=args.ttt_adaptive_err_high,
+        ttt_adaptive_ema_decay=args.ttt_adaptive_ema_decay,
+        ttt_drift_enabled=args.ttt_drift_enabled,
+        ttt_drift_coeff=args.ttt_drift_coeff,
+        ttt_drift_clamp=args.ttt_drift_clamp,
     ).to(device).bfloat16()
     eval_model.qo_bank.data = eval_model.qo_bank.data.float()
     eval_model.kv_bank.data = eval_model.kv_bank.data.float()

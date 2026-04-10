@@ -59,7 +59,7 @@ except Exception:
         else:
             print(f"  WARNING: flash-attn v{v} detected (want v3)")
     except Exception:
-        print("  WARNING: flash-attn not importable — falling back to SDPA (slower)")
+        print("  WARNING: FA3 not available — train_gpt.py will use SDPA fallback")
 PY
 
 echo "[preflight] checking dataset + tokenizer..."

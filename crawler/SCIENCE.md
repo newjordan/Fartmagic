@@ -257,3 +257,6 @@ Tested 4×4, 6×6, 8×8 on 8F base. Only 4×4 completed (806ms/step, impractical
 | BW5 | 1.18672 | 8.61MB | 1.18715 | Former champion |
 | BW8_Tap | pending full run | ~9.5MB est | — | working baseline (TAP baked in) |
 | BW22 A3 gate arm | 1.24091238 (2k gate) | gate-only | — | promoted quality candidate for 4h path |
+
+<!-- NEW LEG STUB -->
+| 2026-04-09 | BW_9F2C | (fill in) | ⏳ | ⏳ | — | — | ⏳ PENDING | |

@@ -59,7 +59,7 @@ except Exception:
         else:
             print(f"  WARNING: flash-attn v{v} detected (want v3)")
     except Exception:
-        raise SystemExit("  ERROR: flash-attn not importable")
+        print("  WARNING: flash-attn not importable — falling back to SDPA (slower)")
 PY
 
 echo "[preflight] checking dataset + tokenizer..."

@@ -1,0 +1,4 @@
+# One path or prefix per line. Prefixes end with /
+# scripts/agent_guard.sh check will fail any changed file not listed here.
+
+legs/2026-04-10_qk_gain_525/

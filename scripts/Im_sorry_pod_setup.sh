@@ -18,6 +18,9 @@ REPO_URL="https://github.com/newjordan/parameter-golf.git"
 BRANCH="${BRANCH:-TEST_LAB}"
 TRAIN_SHARDS="${TRAIN_SHARDS:-80}"
 DATASET_VARIANT="${DATASET_VARIANT:-sp1024}"
+if [[ -x /venv/main/bin/python3 ]]; then
+    export PATH="/venv/main/bin:${PATH}"
+fi
 # Auto-detect repo root from script location; fall back for curl-pipe scenario
 _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || true
 _CANDIDATE="$(cd -- "${_SCRIPT_DIR}/.." && pwd 2>/dev/null)" || true

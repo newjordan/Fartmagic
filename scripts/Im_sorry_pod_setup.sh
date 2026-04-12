@@ -266,6 +266,22 @@ sync_fa3_dir_into_site() {
     return 1
 }
 
+link_flash_attn_config() {
+    python3 - <<'PYEOF' >/dev/null 2>&1 || true
+import inspect
+import os
+import site
+
+import flash_attn_interface
+
+cfg_src = os.path.join(os.path.dirname(inspect.getfile(flash_attn_interface)), "flash_attn_config.py")
+sp = site.getsitepackages()[0]
+cfg_dst = os.path.join(sp, "flash_attn_config.py")
+if os.path.isfile(cfg_src) and not os.path.exists(cfg_dst):
+    os.symlink(cfg_src, cfg_dst)
+PYEOF
+}
+
 find_system_fa3_dir() {
     for py in $(which -a python3 2>/dev/null | awk '!seen[$0]++') /opt/conda/bin/python3 /usr/bin/python3; do
         [ -x "${py}" ] || continue
@@ -295,6 +311,75 @@ importlib.import_module("flash_attn_3._C")
 PYEOF
 }
 
+describe_fa3_failure() {
+    python3 - <<'PYEOF' 2>/dev/null || true
+import importlib
+
+errors = []
+try:
+    import flash_attn_interface  # noqa: F401
+except Exception as exc:
+    errors.append(f"flash_attn_interface: {exc}")
+
+try:
+    importlib.import_module("flash_attn_3._C")
+except Exception as exc:
+    errors.append(f"flash_attn_3._C: {exc}")
+
+if not errors:
+    print("  FA3 import failure reason unavailable")
+else:
+    for err in errors:
+        print(f"  {err}")
+PYEOF
+}
+
+local_wheel_looks_compatible() {
+    python3 - <<'PYEOF' >/dev/null 2>&1
+import torch
+
+tv = torch.__version__
+cv = str(torch.version.cuda or "")
+if not tv.startswith("2.4.1"):
+    raise SystemExit(1)
+if not cv.startswith("12.4"):
+    raise SystemExit(1)
+PYEOF
+}
+
+install_hopper_fast() {
+    local hopper_dir="$1"
+    if [ ! -f "${hopper_dir}/setup.py" ] && [ ! -f "${hopper_dir}/pyproject.toml" ]; then
+        return 1
+    fi
+
+    echo "  Building local Hopper FA3 with historical fast path..."
+    if (
+        cd "${hopper_dir}"
+        export FLASH_ATTENTION_DISABLE_HDIM96=TRUE
+        export FLASH_ATTENTION_DISABLE_FP8=TRUE
+        export FLASH_ATTENTION_DISABLE_VARLEN=TRUE
+        export FLASH_ATTENTION_DISABLE_SM80=TRUE
+        export MAX_JOBS="${MAX_JOBS:-4}"
+        export TMPDIR="${TMPDIR:-/workspace/tmp}"
+        mkdir -p "${TMPDIR}"
+        python3 -m pip install -U ninja packaging >/dev/null
+        python3 -m pip install -e . --no-build-isolation
+    ) 2>&1 | tail -20; then
+        if verify_fa3_runtime; then
+            link_flash_attn_config
+            echo "  Local Hopper FA3 built and attached"
+            return 0
+        fi
+        echo "  Local Hopper fast install completed but did not import cleanly:"
+        describe_fa3_failure
+        return 1
+    fi
+
+    echo "  Local Hopper fast install failed; continuing..."
+    return 1
+}
+
 install_fa3() {
     echo "  Searching system for pre-installed flash_attn_interface..."
     local system_fa3_dir=""
@@ -309,24 +394,35 @@ install_fa3() {
 
     echo "  Checking for local flash-attention/hopper source..."
     if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
+        if install_hopper_fast "${WORKSPACE}/flash-attention/hopper"; then
+            return 0
+        fi
         if sync_fa3_dir_into_site "${WORKSPACE}/flash-attention/hopper"; then
             if verify_fa3_runtime; then
+                link_flash_attn_config
                 echo "  Local Hopper FA3 attached"
                 return 0
             fi
             echo "  Local Hopper attach did not import cleanly; continuing..."
+            describe_fa3_failure
         fi
     fi
 
     echo "  Checking for repo-local emergency FA3 wheel..."
     if [ -f "${LOCAL_FA3_WHEEL}" ]; then
-        if python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
-            "${LOCAL_FA3_WHEEL}" 2>&1 | tail -3; then
-            if verify_fa3_runtime; then
-                echo "  Local emergency wheel attached (${LOCAL_FA3_WHEEL_REL})"
-                return 0
+        if local_wheel_looks_compatible; then
+            if python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
+                "${LOCAL_FA3_WHEEL}" 2>&1 | tail -3; then
+                if verify_fa3_runtime; then
+                    link_flash_attn_config
+                    echo "  Local emergency wheel attached (${LOCAL_FA3_WHEEL_REL})"
+                    return 0
+                fi
+                echo "  Local emergency wheel installed but did not import cleanly; continuing..."
+                describe_fa3_failure
             fi
-            echo "  Local emergency wheel installed but did not import cleanly; continuing..."
+        else
+            echo "  Skipping repo-local emergency wheel on this torch/CUDA stack"
         fi
     else
         echo "  No repo-local emergency wheel at ${LOCAL_FA3_WHEEL_REL}"
@@ -337,10 +433,12 @@ install_fa3() {
         "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
         2>&1 | tail -3; then
         if verify_fa3_runtime; then
+            link_flash_attn_config
             echo "  Direct abi wheel attached"
             return 0
         fi
         echo "  Direct abi wheel installed but did not import cleanly."
+        describe_fa3_failure
     fi
 
     echo "  WARNING: Could not install FA3. Will fall back to PyTorch SDPA."

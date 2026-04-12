@@ -180,7 +180,6 @@ class Hyperparameters:
     loop_start = int(os.environ.get("LOOP_START", 3))
     loop_end = int(os.environ.get("LOOP_END", 5))
     enable_looping_at = float(os.environ.get("ENABLE_LOOPING_AT", 0.35))
-    # Progressive depth: late layers activated after wallclock threshold
     late_layers = int(os.environ.get("LATE_LAYERS", 0))
     late_activate_at = float(os.environ.get("LATE_ACTIVATE_AT", 0.7))
     late_quant_attn_bits = int(os.environ.get("LATE_QUANT_ATTN_BITS", 8))
@@ -671,63 +670,32 @@ def gptq_quantize_weight(W: Tensor, H: Tensor, clip_range: int = 31,
     return Q, row_scale.to(torch.float16)
 def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
                    n_samples: int = 256, seq_len: int = 2048) -> dict[str, Tensor]:
-    """Collect Hessian H = X^T X for each linear layer and bank slice using training data."""
+    """Collect Hessian H = X^T X for each linear layer using training data."""
     hessians: dict[str, Tensor] = {}
     n_seen: dict[str, int] = {}
     hooks = []
-    def _accum(name: str, x: Tensor):
-        x = x.detach().float()
-        if x.ndim == 3:
-            x = x.reshape(-1, x.shape[-1])
-        if name not in hessians:
-            hessians[name] = torch.zeros(x.shape[1], x.shape[1], device=x.device, dtype=torch.float32)
-            n_seen[name] = 0
-        hessians[name].addmm_(x.t(), x)
-        n_seen[name] += x.shape[0]
     def make_hook(name: str):
         def hook_fn(module, inp, out):
-            _accum(name, inp[0])
+            x = inp[0].detach().float()
+            if x.ndim == 3:
+                x = x.reshape(-1, x.shape[-1])
+            if name not in hessians:
+                hessians[name] = torch.zeros(x.shape[1], x.shape[1], device=x.device, dtype=torch.float32)
+                n_seen[name] = 0
+            hessians[name].addmm_(x.t(), x)
+            n_seen[name] += x.shape[0]
         return hook_fn
     for name, module in model.named_modules():
         if isinstance(module, (nn.Linear, CastedLinear)):
             hooks.append(module.register_forward_hook(make_hook(name)))
-    # Capture bank slice inputs by intercepting F.linear calls.
-    # Temporarily cast banks to bfloat16 so .to(x.dtype) is a no-op
-    # and data_ptrs match the pre-built map.
-    n_total = model.total_layers
-    bank_names = ['qo_bank', 'kv_bank', 'mlp_up_bank', 'mlp_down_bank']
-    orig_bank_data = {}
-    for bn in bank_names:
-        bank = getattr(model, bn)
-        orig_bank_data[bn] = bank.data.clone()
-        bank.data = bank.data.to(torch.bfloat16)
-    bank_ptr_map: dict[int, str] = {}
-    for i in range(n_total):
-        bank_ptr_map[model.qo_bank[i].data_ptr()] = f"qo_bank_slice_{i}"
-        bank_ptr_map[model.qo_bank[n_total + i].data_ptr()] = f"qo_bank_slice_{n_total + i}"
-        bank_ptr_map[model.kv_bank[i].data_ptr()] = f"kv_bank_slice_{i}"
-        bank_ptr_map[model.kv_bank[n_total + i].data_ptr()] = f"kv_bank_slice_{n_total + i}"
-        bank_ptr_map[model.mlp_up_bank[i].data_ptr()] = f"mlp_up_bank_slice_{i}"
-        bank_ptr_map[model.mlp_down_bank[i].data_ptr()] = f"mlp_down_bank_slice_{i}"
-    _orig_linear = F.linear
-    def _capturing_linear(input, weight, bias=None):
-        ptr = weight.data_ptr()
-        key = bank_ptr_map.get(ptr)
-        if key is not None:
-            _accum(key, input)
-        return _orig_linear(input, weight, bias)
-    F.linear = _capturing_linear
     stream = TokenStream(train_pattern)
     model.eval()
     with torch.no_grad():
         for _ in range(n_samples):
             tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
             x = tokens[:-1].unsqueeze(0)
-            model.forward_logits(x)
-    F.linear = _orig_linear
-    # Restore banks to float32
-    for bn in bank_names:
-        getattr(model, bn).data = orig_bank_data[bn]
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                model.forward_logits(x)
     for h in hooks:
         h.remove()
     for name in hessians:
@@ -764,11 +732,8 @@ def build_quant_policy(args: Hyperparameters) -> dict[str, int]:
         "other": normalize_quant_bits(args.quant_other_bits),
     }
 def mixed_quantize_gptq(state_dict: dict[str, Tensor], bit_policy: dict[str, int],
-                        hessians: dict[str, Tensor],
-                        late_bit_policy: dict[str, int] | None = None,
-                        core_layers: int = 0) -> tuple[dict, dict]:
-    """Mixed-bit export with GPTQ for sub-int8 categories when Hessians are available.
-    If late_bit_policy is set, bank slices with index >= core_layers use late_bit_policy."""
+                        hessians: dict[str, Tensor]) -> tuple[dict, dict]:
+    """Mixed-bit export with GPTQ for sub-int8 categories when Hessians are available."""
     result: dict[str, Tensor] = {}
     meta: dict[str, object] = {}
     gptq_count, naive_count = 0, 0
@@ -784,8 +749,6 @@ def mixed_quantize_gptq(state_dict: dict[str, Tensor], bit_policy: dict[str, int
             result[name] = t.float()
             meta[name] = "passthrough_ctrl"
             continue
-        # For non-bank tensors (ndim != 3), use standard bit policy.
-        # For banks, per-slice bits are resolved below in the ndim==3 branch.
         bits = normalize_quant_bits(bit_policy.get(cat, bit_policy["other"]))
         if bits >= 16:
             result[name] = t.to(torch.float16)
@@ -800,44 +763,7 @@ def mixed_quantize_gptq(state_dict: dict[str, Tensor], bit_policy: dict[str, int
             quant_counts[bits] = quant_counts.get(bits, 0) + 1
             continue
         clip_range = quant_clip_range(bits)
-        if t.ndim == 3:
-            # 3D parameter bank: per-slice quantization with optional late layer policy
-            q_slices, s_slices = [], []
-            for i in range(t.shape[0]):
-                # Determine if this slice is a late layer
-                slice_is_late = False
-                if late_bit_policy is not None and core_layers > 0:
-                    # Bank layout: qo_bank is [2*total, ...], first half Q, second half Out
-                    # kv_bank same. mlp banks are [total, ...]
-                    # A slice index >= core_layers (in its half) is a late layer
-                    if "qo_bank" in name or "kv_bank" in name:
-                        half = t.shape[0] // 2
-                        layer_idx = i if i < half else i - half
-                        slice_is_late = layer_idx >= core_layers
-                    else:
-                        slice_is_late = i >= core_layers
-                if slice_is_late:
-                    slice_bits = normalize_quant_bits(late_bit_policy.get(cat, late_bit_policy.get("other", bits)))
-                else:
-                    slice_bits = bits
-                slice_clip = quant_clip_range(slice_bits) if slice_bits < 8 else 127
-                slice_key = f"{name}_slice_{i}"
-                H = hessians.get(slice_key)
-                if slice_bits == 8:
-                    q, s = quantize_float_tensor(t[i])
-                elif H is not None and H.shape[0] == t[i].shape[1]:
-                    q, s = gptq_quantize_weight(t[i], H.cpu(), clip_range=slice_clip)
-                    gptq_count += 1
-                else:
-                    q, s = quantize_lowbit_per_row(t[i], slice_bits)
-                    naive_count += 1
-                q_slices.append(q)
-                s_slices.append(s)
-                quant_counts[slice_bits] = quant_counts.get(slice_bits, 0) + 1
-            result[name + ".q"] = torch.stack(q_slices)
-            result[name + ".scale"] = torch.stack(s_slices)
-            meta[name] = {"type": f"int_mixed", "bits": bits}
-        elif t.ndim == 2:
+        if t.ndim == 2:
             module_name = name.rsplit(".weight", 1)[0] if name.endswith(".weight") else name
             H = hessians.get(module_name)
             if H is not None and H.shape[0] == t.shape[1]:
@@ -851,7 +777,7 @@ def mixed_quantize_gptq(state_dict: dict[str, Tensor], bit_policy: dict[str, int
             meta[name] = {"type": f"int{bits}", "bits": bits}
             quant_counts[bits] = quant_counts.get(bits, 0) + 1
         elif t.ndim >= 1:
-            t_2d = t.reshape(-1, t.shape[-1])
+            t_2d = t.reshape(-1, t.shape[-1]) if t.ndim > 2 else t
             q, s = quantize_lowbit_per_row(t_2d, bits)
             result[name + ".q"] = q
             result[name + ".scale"] = s
@@ -877,10 +803,7 @@ def dequantize_mixed_quant(result: dict[str, Tensor], meta: dict[str, object],
             continue
         q, s = result[name + ".q"], result[name + ".scale"]
         if s.ndim > 0:
-            s_exp = s.float()
-            while s_exp.ndim < q.ndim:
-                s_exp = s_exp.unsqueeze(-1)
-            val = (q.float() * s_exp).to(orig_dtype)
+            val = (q.float() * s.float().view(q.shape[0], *([1] * (q.ndim - 1)))).to(orig_dtype)
         else:
             val = (q.float() * float(s.item())).to(orig_dtype)
         out[name] = val.reshape(orig.shape) if val.shape != orig.shape else val
@@ -1413,6 +1336,9 @@ class GPT(nn.Module):
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)  # kv_dim for value projection
+        self.late_layers = late_layers
+        self.total_layers = num_layers + late_layers
+        self.late_layers_active = False
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
         self.tie_embeddings = tie_embeddings
@@ -1445,14 +1371,10 @@ class GPT(nn.Module):
         self.num_skip_weights = min(len(self.encoder_indices), len(self.decoder_indices))
         self.skip_weights = nn.Parameter(torch.ones(self.num_skip_weights, model_dim, dtype=torch.float32))
         # Parameter banks: contiguous 3D tensors for batched optimizer
-        # Total layers = core (num_layers) + late (late_layers)
         head_dim = model_dim // num_heads
         kv_dim = num_kv_heads * head_dim
         mlp_dim = int(mlp_mult * model_dim)
         self.num_layers = num_layers
-        self.late_layers = late_layers
-        self.total_layers = num_layers + late_layers
-        self.late_layers_active = False
         n_total = self.total_layers
         self.qo_bank = nn.Parameter(torch.empty(2 * n_total, model_dim, model_dim))
         self.kv_bank = nn.Parameter(torch.empty(2 * n_total, kv_dim, model_dim))
@@ -1542,7 +1464,7 @@ class GPT(nn.Module):
         ve_idx = self.ve_layer_indices.index(layer_idx)
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
-        nt = self.total_layers  # bank second-half offset
+        nt = self.total_layers
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
@@ -1571,7 +1493,6 @@ class GPT(nn.Module):
                 self.qo_bank[idx], self.kv_bank[idx], self.kv_bank[nt + idx],
                 self.qo_bank[nt + idx], self.mlp_up_bank[idx], self.mlp_down_bank[idx],
                 v_embed=ve, v0=v0)
-        # Late layers: appended after decoder, no skip connections
         if self.late_layers_active and self.late_layers > 0:
             for i in range(self.num_layers, self.total_layers):
                 x, _ = self.blocks[i](x, x0,
@@ -1641,8 +1562,7 @@ class GPT(nn.Module):
                 self.qo_bank[idx], self.kv_bank[idx], self.kv_bank[nt + idx],
                 self.qo_bank[nt + idx], self.mlp_up_bank[idx], self.mlp_down_bank[idx],
                 v_embed=ve, v0=v0)
-        # Late layers (always active during inference/eval)
-        if self.late_layers > 0:
+        if self.late_layers_active and self.late_layers > 0:
             for i in range(self.num_layers, self.total_layers):
                 x, _ = self.blocks[i](x, x0,
                     self.qo_bank[i], self.kv_bank[i], self.kv_bank[nt + i],
@@ -2417,6 +2337,29 @@ def main() -> None:
                 if args.warmup_steps <= 20 or (warmup_step + 1) % 10 == 0 or warmup_step + 1 == args.warmup_steps:
                     log0(f"loop_warmup_step:{warmup_step + 1}/{args.warmup_steps}")
             base_model.looping_active = False
+        if args.late_layers > 0:
+            base_model.late_layers_active = True
+            if args.num_loops > 0:
+                base_model.looping_active = True
+            log0(f"late_warmup:enabled late_layers:{args.late_layers} with_loops:{base_model.looping_active}")
+            for warmup_step in range(args.warmup_steps):
+                zero_grad_all()
+                for micro_step in range(grad_accum_steps):
+                    x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                        warmup_loss = model(x, y)
+                    (warmup_loss * grad_scale).backward()
+                if distributed:
+                    for p in base_model.parameters():
+                        if p.grad is not None:
+                            dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+                for opt in optimizers:
+                    opt.step()
+                zero_grad_all()
+                if args.warmup_steps <= 20 or (warmup_step + 1) % 10 == 0 or warmup_step + 1 == args.warmup_steps:
+                    log0(f"late_warmup_step:{warmup_step + 1}/{args.warmup_steps}")
+            base_model.late_layers_active = False
+            base_model.looping_active = False
         base_model.load_state_dict(initial_model_state, strict=True)
         for opt, state in zip(optimizers, initial_optimizer_states, strict=True):
             opt.load_state_dict(state)
@@ -2609,11 +2552,7 @@ def main() -> None:
         log0(f"Code size: {code_bytes} bytes")
     sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
     # GPTQ quantization using Hessians collected from training data
-    _late_policy = {"attn": args.late_quant_attn_bits, "mlp": args.late_quant_mlp_bits,
-                    "other": args.quant_other_bits} if args.late_layers > 0 else None
-    quant_result, quant_meta = mixed_quantize_gptq(sd_cpu, quant_policy, gptq_hessians,
-                                                    late_bit_policy=_late_policy,
-                                                    core_layers=args.num_layers)
+    quant_result, quant_meta = mixed_quantize_gptq(sd_cpu, quant_policy, gptq_hessians)
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
     quant_raw = quant_buf.getvalue()
@@ -2653,6 +2592,7 @@ def main() -> None:
         gated_attention=args.gated_attention, value_residual=args.value_residual,
         late_layers=args.late_layers,
     ).to(device).bfloat16()
+    eval_model.late_layers_active = True  # always active for eval
     eval_model.qo_bank.data = eval_model.qo_bank.data.float()
     eval_model.kv_bank.data = eval_model.kv_bank.data.float()
     eval_model.mlp_up_bank.data = eval_model.mlp_up_bank.data.float()

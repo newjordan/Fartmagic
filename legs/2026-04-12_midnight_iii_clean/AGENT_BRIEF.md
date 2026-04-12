@@ -8,9 +8,10 @@ You may edit only files listed in:
 1. Change exactly ONE variable vs baseline.
 2. Do not edit `vault/`, `records/`, or `LOCKED_SOTA/`.
 3. Update `hypothesis.md` before code edits.
-4. Run `python3 scripts/leg_diff_guard.py legs/2026-04-12_midnight_iii_clean` before any gate, full run, or commit.
-5. Treat diff guard FAIL as a blocker unless the user explicitly approved wider thresholds.
-6. Fill `ablation.md` and `RESULTS.md` after each run.
+4. Edit `tracked_env.sh` for env-level changes. Do not test by typing env overrides into the shell.
+5. Run `python3 scripts/leg_diff_guard.py legs/2026-04-12_midnight_iii_clean` before any gate, full run, or commit.
+6. Treat diff guard FAIL as a blocker unless the user explicitly approved wider thresholds.
+7. Fill `ablation.md` and `RESULTS.md` after each run.
 
 ## Commands
 ```bash

@@ -174,12 +174,22 @@ fi
 echo ""
 echo "[6/6] Tokenizer + FineWeb dataset (${DATASET_VARIANT})..."
 
-# Use competition's official download script (willdepueoai/parameter-golf dataset repo)
-# NOT sproos/parameter-golf-tokenizers — that repo has different val shard (58M vs 62M tokens)
-echo "  Using competition download script (data/cached_challenge_fineweb.py)..."
+# SP1024: official competition repo (willdepueoai/parameter-golf)
+echo "  Downloading SP1024 (competition default)..."
 cd "${WORKSPACE}"
-python3 data/cached_challenge_fineweb.py --variant "${DATASET_VARIANT}" --train-shards "${TRAIN_SHARDS}"
-echo "  Competition data downloaded"
+python3 data/cached_challenge_fineweb.py --variant sp1024 --train-shards "${TRAIN_SHARDS}"
+echo "  SP1024 data downloaded"
+
+# SP8192: from kevclark/parameter-golf (merged leaderboard submission)
+echo "  Downloading SP8192 (kevclark/parameter-golf)..."
+rm -f data/manifest.json
+MATCHED_FINEWEB_REPO_ID=kevclark/parameter-golf \
+python3 data/cached_challenge_fineweb.py --variant sp8192 --train-shards "${TRAIN_SHARDS}" || {
+    echo "  WARNING: SP8192 download failed (disk space or network). SP1024 still available."
+}
+# Restore default manifest for future sp1024 downloads
+rm -f data/manifest.json
+echo "  Dataset setup complete"
 
 # =============================================================================
 # Verification

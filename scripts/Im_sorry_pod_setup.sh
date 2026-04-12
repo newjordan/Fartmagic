@@ -31,6 +31,60 @@ if [[ -d "${_CANDIDATE}/.git" ]]; then
 else
     WORKSPACE="/workspace/parameter-golf"
 fi
+LOCAL_FA3_WHEEL_REL="wheels/fa3_vast/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl"
+LOCAL_FA3_WHEEL="${LOCAL_FA3_WHEEL:-${WORKSPACE}/${LOCAL_FA3_WHEEL_REL}}"
+
+build_runtime_lib_path() {
+    python3 - <<'PYEOF'
+import glob
+import os
+import site
+import torch
+
+paths = []
+torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+if os.path.isdir(torch_lib):
+    paths.append(torch_lib)
+
+site_dirs = []
+try:
+    site_dirs.extend(site.getsitepackages())
+except Exception:
+    pass
+try:
+    site_dirs.append(site.getusersitepackages())
+except Exception:
+    pass
+
+for base in site_dirs:
+    if not base or not os.path.isdir(base):
+        continue
+    for pattern in (
+        os.path.join(base, "nvidia", "*", "lib"),
+        os.path.join(base, "nvidia", "*", "lib64"),
+    ):
+        for candidate in glob.glob(pattern):
+            if os.path.isdir(candidate):
+                paths.append(candidate)
+
+for candidate in (
+    "/usr/local/cuda/lib64",
+    "/usr/local/cuda/compat",
+    "/usr/local/nvidia/lib",
+    "/usr/local/nvidia/lib64",
+):
+    if os.path.isdir(candidate):
+        paths.append(candidate)
+
+seen = set()
+ordered = []
+for path in paths:
+    if path not in seen:
+        seen.add(path)
+        ordered.append(path)
+print(":".join(ordered))
+PYEOF
+}
 
 echo "============================================"
 echo "  POD SETUP"
@@ -72,6 +126,8 @@ echo "[2/6] Checking base environment..."
 python3 --version || { echo "FATAL: python3 not found"; exit 1; }
 python3 -c "import torch; print(f'  PyTorch {torch.__version__}  CUDA {torch.version.cuda}')" \
     || { echo "FATAL: PyTorch not installed in system Python"; exit 1; }
+RUNTIME_LIB_PATHS="$(build_runtime_lib_path)"
+export LD_LIBRARY_PATH="${RUNTIME_LIB_PATHS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 GPU_COUNT=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo "0")
 if [ "$GPU_COUNT" -eq 0 ]; then
@@ -90,12 +146,57 @@ cat > "${ACTIVATE_HELPER}" <<'ACTEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TORCH_LIB="$(python3 - <<'PYEOF'
-import os, torch
-print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+RUNTIME_LIB_PATHS="$(python3 - <<'PYEOF'
+import glob
+import os
+import site
+import torch
+
+paths = []
+torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+if os.path.isdir(torch_lib):
+    paths.append(torch_lib)
+
+site_dirs = []
+try:
+    site_dirs.extend(site.getsitepackages())
+except Exception:
+    pass
+try:
+    site_dirs.append(site.getusersitepackages())
+except Exception:
+    pass
+
+for base in site_dirs:
+    if not base or not os.path.isdir(base):
+        continue
+    for pattern in (
+        os.path.join(base, "nvidia", "*", "lib"),
+        os.path.join(base, "nvidia", "*", "lib64"),
+    ):
+        for candidate in glob.glob(pattern):
+            if os.path.isdir(candidate):
+                paths.append(candidate)
+
+for candidate in (
+    "/usr/local/cuda/lib64",
+    "/usr/local/cuda/compat",
+    "/usr/local/nvidia/lib",
+    "/usr/local/nvidia/lib64",
+):
+    if os.path.isdir(candidate):
+        paths.append(candidate)
+
+seen = set()
+ordered = []
+for path in paths:
+    if path not in seen:
+        seen.add(path)
+        ordered.append(path)
+print(":".join(ordered))
 PYEOF
 )"
-export LD_LIBRARY_PATH="${TORCH_LIB}:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${RUNTIME_LIB_PATHS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
     export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 fi
@@ -217,8 +318,22 @@ install_fa3() {
         fi
     fi
 
+    echo "  Checking for repo-local emergency FA3 wheel..."
+    if [ -f "${LOCAL_FA3_WHEEL}" ]; then
+        if python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
+            "${LOCAL_FA3_WHEEL}" 2>&1 | tail -3; then
+            if verify_fa3_runtime; then
+                echo "  Local emergency wheel attached (${LOCAL_FA3_WHEEL_REL})"
+                return 0
+            fi
+            echo "  Local emergency wheel installed but did not import cleanly; continuing..."
+        fi
+    else
+        echo "  No repo-local emergency wheel at ${LOCAL_FA3_WHEEL_REL}"
+    fi
+
     echo "  Attempting FA3 abi3 wheel (cu128)..."
-    if pip install --no-cache-dir --no-deps \
+    if python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
         "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
         2>&1 | tail -3; then
         if verify_fa3_runtime; then

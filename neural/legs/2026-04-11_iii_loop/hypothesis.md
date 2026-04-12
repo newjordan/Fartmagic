@@ -27,6 +27,16 @@ training steps. This was net-negative on Midnight 12L (quant gap was small), but
 
 Proven on crawler track: loop-aware GPTQ fixed a 0.095 BPB quant catastrophe there.
 
+## Plumbing Fix (v2)
+First run (v1) showed 0 GPTQ tensors / 4 naive. Root cause: `gptq_calibrate` only hooked
+`nn.Linear`/`CastedLinear` modules, but all attn/MLP weights live in 3D `nn.Parameter` banks
+(`qo_bank`, `kv_bank`, `mlp_up_bank`, `mlp_down_bank`). Banks were never hooked, no Hessians
+collected, all sub-int8 tensors fell through to naive quantization.
+
+Fix: intercept `F.linear` calls during calibration via data_ptr matching to collect per-slice
+Hessians for all bank weights. `mixed_quantize_gptq` now iterates 3D bank slices and applies
+GPTQ per-slice. `dequantize_mixed_quant` scale expansion generalized for 3D.
+
 ## Gate Pass Criteria
-- 2xGPU screen (360s): quant_roundtrip BPB meaningfully below 1.554 (current naive quant).
+- 8xH100 full run (600s): quant_roundtrip BPB meaningfully below 1.554 (current naive quant).
 - Target: quant_roundtrip BPB < 1.15 would indicate the technique is working.

@@ -666,24 +666,46 @@ def gptq_quantize_weight(W: Tensor, H: Tensor, clip_range: int = 31,
     return Q, row_scale.to(torch.float16)
 def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
                    n_samples: int = 256, seq_len: int = 2048) -> dict[str, Tensor]:
-    """Collect Hessian H = X^T X for each linear layer using training data."""
+    """Collect Hessian H = X^T X for each linear layer and bank slice using training data."""
     hessians: dict[str, Tensor] = {}
     n_seen: dict[str, int] = {}
     hooks = []
+    def _accum(name: str, x: Tensor):
+        x = x.detach().float()
+        if x.ndim == 3:
+            x = x.reshape(-1, x.shape[-1])
+        if name not in hessians:
+            hessians[name] = torch.zeros(x.shape[1], x.shape[1], device=x.device, dtype=torch.float32)
+            n_seen[name] = 0
+        hessians[name].addmm_(x.t(), x)
+        n_seen[name] += x.shape[0]
     def make_hook(name: str):
         def hook_fn(module, inp, out):
-            x = inp[0].detach().float()
-            if x.ndim == 3:
-                x = x.reshape(-1, x.shape[-1])
-            if name not in hessians:
-                hessians[name] = torch.zeros(x.shape[1], x.shape[1], device=x.device, dtype=torch.float32)
-                n_seen[name] = 0
-            hessians[name].addmm_(x.t(), x)
-            n_seen[name] += x.shape[0]
+            _accum(name, inp[0])
         return hook_fn
     for name, module in model.named_modules():
         if isinstance(module, (nn.Linear, CastedLinear)):
             hooks.append(module.register_forward_hook(make_hook(name)))
+    # Capture bank slice inputs by intercepting F.linear calls.
+    # Bank weights are 3D nn.Parameter; each F.linear call uses a 2D slice.
+    # We identify slices by data_ptr and accumulate per-slice Hessians.
+    n_layers = model.num_layers
+    bank_ptr_map: dict[int, str] = {}
+    for i in range(n_layers):
+        bank_ptr_map[model.qo_bank[i].data_ptr()] = f"qo_bank_slice_{i}"
+        bank_ptr_map[model.qo_bank[n_layers + i].data_ptr()] = f"qo_bank_slice_{n_layers + i}"
+        bank_ptr_map[model.kv_bank[i].data_ptr()] = f"kv_bank_slice_{i}"
+        bank_ptr_map[model.kv_bank[n_layers + i].data_ptr()] = f"kv_bank_slice_{n_layers + i}"
+        bank_ptr_map[model.mlp_up_bank[i].data_ptr()] = f"mlp_up_bank_slice_{i}"
+        bank_ptr_map[model.mlp_down_bank[i].data_ptr()] = f"mlp_down_bank_slice_{i}"
+    _orig_linear = F.linear
+    def _capturing_linear(input, weight, bias=None):
+        ptr = weight.data_ptr()
+        key = bank_ptr_map.get(ptr)
+        if key is not None:
+            _accum(key, input)
+        return _orig_linear(input, weight, bias)
+    F.linear = _capturing_linear
     stream = TokenStream(train_pattern)
     model.eval()
     with torch.no_grad():
@@ -692,6 +714,7 @@ def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
             x = tokens[:-1].unsqueeze(0)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 model.forward_logits(x)
+    F.linear = _orig_linear
     for h in hooks:
         h.remove()
     for name in hessians:
@@ -759,7 +782,25 @@ def mixed_quantize_gptq(state_dict: dict[str, Tensor], bit_policy: dict[str, int
             quant_counts[bits] = quant_counts.get(bits, 0) + 1
             continue
         clip_range = quant_clip_range(bits)
-        if t.ndim == 2:
+        if t.ndim == 3:
+            # 3D parameter bank: GPTQ per-slice using slice-keyed Hessians
+            q_slices, s_slices = [], []
+            for i in range(t.shape[0]):
+                slice_key = f"{name}_slice_{i}"
+                H = hessians.get(slice_key)
+                if H is not None and H.shape[0] == t[i].shape[1]:
+                    q, s = gptq_quantize_weight(t[i], H.cpu(), clip_range=clip_range)
+                    gptq_count += 1
+                else:
+                    q, s = quantize_lowbit_per_row(t[i], bits)
+                    naive_count += 1
+                q_slices.append(q)
+                s_slices.append(s)
+            result[name + ".q"] = torch.stack(q_slices)
+            result[name + ".scale"] = torch.stack(s_slices)
+            meta[name] = {"type": f"int{bits}", "bits": bits}
+            quant_counts[bits] = quant_counts.get(bits, 0) + t.shape[0]
+        elif t.ndim == 2:
             module_name = name.rsplit(".weight", 1)[0] if name.endswith(".weight") else name
             H = hessians.get(module_name)
             if H is not None and H.shape[0] == t.shape[1]:
@@ -773,7 +814,7 @@ def mixed_quantize_gptq(state_dict: dict[str, Tensor], bit_policy: dict[str, int
             meta[name] = {"type": f"int{bits}", "bits": bits}
             quant_counts[bits] = quant_counts.get(bits, 0) + 1
         elif t.ndim >= 1:
-            t_2d = t.reshape(-1, t.shape[-1]) if t.ndim > 2 else t
+            t_2d = t.reshape(-1, t.shape[-1])
             q, s = quantize_lowbit_per_row(t_2d, bits)
             result[name + ".q"] = q
             result[name + ".scale"] = s
@@ -799,7 +840,11 @@ def dequantize_mixed_quant(result: dict[str, Tensor], meta: dict[str, object],
             continue
         q, s = result[name + ".q"], result[name + ".scale"]
         if s.ndim > 0:
-            val = (q.float() * s.float().view(q.shape[0], *([1] * (q.ndim - 1)))).to(orig_dtype)
+            # Expand scale to broadcast: add trailing dims until matching q
+            s_exp = s.float()
+            while s_exp.ndim < q.ndim:
+                s_exp = s_exp.unsqueeze(-1)
+            val = (q.float() * s_exp).to(orig_dtype)
         else:
             val = (q.float() * float(s.item())).to(orig_dtype)
         out[name] = val.reshape(orig.shape) if val.shape != orig.shape else val

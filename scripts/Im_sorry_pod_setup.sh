@@ -397,15 +397,7 @@ install_fa3() {
         if install_hopper_fast "${WORKSPACE}/flash-attention/hopper"; then
             return 0
         fi
-        if sync_fa3_dir_into_site "${WORKSPACE}/flash-attention/hopper"; then
-            if verify_fa3_runtime; then
-                link_flash_attn_config
-                echo "  Local Hopper FA3 attached"
-                return 0
-            fi
-            echo "  Local Hopper attach did not import cleanly; continuing..."
-            describe_fa3_failure
-        fi
+        echo "  Local Hopper fast install failed; not using fake symlink attach."
     fi
 
     echo "  Checking for repo-local emergency FA3 wheel..."

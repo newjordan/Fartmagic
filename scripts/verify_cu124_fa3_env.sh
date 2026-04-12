@@ -30,10 +30,20 @@ import os
 import torch
 
 torch_version = torch.__version__
-cuda_version = str(torch.version.cuda or "")
+torch_base = torch_version.split("+", 1)[0]
+torch_parts = torch_base.split(".")
+try:
+    torch_mm = tuple(int(x) for x in torch_parts[:2])
+except ValueError as exc:
+    raise AssertionError(f"unparseable torch version: {torch_version}") from exc
 
-assert torch_version == "2.4.1+cu124", f"wrong torch: {torch_version}"
-assert cuda_version.startswith("12.4"), f"wrong cuda: {torch.version.cuda}"
+assert torch_mm >= (2, 4), f"torch too old: {torch_version} (need >=2.4.x)"
+cuda_version = str(torch.version.cuda or "")
+try:
+    cuda_major = int(cuda_version.split(".", 1)[0])
+except (TypeError, ValueError):
+    cuda_major = -1
+assert cuda_major >= 12, f"wrong cuda: {torch.version.cuda} (need >=12.x)"
 
 fa_ok = False
 fa_errors = []

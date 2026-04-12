@@ -61,23 +61,16 @@ if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
 fi
 
 log "[2/4] Verifying live runtime ..."
+VERIFY_DATA=0 bash "${REPO_ROOT}/scripts/verify_cu124_fa3_env.sh"
 "${PYTHON_BIN}" - <<'PY'
 import shutil
 import sys
-
 import torch
-import zstandard
-from flash_attn_interface import flash_attn_func  # noqa: F401
 
 print(f"python   : {sys.executable}")
 print(f"torch    : {torch.__version__}")
 print(f"cuda     : {torch.version.cuda}")
 print(f"torchrun : {shutil.which('torchrun')}")
-print(f"zstd     : {zstandard.__version__}")
-print("fa3      : OK")
-
-assert torch.__version__ == "2.4.1+cu124", f"wrong torch: {torch.__version__}"
-assert str(torch.version.cuda).startswith("12.4"), f"wrong cuda: {torch.version.cuda}"
 PY
 
 log "[3/4] torchrun shim ..."

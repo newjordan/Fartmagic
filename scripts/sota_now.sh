@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sota_now.sh — original submission approach. system python3 + hopper PYTHONPATH.
 # Source: vault/train_gpt_rascal_sota_REAL.py (0ec1f462, 118521 bytes, matches seed444 log)
-# Stack: cu124 required. FAIL hard on wrong env.
+# Stack: CUDA 12.x required. FAIL hard on wrong env.
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

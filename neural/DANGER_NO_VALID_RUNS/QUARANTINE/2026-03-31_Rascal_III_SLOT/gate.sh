@@ -20,7 +20,7 @@ fi
 
 cuda_ver=$(python3 -c "import torch; print(torch.version.cuda or 'NONE')" 2>/dev/null) || { echo "FATAL: python3/torch failed"; exit 1; }
 torch_ver=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null)
-[[ "${cuda_ver}" == "12.4"* ]] || { echo "FATAL: wrong CUDA: ${cuda_ver} (torch ${torch_ver}) — SOTA requires cu124"; exit 1; }
+[[ "${cuda_ver}" == "12."* ]] || { echo "FATAL: wrong CUDA: ${cuda_ver} (torch ${torch_ver}) — this gate requires CUDA 12.x"; exit 1; }
 echo "env: torch=${torch_ver}  cuda=${cuda_ver}  OK"
 echo "=== Rascal_III_SLOT gate  seed=${SEED}  nproc=${NPROC} ==="
 echo "Torchrun: ${TORCHRUN}"

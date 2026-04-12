@@ -94,13 +94,6 @@ else
         -q 2>&1 | tail -3 || true
 
     if ! _fa3_ok; then
-        echo "  cu128 failed — trying cu124..."
-        pip install --no-cache-dir \
-            "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
-            -q 2>&1 | tail -3 || true
-    fi
-
-    if ! _fa3_ok; then
         echo "  Wheels failed — symlinking from repo source..."
         SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
         SRC="${WORKSPACE}/flash-attention/hopper/flash_attn_interface.py"

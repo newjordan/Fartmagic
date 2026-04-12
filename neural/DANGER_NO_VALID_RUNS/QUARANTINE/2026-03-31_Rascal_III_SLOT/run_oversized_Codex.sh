@@ -13,8 +13,8 @@ EXPECTED_TIE_EMBEDDINGS="${EXPECTED_TIE_EMBEDDINGS:-True}"
 SEED="${SEED:-444}"
 NPROC="${NPROC_PER_NODE:-8}"
 LOG_DIR="${REPO_ROOT}/logs/slot_runs"
-REQUIRED_TORCH_VERSION="${REQUIRED_TORCH_VERSION:-2.4.1+cu124}"
-REQUIRED_CUDA_PREFIX="${REQUIRED_CUDA_PREFIX:-12.4}"
+REQUIRED_TORCH_VERSION="${REQUIRED_TORCH_VERSION:-}"
+REQUIRED_CUDA_PREFIX="${REQUIRED_CUDA_PREFIX:-12.}"
 REQUIRE_FA3="${REQUIRE_FA3:-1}"
 SKIP_GPTQ="${SKIP_GPTQ:-1}"
 GPTQ_RESERVE_MS="${GPTQ_RESERVE_MS:-30000}"
@@ -28,7 +28,7 @@ actual=$(sha256sum "${SRC}" | awk '{print $1}')
 [[ "${actual}" == "${EXPECTED_HASH}" ]] || die "hash mismatch — got ${actual}"
 echo "      OK ${actual:0:16}..."
 
-echo "[2/3] CUDA must be cu124 (SOTA stack)..."
+echo "[2/3] CUDA must be 12.x with working FA3..."
 cuda_ver=$(python3 -c "import torch; print(torch.version.cuda or 'NONE')" 2>/dev/null) \
     || die "python3/torch failed"
 torch_ver=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null)

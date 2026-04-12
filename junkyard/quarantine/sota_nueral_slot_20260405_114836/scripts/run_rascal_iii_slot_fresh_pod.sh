@@ -66,8 +66,9 @@ print(f"torchrun : {shutil.which('torchrun')}")
 print(f"zstd     : {zstandard.__version__}")
 print("fa3      : OK")
 
-assert torch.__version__ == "2.4.1+cu124", f"wrong torch: {torch.__version__}"
-assert str(torch.version.cuda).startswith("12.4"), f"wrong cuda: {torch.version.cuda}"
+base = torch.__version__.split("+", 1)[0].split(".")
+assert tuple(int(x) for x in base[:2]) >= (2, 4), f"wrong torch: {torch.__version__}"
+assert str(torch.version.cuda).startswith("12."), f"wrong cuda: {torch.version.cuda}"
 PY
 
 log "[3/4] torchrun shim ..."

@@ -61,7 +61,7 @@ if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
 fi
 
 log "[2/4] Verifying live runtime ..."
-VERIFY_DATA=0 bash "${REPO_ROOT}/scripts/verify_cu124_fa3_env.sh"
+VERIFY_DATA=0 bash "${REPO_ROOT}/scripts/verify_fa3_env.sh"
 "${PYTHON_BIN}" - <<'PY'
 import shutil
 import sys

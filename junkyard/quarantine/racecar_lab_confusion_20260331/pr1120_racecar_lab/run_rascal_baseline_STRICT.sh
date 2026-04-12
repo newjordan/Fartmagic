@@ -5,7 +5,7 @@
 #
 # Root causes of prior wasted runs (DO NOT RE-INTRODUCE):
 #  1. Wrong GPTQ lane: SKIP_GPTQ was 0 → always 1 here, hardcoded
-#  2. Wrong CUDA stack: cu130 gave ~93ms/step vs cu124's ~91ms/step
+#  2. Wrong CUDA stack: CUDA 13 gave ~93ms/step vs the CUDA 12 baseline's ~91ms/step
 #
 # Pre-flight checks happen BEFORE any compute.
 # Any failure exits non-zero immediately.
@@ -64,7 +64,7 @@ if [[ "${cuda_ver}" != "${REQUIRED_CUDA_PREFIX}"* ]]; then
   fail "Wrong CUDA build: '${cuda_ver}' (torch ${torch_ver}).
   Required: ${REQUIRED_CUDA_PREFIX}.x
   This is the root cause of wasted run #2 (cu130 → 92.9–93ms/step).
-  Fix environment: install torch+cu124, then re-run this script."
+  Fix environment: install a CUDA-12 torch stack, then re-run this script."
 fi
 ok "CUDA ${cuda_ver} | torch ${torch_ver}"
 

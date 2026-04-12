@@ -83,7 +83,7 @@ Fix it:
 
 ```bash
 pip uninstall nvidia-nccl-cu13 -y
-pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124 -q
+pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu128 -q
 pip install 'nvidia-nccl-cu12==2.23.4' -q
 export LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/nvidia/nccl/lib:$LD_LIBRARY_PATH
 ```
@@ -91,7 +91,7 @@ export LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/nvidia/nccl/lib:$
 Verify:
 ```bash
 python3 -c "import torch; print(torch.__version__); print(torch.cuda.device_count(), 'GPUs')"
-# Expect: 2.5.1+cu124   8 GPUs
+# Expect: 2.5.1+cu128   8 GPUs
 ```
 
 **DO NOT** run `pip install triton==3.2.0` — it breaks torch.compile.

@@ -113,7 +113,7 @@ trap cleanup EXIT
 
 preflight() {
     log "Preflight: environment"
-    VERIFY_DATA=0 bash "${REPO_ROOT}/scripts/verify_cu124_fa3_env.sh"
+    VERIFY_DATA=0 bash "${REPO_ROOT}/scripts/verify_fa3_env.sh"
 
     local gpu_count
     gpu_count="$(nvidia-smi -L | grep -c '^GPU ' || true)"

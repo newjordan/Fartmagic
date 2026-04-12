@@ -18,9 +18,9 @@ elif [[ -x /workspace/miniconda3/bin/conda && -f /workspace/miniconda3/etc/profi
     # shellcheck disable=SC1091
     source /workspace/miniconda3/etc/profile.d/conda.sh
     conda activate "${CONDA_ENV:-fa3wheel}" >/dev/null 2>&1 || true
-elif [[ -f "${VENV_DIR:-/workspace/venv_cu124}/bin/activate" ]]; then
+elif [[ -f "${VENV_DIR:-/workspace/venv_fa3}/bin/activate" ]]; then
     # shellcheck disable=SC1090
-    source "${VENV_DIR:-/workspace/venv_cu124}/bin/activate"
+    source "${VENV_DIR:-/workspace/venv_fa3}/bin/activate"
 fi
 
 PYTHON_BIN="$(command -v python || true)"

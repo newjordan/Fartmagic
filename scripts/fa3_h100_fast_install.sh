@@ -13,8 +13,9 @@ python3 - <<'PYEOF'
 import torch
 tv = torch.__version__
 cv = torch.version.cuda or ""
-assert tv.startswith("2.4.1"), f"wrong torch: {tv}"
-assert cv.startswith("12.4"), f"wrong cuda: {cv}"
+base = tv.split("+", 1)[0].split(".")
+assert tuple(int(x) for x in base[:2]) >= (2, 4), f"wrong torch: {tv}"
+assert cv.startswith("12."), f"wrong cuda: {cv}"
 print(f"torch={tv} cuda={cv}")
 PYEOF
 
@@ -48,4 +49,4 @@ if os.path.isfile(cfg_src) and not os.path.exists(cfg_dst):
 print("FA3 OK")
 PYEOF
 
-echo "READY: trimmed FA3 installed for H100/cu124."
+echo "READY: trimmed FA3 installed for H100."

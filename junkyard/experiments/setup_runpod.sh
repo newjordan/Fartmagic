@@ -79,13 +79,6 @@ install_fa3() {
         return 0
     fi
 
-    echo "  abi3 wheel failed, trying cu124..."
-    if pip install --no-cache-dir \
-        "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
-        2>&1 | tail -3; then
-        return 0
-    fi
-
     echo "  Wheels failed. Checking for local flash-attention/hopper source..."
     if [ -d "${REPO_ROOT}/flash-attention/hopper" ]; then
         # Symlink the hopper interface into site-packages so it's always importable

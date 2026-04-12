@@ -91,7 +91,7 @@ trap cleanup EXIT
 
 preflight() {
     log "Preflight: environment"
-    VERIFY_DATA=0 bash "${REPO_ROOT}/scripts/verify_cu124_fa3_env.sh"
+    VERIFY_DATA=0 bash "${REPO_ROOT}/scripts/verify_fa3_env.sh"
 
     "${PYTHON_BIN}" -c "import brotli; print('brotli OK')" >/dev/null 2>&1 \
         || { log "Installing brotli"; "${PYTHON_BIN}" -m pip install brotli -q; }

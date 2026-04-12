@@ -8,9 +8,9 @@ if [[ -x /workspace/miniconda3/bin/conda && -f /workspace/miniconda3/etc/profile
   # shellcheck disable=SC1091
   source /workspace/miniconda3/etc/profile.d/conda.sh
   conda activate "${CONDA_ENV:-fa3wheel}"
-elif [[ -f "${VENV_DIR:-/workspace/venv_cu124}/bin/activate" ]]; then
+elif [[ -f "${VENV_DIR:-/workspace/venv_fa3}/bin/activate" ]]; then
   # shellcheck disable=SC1090
-  source "${VENV_DIR:-/workspace/venv_cu124}/bin/activate"
+  source "${VENV_DIR:-/workspace/venv_fa3}/bin/activate"
 fi
 
 TORCH_LIB="$(python - <<'PYEOF'
@@ -32,6 +32,6 @@ export TORCHDYNAMO_SUPPRESS_ERRORS="${TORCHDYNAMO_SUPPRESS_ERRORS:-0}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 export SEED="${SEED:-300}"
 
-bash "${REPO_ROOT}/scripts/verify_cu124_fa3_env.sh"
+bash "${REPO_ROOT}/scripts/verify_fa3_env.sh"
 
 exec bash "${REPO_ROOT}/neural/2026-03-31_Rascal_III_SLOT/run.sh"

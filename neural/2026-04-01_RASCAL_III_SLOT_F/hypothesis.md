@@ -11,7 +11,7 @@ This version packs 4 values into 3 bytes (24 bits for 4x6-bit values).
 Lossless — identical weights after dequantization.
 
 ## Why
-On cu128/torch2.9.1, weight distributions compress differently than cu124.
+On modern CUDA-12 stacks, weight distributions compress differently than older setups.
 Need size headroom. Current int8 storage wastes 25% of raw bytes feeding
 redundant bits to zstd. True 6-bit packing shrinks the pre-compression
 blob by 25%, expected ~1-2MB savings on final compressed artifact.

@@ -12,9 +12,9 @@ LOG_FILE="${LOG_DIR}/full_seed${SEED:-444}_$(date +%Y%m%d_%H%M%S).log"
 NPROC="${NPROC_PER_NODE:-8}"
 SEED="${SEED:-444}"
 
-# Activate venv if present (new pod uses venv_cu124)
-if [ -f /workspace/venv_cu124/bin/activate ]; then
-    source /workspace/venv_cu124/bin/activate
+# Activate venv if present
+if [ -f /workspace/venv_fa3/bin/activate ]; then
+    source /workspace/venv_fa3/bin/activate
 fi
 
 export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"

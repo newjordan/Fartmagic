@@ -688,8 +688,16 @@ def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
             hooks.append(module.register_forward_hook(make_hook(name)))
     # Capture bank slice inputs by intercepting F.linear calls.
     # Bank weights are 3D nn.Parameter; each F.linear call uses a 2D slice.
-    # We identify slices by data_ptr and accumulate per-slice Hessians.
+    # Problem: the forward does .to(x.dtype) which creates a NEW tensor with
+    # a different data_ptr. Fix: temporarily cast banks to bfloat16 so .to()
+    # is a no-op and data_ptrs match the pre-built map.
     n_layers = model.num_layers
+    bank_names = ['qo_bank', 'kv_bank', 'mlp_up_bank', 'mlp_down_bank']
+    orig_bank_data = {}
+    for bn in bank_names:
+        bank = getattr(model, bn)
+        orig_bank_data[bn] = bank.data.clone()
+        bank.data = bank.data.to(torch.bfloat16)
     bank_ptr_map: dict[int, str] = {}
     for i in range(n_layers):
         bank_ptr_map[model.qo_bank[i].data_ptr()] = f"qo_bank_slice_{i}"
@@ -708,14 +716,15 @@ def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
     F.linear = _capturing_linear
     stream = TokenStream(train_pattern)
     model.eval()
-    # Run calibration in float32 (no autocast) so that .to(x.dtype) in the
-    # forward pass is a no-op and bank slice data_ptrs match the ptr map.
     with torch.no_grad():
         for _ in range(n_samples):
             tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
             x = tokens[:-1].unsqueeze(0)
             model.forward_logits(x)
     F.linear = _orig_linear
+    # Restore banks to float32
+    for bn in bank_names:
+        getattr(model, bn).data = orig_bank_data[bn]
     for h in hooks:
         h.remove()
     for name in hessians:

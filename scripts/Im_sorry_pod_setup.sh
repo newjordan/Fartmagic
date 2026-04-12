@@ -1,29 +1,20 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
-export PIP_ROOT_USER_ACTION=ignore   # suppress "running as root" pip warning
-# =============================================================================
-# POD SETUP — the only script you ever run on a pod
-#
-# Usage:  bash scripts/Im_sorry_pod_setup.sh
-#   (or curl from raw URL and pipe to bash — works either way)
-#
-# What it does:
-#   1. Clones/syncs repo to the 'test' branch
-#   2. Installs deps (pip, zstandard, FA3, dataset)
-#   3. Verifies everything works
-#   4. Done. You run your experiment manually.
-# =============================================================================
+export PIP_ROOT_USER_ACTION=ignore
+
+# Midnight 12L parity anchor:
+#   OpenAI PR #1458
+#   Created: 2026-04-07 19:40:32 America/Chicago
+#   Stack: torch 2.4.1+cu124 + local FA3 wheel + H100 Hopper path
 
 REPO_URL="https://github.com/newjordan/parameter-golf.git"
 BRANCH="${BRANCH:-TEST_LAB}"
 TRAIN_SHARDS="${TRAIN_SHARDS:-80}"
-DATASET_VARIANT="${DATASET_VARIANT:-sp1024}"
-ACTIVATE_HELPER_REL="scripts/activate_pod_env.sh"
-FA3_WHEEL_URL="${FA3_WHEEL_URL:-https://download.pytorch.org/whl/flash-attn-3/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl}"
-if [[ -x /venv/main/bin/python3 ]]; then
-    export PATH="/venv/main/bin:${PATH}"
-fi
-# Auto-detect repo root from script location; fall back for curl-pipe scenario
+CONDA_ENV="${CONDA_ENV:-fa3wheel}"
+VENV_DIR="${VENV_DIR:-/workspace/venv_cu124}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+
 _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || true
 _CANDIDATE="$(cd -- "${_SCRIPT_DIR}/.." && pwd 2>/dev/null)" || true
 if [[ -d "${_CANDIDATE}/.git" ]]; then
@@ -31,414 +22,157 @@ if [[ -d "${_CANDIDATE}/.git" ]]; then
 else
     WORKSPACE="/workspace/parameter-golf"
 fi
-LOCAL_FA3_WHEEL="${LOCAL_FA3_WHEEL:-${WORKSPACE}/wheels/fa3_cu124_vast/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl}"
 
-echo "============================================"
-echo "  POD SETUP"
-echo "  Branch: ${BRANCH}"
-echo "  Variant: ${DATASET_VARIANT}"
-echo "  Train shards: ${TRAIN_SHARDS}"
-echo "============================================"
+WHEEL_PATH="${WHEEL_PATH:-${WORKSPACE}/wheels/fa3_cu124_vast/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl}"
+ACTIVATE_FLYWHEEL="${WORKSPACE}/scripts/activate_flywheel_env.sh"
+ACTIVATE_POD="${WORKSPACE}/scripts/activate_pod_env.sh"
 
-# =============================================================================
-# 1. Get the repo on the test branch
-# =============================================================================
-if [ -d "${WORKSPACE}/.git" ]; then
-    echo "[1/6] Repo exists, force-syncing to ${BRANCH}..."
+log() { printf '%s\n' "$*"; }
+die() { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
+
+activate_runtime_env() {
+    if [[ -x /workspace/miniconda3/bin/conda && -f /workspace/miniconda3/etc/profile.d/conda.sh ]]; then
+        # shellcheck disable=SC1091
+        source /workspace/miniconda3/etc/profile.d/conda.sh
+        conda activate "${CONDA_ENV}"
+    elif [[ -f "${VENV_DIR}/bin/activate" ]]; then
+        # shellcheck disable=SC1090
+        source "${VENV_DIR}/bin/activate"
+    else
+        die "runtime env missing; expected conda env ${CONDA_ENV} or venv ${VENV_DIR}"
+    fi
+}
+
+write_activate_helper() {
+    local helper_path="$1"
+    cat > "${helper_path}" <<ACTEOF
+#!/usr/bin/env bash
+set -euo pipefail
+REPO_ROOT="\$(cd -- "\$(dirname -- "\${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -x /workspace/miniconda3/bin/conda && -f /workspace/miniconda3/etc/profile.d/conda.sh ]]; then
+  source /workspace/miniconda3/etc/profile.d/conda.sh
+  conda activate "${CONDA_ENV}"
+elif [[ -f "${VENV_DIR}/bin/activate" ]]; then
+  source "${VENV_DIR}/bin/activate"
+fi
+TORCH_LIB=\$(python - <<'PYEOF'
+import os, torch
+print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+PYEOF
+)
+export LD_LIBRARY_PATH="\${TORCH_LIB}:\${LD_LIBRARY_PATH:-}"
+if [[ -d "\${REPO_ROOT}/flash-attention/hopper" ]]; then
+  export PYTHONPATH="\${REPO_ROOT}/flash-attention/hopper:\${PYTHONPATH:-}"
+fi
+for _site in /usr/local/lib/python3.12/dist-packages /usr/local/lib/python3.12/site-packages /usr/lib/python3/dist-packages; do
+  if [[ -d "\${_site}" ]]; then
+    export PYTHONPATH="\${_site}:\${PYTHONPATH:-}"
+  fi
+done
+export COMPILE_ENABLED=1
+export COMPILE_FULLGRAPH=1
+export TORCHDYNAMO_SUPPRESS_ERRORS=0
+ACTEOF
+    chmod +x "${helper_path}"
+}
+
+log "============================================"
+log "  POD SETUP"
+log "  Branch: ${BRANCH}"
+log "  Train shards: ${TRAIN_SHARDS}"
+log "  Midnight anchor: PR #1458 @ 2026-04-07 19:40:32 America/Chicago"
+log "============================================"
+
+if [[ -d "${WORKSPACE}/.git" ]]; then
+    log "[1/6] Repo exists, force-syncing to ${BRANCH}..."
     cd "${WORKSPACE}"
     git fetch origin "${BRANCH}" --quiet
     git checkout -B "${BRANCH}" "origin/${BRANCH}" --force
     git clean -fd --quiet
-elif [ -d "${WORKSPACE}" ]; then
-    echo "[1/6] Existing non-git workspace detected, using in-place files..."
+elif [[ -d "${WORKSPACE}" ]]; then
+    log "[1/6] Existing non-git workspace detected, using in-place files..."
     cd "${WORKSPACE}"
 else
-    echo "[1/6] Cloning repo..."
+    log "[1/6] Cloning repo..."
     git clone -b "${BRANCH}" "${REPO_URL}" "${WORKSPACE}"
     cd "${WORKSPACE}"
 fi
-if [ -d "${WORKSPACE}/.git" ]; then
-    echo "  HEAD: $(git log --oneline -1)"
+if [[ -d "${WORKSPACE}/.git" ]]; then
+    log "  HEAD: $(git log --oneline -1)"
 else
-    echo "  HEAD: non-git workspace (no commit metadata)"
+    log "  HEAD: non-git workspace (no commit metadata)"
 fi
 
-# =============================================================================
-# 2. Verify base environment (system Python + PyTorch must already exist)
-# =============================================================================
-echo ""
-echo "[2/6] Checking base environment..."
+[[ -f "${WHEEL_PATH}" ]] || die "missing FA3 wheel: ${WHEEL_PATH}"
 
-python3 --version || { echo "FATAL: python3 not found"; exit 1; }
-python3 - <<'PYEOF'
-import sys
-import torch
-
-torch_version = torch.__version__
-cuda_version = str(torch.version.cuda or "")
-print(f"  PyTorch {torch_version}  CUDA {cuda_version}")
-if "+cu124" in torch_version or cuda_version.startswith("12.4"):
-    raise SystemExit("FATAL: stale cu124 torch stack detected; use the correct pod image before running this setup.")
+log ""
+log "[2/6] Base image forensics..."
+python3 --version || die "python3 not found"
+python3 - <<'PYEOF' || true
+try:
+    import torch
+    print(f"  Base torch {torch.__version__}  CUDA {torch.version.cuda}")
+except Exception as exc:
+    print(f"  Base torch unavailable: {exc}")
 PYEOF
-RUNTIME_LIB_PATHS="$(python3 - <<'PYEOF'
-import glob
-import os
-import site
-import torch
+log "  Installing isolated Midnight stack regardless of base image."
 
-paths = []
-torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-if os.path.isdir(torch_lib):
-    paths.append(torch_lib)
-
-site_dirs = []
-try:
-    site_dirs.extend(site.getsitepackages())
-except Exception:
-    pass
-try:
-    site_dirs.append(site.getusersitepackages())
-except Exception:
-    pass
-
-for base in site_dirs:
-    if not base or not os.path.isdir(base):
-        continue
-    for pattern in (
-        os.path.join(base, "nvidia", "*", "lib"),
-        os.path.join(base, "nvidia", "*", "lib64"),
-    ):
-        for candidate in glob.glob(pattern):
-            if os.path.isdir(candidate):
-                paths.append(candidate)
-
-for candidate in (
-    "/usr/local/cuda/lib64",
-    "/usr/local/cuda/compat",
-    "/usr/local/nvidia/lib",
-    "/usr/local/nvidia/lib64",
-):
-    if os.path.isdir(candidate):
-        paths.append(candidate)
-
-seen = set()
-ordered = []
-for path in paths:
-    if path not in seen:
-        seen.add(path)
-        ordered.append(path)
-print(":".join(ordered))
-PYEOF
-)"
-export LD_LIBRARY_PATH="${RUNTIME_LIB_PATHS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-ACTIVATE_HELPER="${WORKSPACE}/${ACTIVATE_HELPER_REL}"
-cat > "${ACTIVATE_HELPER}" <<'ACTEOF'
-#!/usr/bin/env bash
-set -euo pipefail
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${REPO_ROOT}"
-RUNTIME_LIB_PATHS="$(python3 - <<'PYEOF'
-import glob
-import os
-import site
-import torch
-
-paths = []
-torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-if os.path.isdir(torch_lib):
-    paths.append(torch_lib)
-
-site_dirs = []
-try:
-    site_dirs.extend(site.getsitepackages())
-except Exception:
-    pass
-try:
-    site_dirs.append(site.getusersitepackages())
-except Exception:
-    pass
-
-for base in site_dirs:
-    if not base or not os.path.isdir(base):
-        continue
-    for pattern in (
-        os.path.join(base, "nvidia", "*", "lib"),
-        os.path.join(base, "nvidia", "*", "lib64"),
-    ):
-        for candidate in glob.glob(pattern):
-            if os.path.isdir(candidate):
-                paths.append(candidate)
-
-for candidate in (
-    "/usr/local/cuda/lib64",
-    "/usr/local/cuda/compat",
-    "/usr/local/nvidia/lib",
-    "/usr/local/nvidia/lib64",
-):
-    if os.path.isdir(candidate):
-        paths.append(candidate)
-
-seen = set()
-ordered = []
-for path in paths:
-    if path not in seen:
-        seen.add(path)
-        ordered.append(path)
-print(":".join(ordered))
-PYEOF
-)"
-export LD_LIBRARY_PATH="${RUNTIME_LIB_PATHS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
-    export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
-fi
-ACTEOF
-chmod +x "${ACTIVATE_HELPER}"
-
-GPU_COUNT=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo "0")
-if [ "$GPU_COUNT" -eq 0 ]; then
-    echo "  WARNING: No GPUs detected"
+log ""
+log "[3/6] Installing exact Midnight stack (torch 2.4.1+cu124 + FA3 wheel)..."
+if [[ -x /workspace/miniconda3/bin/conda && -f /workspace/miniconda3/etc/profile.d/conda.sh ]]; then
+    # shellcheck disable=SC1091
+    source /workspace/miniconda3/etc/profile.d/conda.sh
+    if ! conda env list | awk '{print $1}' | grep -qx "${CONDA_ENV}"; then
+        log "  Creating conda env ${CONDA_ENV}"
+        conda create -y -n "${CONDA_ENV}" "python=${PYTHON_VERSION}" pip
+    else
+        log "  Reusing conda env ${CONDA_ENV}"
+    fi
+    conda activate "${CONDA_ENV}"
 else
-    python3 -c "
-import torch
-for i in range(torch.cuda.device_count()):
-    p = torch.cuda.get_device_properties(i)
-    print(f'  GPU {i}: {p.name} ({p.total_mem // 1024**3}GB)')
-" 2>/dev/null || true
+    log "  Reusing venv ${VENV_DIR}"
+    if [[ ! -d "${VENV_DIR}" ]]; then
+        python3 -m venv "${VENV_DIR}"
+    fi
+    # shellcheck disable=SC1090
+    source "${VENV_DIR}/bin/activate"
 fi
 
-# =============================================================================
-# 3. Core pip packages (system site-packages, no conda, no PYTHONPATH)
-# =============================================================================
-echo ""
-echo "[3/6] Installing pip packages..."
+python -m pip install -U pip setuptools wheel
+python -m pip install --index-url "${TORCH_INDEX_URL}" \
+    torch==2.4.1+cu124 torchvision==0.19.1+cu124 torchaudio==2.4.1+cu124
+python -m pip install \
+    sentencepiece zstandard brotli huggingface-hub datasets tiktoken attr einops ninja packaging sympy==1.12
+python -m pip install --no-deps --force-reinstall "${WHEEL_PATH}"
 
-pip install --upgrade pip -q 2>&1 | tail -1
+log ""
+log "[4/6] Writing activation helpers..."
+write_activate_helper "${ACTIVATE_FLYWHEEL}"
+write_activate_helper "${ACTIVATE_POD}"
+log "  Wrote scripts/activate_flywheel_env.sh"
+log "  Wrote scripts/activate_pod_env.sh"
 
-pip install numpy tqdm huggingface-hub kernels setuptools \
-    "typing-extensions==4.15.0" datasets tiktoken sentencepiece attr -q 2>&1 | tail -1
-echo "  Core packages OK"
+log ""
+log "[5/6] Verifying FA3 + Midnight runtime..."
+activate_runtime_env
+bash "${WORKSPACE}/scripts/verify_cu124_fa3_env.sh"
 
-# =============================================================================
-# 4. zstandard (CRITICAL: prevents artifact size inflation)
-# =============================================================================
-echo ""
-echo "[4/6] zstandard..."
-
-if python3 -c "import zstandard" 2>/dev/null; then
-    echo "  Already installed"
-else
-    pip install zstandard -q
-    echo "  Installed"
-fi
-python3 -c "import zstandard; print(f'  zstandard {zstandard.__version__}')"
-
-echo "  brotli..."
-if python3 -c "import brotli" 2>/dev/null; then
-    echo "  Already installed"
-else
-    pip install brotli -q
-    echo "  Installed"
-fi
-python3 -c "import brotli; print(f'  brotli {brotli.__version__}')" 2>/dev/null || echo "  brotli OK"
-
-# =============================================================================
-# 5. FlashAttention-3
-# =============================================================================
-echo ""
-echo "[5/6] FlashAttention-3..."
-
-sync_fa3_dir_into_site() {
-    local fa_dir="$1"
-    local site_dir
-    local linked=0
-    site_dir="$(python3 -c "import site; print(site.getsitepackages()[0])")"
-
-    for pattern in flash_attn_interface.py flash_attn_interface*.so flash_attn_config.py; do
-        for src in "${fa_dir}"/${pattern}; do
-            [ -e "${src}" ] || continue
-            ln -sf "${src}" "${site_dir}/$(basename "${src}")"
-            linked=1
-        done
-    done
-
-    if [ "${linked}" -eq 1 ]; then
-        echo "  Symlinked FA3 runtime from ${fa_dir} into ${site_dir}"
-        return 0
-    fi
-    return 1
-}
-
-find_system_fa3_dir() {
-    for py in $(which -a python3 2>/dev/null | awk '!seen[$0]++') /opt/conda/bin/python3 /usr/bin/python3; do
-        [ -x "${py}" ] || continue
-        fa_dir="$("${py}" - <<'PYEOF' 2>/dev/null || true
-import inspect
-import os
-try:
-    import flash_attn_interface
-    print(os.path.dirname(inspect.getfile(flash_attn_interface)))
-except Exception:
-    pass
-PYEOF
-)"
-        if [ -n "${fa_dir}" ]; then
-            printf '%s\n' "${fa_dir}"
-            return 0
-        fi
-    done
-    return 1
-}
-
-verify_fa3_runtime() {
-    python3 - <<'PYEOF' >/dev/null 2>&1
-import importlib
-import flash_attn_interface  # noqa: F401
-importlib.import_module("flash_attn_3._C")
-PYEOF
-}
-
-install_fa3() {
-    echo "  Searching system for pre-installed flash_attn_interface..."
-    local system_fa3_dir=""
-    system_fa3_dir="$(find_system_fa3_dir || true)"
-    if [ -n "${system_fa3_dir}" ] && sync_fa3_dir_into_site "${system_fa3_dir}"; then
-        if verify_fa3_runtime; then
-            echo "  Attached system FA3 runtime"
-            return 0
-        fi
-        echo "  System FA3 path did not import cleanly; continuing..."
-    fi
-
-    if [ -f "${LOCAL_FA3_WHEEL}" ]; then
-        echo "  Injecting local emergency FA3 wheel..."
-        if pip install --no-deps --force-reinstall "${LOCAL_FA3_WHEEL}" 2>&1 | tail -3; then
-            if verify_fa3_runtime; then
-                echo "  Local FA3 wheel attached"
-                return 0
-            fi
-            echo "  Local FA3 wheel installed but did not import cleanly; continuing..."
-        else
-            echo "  Local FA3 wheel install failed; continuing..."
-        fi
-    fi
-
-    echo "  Checking for local flash-attention/hopper source..."
-    if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
-        if sync_fa3_dir_into_site "${WORKSPACE}/flash-attention/hopper"; then
-            if verify_fa3_runtime; then
-                echo "  Local Hopper FA3 attached"
-                return 0
-            fi
-            echo "  Local Hopper attach did not import cleanly; continuing..."
-        fi
-    fi
-
-    echo "  Attempting official FA3 abi3 wheel..."
-    if pip install --no-cache-dir \
-        "${FA3_WHEEL_URL}" \
-        2>&1 | tail -3; then
-        if verify_fa3_runtime; then
-            echo "  Official FA3 wheel attached"
-            return 0
-        fi
-        echo "  Official FA3 wheel installed but did not import cleanly."
-    fi
-
-    echo "  FATAL: Could not install or locate FA3 for the current torch stack."
-    return 1
-}
-
-if python3 -c "from flash_attn_interface import flash_attn_func; print('  FA3 (flash_attn_interface) OK')" 2>/dev/null; then
-    : # already good
-elif python3 -c "import flash_attn; v=flash_attn.__version__; assert v.startswith('3'); print(f'  FA3 v{v} OK')" 2>/dev/null; then
-    : # flash_attn v3 package works
-else
-    install_fa3
-fi
-python3 - <<'PYEOF'
-import importlib
-importlib.import_module("flash_attn_3._C")
-from flash_attn_interface import flash_attn_func  # noqa: F401
-print("  FA3 runtime OK")
-PYEOF
-
-# =============================================================================
-# 6. Dataset (sp1024)
-# =============================================================================
-echo ""
-echo "[6/6] Tokenizer + FineWeb dataset (${DATASET_VARIANT})..."
-
-# SP1024: official competition repo (willdepueoai/parameter-golf)
-echo "  Downloading SP1024 (competition default)..."
+log ""
+log "[6/6] Downloading tokenizers + FineWeb datasets..."
+activate_runtime_env
 cd "${WORKSPACE}"
-python3 data/cached_challenge_fineweb.py --variant sp1024 --train-shards "${TRAIN_SHARDS}"
-echo "  SP1024 data downloaded"
-
-# SP8192: from kevclark/parameter-golf (merged leaderboard submission)
-echo "  Downloading SP8192 (kevclark/parameter-golf)..."
+python data/cached_challenge_fineweb.py --variant sp1024 --train-shards "${TRAIN_SHARDS}"
 rm -f data/manifest.json
 MATCHED_FINEWEB_REPO_ID=kevclark/parameter-golf \
-python3 data/cached_challenge_fineweb.py --variant sp8192 --train-shards "${TRAIN_SHARDS}" || {
-    echo "  WARNING: SP8192 download failed (disk space or network). SP1024 still available."
+python data/cached_challenge_fineweb.py --variant sp8192 --train-shards "${TRAIN_SHARDS}" || {
+    log "  WARNING: SP8192 download failed; SP1024 is still ready."
 }
-# Restore default manifest for future sp1024 downloads
 rm -f data/manifest.json
-echo "  Dataset setup complete"
 
-# =============================================================================
-# Verification
-# =============================================================================
-echo ""
-echo "============================================"
-echo " Verification"
-echo "============================================"
-
-python3 - << 'PYEOF'
-import os, sys, glob
-
-print(f"Python       : {sys.version.split()[0]}")
-print(f"Executable   : {sys.executable}")
-
-import torch
-print(f"PyTorch      : {torch.__version__}")
-print(f"CUDA avail   : {torch.cuda.is_available()}")
-print(f"GPUs         : {torch.cuda.device_count()}")
-
-fa = "NOT FOUND"
-try:
-    from flash_attn_interface import flash_attn_func
-    fa = "flash_attn_interface (FA3 hopper)"
-except ImportError:
-    try:
-        import flash_attn
-        v = flash_attn.__version__
-        fa = f"flash_attn v{v}" + ("" if v.startswith("3") else " WARNING: not FA3!")
-    except ImportError:
-        pass
-print(f"FlashAttn    : {fa}")
-
-try:
-    import zstandard
-    print(f"zstandard    : {zstandard.__version__}")
-except ImportError:
-    print("zstandard    : MISSING!")
-
-try:
-    import sentencepiece
-    print(f"sentencepiece: OK")
-except ImportError:
-    print("sentencepiece: MISSING!")
-
-variant = os.environ.get("DATASET_VARIANT", "sp1024")
-dataset_dir = "fineweb10B_byte260" if variant == "byte260" else f"fineweb10B_{variant}"
-train = sorted(glob.glob(f"./data/datasets/{dataset_dir}/fineweb_train_*.bin"))
-val   = sorted(glob.glob(f"./data/datasets/{dataset_dir}/fineweb_val_*.bin"))
-print(f"Train shards : {len(train)}")
-print(f"Val shards   : {len(val)}")
-PYEOF
-
-echo ""
-echo "============================================"
-echo " READY."
-echo "============================================"
-echo "Activation helper: ${ACTIVATE_HELPER_REL}"
+log ""
+log "============================================"
+log " READY."
+log "============================================"
+log "Activation helpers:"
+log "  scripts/activate_flywheel_env.sh"
+log "  scripts/activate_pod_env.sh"

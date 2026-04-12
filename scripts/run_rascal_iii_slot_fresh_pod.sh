@@ -41,6 +41,9 @@ fi
 if [[ -f "${REPO_ROOT}/scripts/activate_pod_env.sh" ]]; then
   # shellcheck disable=SC1091
   source "${REPO_ROOT}/scripts/activate_pod_env.sh"
+elif [[ -f "${REPO_ROOT}/scripts/activate_flywheel_env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/scripts/activate_flywheel_env.sh"
 fi
 
 PYTHON_BIN="$(command -v python3)"
@@ -73,8 +76,8 @@ print(f"torchrun : {shutil.which('torchrun')}")
 print(f"zstd     : {zstandard.__version__}")
 print("fa3      : OK")
 
-assert "+cu124" not in torch.__version__, f"stale torch stack: {torch.__version__}"
-assert not str(torch.version.cuda).startswith("12.4"), f"stale cuda stack: {torch.version.cuda}"
+assert torch.__version__ == "2.4.1+cu124", f"wrong torch: {torch.__version__}"
+assert str(torch.version.cuda).startswith("12.4"), f"wrong cuda: {torch.version.cuda}"
 PY
 
 log "[3/4] torchrun shim ..."

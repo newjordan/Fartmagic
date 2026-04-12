@@ -1938,7 +1938,7 @@ def eval_val_ttt(
         scored_start = ws + s
         ci = min(scored_start // ttt_chunk, num_chunks - 1)
         chunk_windows[ci].append(ws)
-    log0(f"ttt:start chunks={num_chunks} ttt_lr={args.ttt_lr} ttt_epochs={args.ttt_epochs}")
+    print(f"ttt:start chunks={num_chunks} ttt_lr={args.ttt_lr} ttt_epochs={args.ttt_epochs}", flush=True)
     compiled_logits = torch.compile(base_model.forward_logits, dynamic=False, fullgraph=True)
     loss_sum = torch.zeros((), device=device, dtype=torch.float64)
     token_count = torch.zeros((), device=device, dtype=torch.float64)

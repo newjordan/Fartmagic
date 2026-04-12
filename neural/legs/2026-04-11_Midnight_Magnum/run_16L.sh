@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${REPO_ROOT}"
+
+TRAIN_SCRIPT="${REPO_ROOT}/legs/2026-04-11_Midnight_Magnum/train_gpt.py"
+LOG_DIR="${REPO_ROOT}/legs/2026-04-11_Midnight_Magnum/logs"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/16L_seed${SEED:-444}_$(date +%Y%m%d_%H%M%S).log"
+
+NPROC="${NPROC_PER_NODE:-8}"
+SEED="${SEED:-444}"
+
+export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
+
+SEED="${SEED}" \
+NPROC_PER_NODE="${NPROC}" \
+MAX_WALLCLOCK_SECONDS=600 \
+SKIP_GPTQ=1 \
+NUM_LAYERS=16 \
+NUM_LOOPS=0 \
+COMPRESSOR=brotli \
+QUANT_ATTN_BITS=5 \
+QUANT_MLP_BITS=6 \
+QUANT_AUX_BITS=6 \
+QUANT_EMBED_BITS=8 \
+QUANT_OTHER_BITS=8 \
+LOADER_MODE=coprime \
+COPRIME_MAX_LOADED_SHARDS=80 \
+COPRIME_SHARDS_PER_BATCH=1 \
+COPRIME_SHARD_HOLD_STEPS=64 \
+COMPLEMENT_ALPHA=0 \
+XSA_LAST_N=11 \
+BIGRAM_VOCAB_SIZE=2048 \
+ROPE_DIMS=16 \
+SWA_EVERY=50 \
+MTP_NUM_HEADS=0 \
+TRIGRAM=0 \
+NGRAM_EVAL_ORDER=0 \
+CUBRIC_CADENCE=0 \
+NGRAM_ENTROPY_SHIFT=0 \
+torchrun --standalone --nproc_per_node="${NPROC}" "${TRAIN_SCRIPT}" \
+2>&1 | tee "${LOG_FILE}"
+
+echo "LOG: ${LOG_FILE}"

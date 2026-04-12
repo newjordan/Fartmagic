@@ -144,23 +144,88 @@ python3 -c "import brotli; print(f'  brotli {brotli.__version__}')" 2>/dev/null 
 echo ""
 echo "[5/6] FlashAttention-3..."
 
-install_fa3() {
-    echo "  Attempting FA3 abi3 wheel (cu128)..."
-    if pip install --no-cache-dir \
-        "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
-        2>&1 | tail -3; then
+sync_fa3_dir_into_site() {
+    local fa_dir="$1"
+    local site_dir
+    local linked=0
+    site_dir="$(python3 -c "import site; print(site.getsitepackages()[0])")"
+
+    for pattern in flash_attn_interface.py flash_attn_interface*.so flash_attn_config.py; do
+        for src in "${fa_dir}"/${pattern}; do
+            [ -e "${src}" ] || continue
+            ln -sf "${src}" "${site_dir}/$(basename "${src}")"
+            linked=1
+        done
+    done
+
+    if [ "${linked}" -eq 1 ]; then
+        echo "  Symlinked FA3 runtime from ${fa_dir} into ${site_dir}"
         return 0
     fi
+    return 1
+}
 
-    echo "  Wheels failed. Checking for local flash-attention/hopper source..."
-    if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
-        SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
-        SRC="${WORKSPACE}/flash-attention/hopper/flash_attn_interface.py"
-        if [ -f "$SRC" ]; then
-            ln -sf "$SRC" "${SITE}/flash_attn_interface.py"
-            echo "  Symlinked flash_attn_interface.py into site-packages"
+find_system_fa3_dir() {
+    for py in $(which -a python3 2>/dev/null | awk '!seen[$0]++') /opt/conda/bin/python3 /usr/bin/python3; do
+        [ -x "${py}" ] || continue
+        fa_dir="$("${py}" - <<'PYEOF' 2>/dev/null || true
+import inspect
+import os
+try:
+    import flash_attn_interface
+    print(os.path.dirname(inspect.getfile(flash_attn_interface)))
+except Exception:
+    pass
+PYEOF
+)"
+        if [ -n "${fa_dir}" ]; then
+            printf '%s\n' "${fa_dir}"
             return 0
         fi
+    done
+    return 1
+}
+
+verify_fa3_runtime() {
+    python3 - <<'PYEOF' >/dev/null 2>&1
+import importlib
+import flash_attn_interface  # noqa: F401
+importlib.import_module("flash_attn_3._C")
+PYEOF
+}
+
+install_fa3() {
+    echo "  Searching system for pre-installed flash_attn_interface..."
+    local system_fa3_dir=""
+    system_fa3_dir="$(find_system_fa3_dir || true)"
+    if [ -n "${system_fa3_dir}" ] && sync_fa3_dir_into_site "${system_fa3_dir}"; then
+        if verify_fa3_runtime; then
+            echo "  Attached system FA3 runtime"
+            return 0
+        fi
+        echo "  System FA3 path did not import cleanly; continuing..."
+    fi
+
+    echo "  Checking for local flash-attention/hopper source..."
+    if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
+        if sync_fa3_dir_into_site "${WORKSPACE}/flash-attention/hopper"; then
+            if verify_fa3_runtime; then
+                echo "  Local Hopper FA3 attached"
+                return 0
+            fi
+            echo "  Local Hopper attach did not import cleanly; continuing..."
+        fi
+    fi
+
+    echo "  Attempting FA3 abi3 wheel (cu128)..."
+    if pip install --no-cache-dir --no-deps \
+        "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
+        2>&1 | tail -3; then
+        if verify_fa3_runtime; then
+            echo "  Direct abi wheel attached"
+            return 0
+        fi
+        echo "  Direct abi wheel installed but did not import cleanly."
     fi
 
     echo "  WARNING: Could not install FA3. Will fall back to PyTorch SDPA."

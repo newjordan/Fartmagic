@@ -12,6 +12,8 @@ LOG_FILE="${LOG_DIR}/full_seed${SEED:-444}_$(date +%Y%m%d_%H%M%S).log"
 NPROC="${NPROC_PER_NODE:-8}"
 SEED="${SEED:-444}"
 
+export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
+
 # ONE-VARIABLE RULE: add at most one new env override below.
 # Example:
 # QK_GAIN_INIT=5.25 \

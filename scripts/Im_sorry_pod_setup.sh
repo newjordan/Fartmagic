@@ -22,6 +22,7 @@ REPO_URL="https://github.com/newjordan/parameter-golf.git"
 BRANCH="${BRANCH:-TEST_LAB}"
 TRAIN_SHARDS="${TRAIN_SHARDS:-80}"
 DATASET_VARIANT="${DATASET_VARIANT:-sp1024}"
+ACTIVATE_HELPER_REL="scripts/activate_pod_env.sh"
 # Auto-detect repo root from script location; fall back for curl-pipe scenario
 _SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || true
 _CANDIDATE="$(cd -- "${_SCRIPT_DIR}/.." && pwd 2>/dev/null)" || true
@@ -83,6 +84,24 @@ for i in range(torch.cuda.device_count()):
     print(f'  GPU {i}: {p.name} ({p.total_mem // 1024**3}GB)')
 " 2>/dev/null || true
 fi
+
+ACTIVATE_HELPER="${WORKSPACE}/${ACTIVATE_HELPER_REL}"
+cat > "${ACTIVATE_HELPER}" <<'ACTEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+TORCH_LIB="$(python3 - <<'PYEOF'
+import os, torch
+print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+PYEOF
+)"
+export LD_LIBRARY_PATH="${TORCH_LIB}:${LD_LIBRARY_PATH:-}"
+if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
+    export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
+fi
+ACTEOF
+chmod +x "${ACTIVATE_HELPER}"
+echo "  Wrote ${ACTIVATE_HELPER_REL}"
 
 # =============================================================================
 # 3. Core pip packages (system site-packages, no conda, no PYTHONPATH)
@@ -156,6 +175,8 @@ else
     install_fa3
 fi
 
+DATASET_VARIANT="${DATASET_VARIANT}" VERIFY_DATA=0 bash "${WORKSPACE}/scripts/verify_fa3_env.sh"
+
 # =============================================================================
 # 6. Dataset
 # =============================================================================
@@ -177,51 +198,10 @@ echo "============================================"
 echo " Verification"
 echo "============================================"
 
-python3 - << 'PYEOF'
-import os, sys, glob
-
-print(f"Python       : {sys.version.split()[0]}")
-print(f"Executable   : {sys.executable}")
-
-import torch
-print(f"PyTorch      : {torch.__version__}")
-print(f"CUDA avail   : {torch.cuda.is_available()}")
-print(f"GPUs         : {torch.cuda.device_count()}")
-
-fa = "NOT FOUND"
-try:
-    from flash_attn_interface import flash_attn_func
-    fa = "flash_attn_interface (FA3 hopper)"
-except ImportError:
-    try:
-        import flash_attn
-        v = flash_attn.__version__
-        fa = f"flash_attn v{v}" + ("" if v.startswith("3") else " WARNING: not FA3!")
-    except ImportError:
-        pass
-print(f"FlashAttn    : {fa}")
-
-try:
-    import zstandard
-    print(f"zstandard    : {zstandard.__version__}")
-except ImportError:
-    print("zstandard    : MISSING!")
-
-try:
-    import sentencepiece
-    print(f"sentencepiece: OK")
-except ImportError:
-    print("sentencepiece: MISSING!")
-
-variant = os.environ.get("DATASET_VARIANT", "sp1024")
-dataset_dir = "fineweb10B_byte260" if variant == "byte260" else f"fineweb10B_{variant}"
-train = sorted(glob.glob(f"./data/datasets/{dataset_dir}/fineweb_train_*.bin"))
-val   = sorted(glob.glob(f"./data/datasets/{dataset_dir}/fineweb_val_*.bin"))
-print(f"Train shards : {len(train)}")
-print(f"Val shards   : {len(val)}")
-PYEOF
+DATASET_VARIANT="${DATASET_VARIANT}" VERIFY_DATA=1 bash "${WORKSPACE}/scripts/verify_fa3_env.sh"
 
 echo ""
 echo "============================================"
 echo " READY."
 echo "============================================"
+echo "Activation helper: ${ACTIVATE_HELPER_REL}"

@@ -74,22 +74,29 @@ if not fa_ok:
 assert fa_ok, "flash-attn import failed; " + " | ".join(fa_errors)
 
 verify_data = os.environ.get("VERIFY_DATA", "1") != "0"
+variant = os.environ.get("DATASET_VARIANT", "sp1024")
+tokenizer_map = {
+    "sp1024": "./data/tokenizers/fineweb_1024_bpe.model",
+    "sp8192": "./data/tokenizers/fineweb_8192_bpe.model",
+}
+dataset_dir = "fineweb10B_byte260" if variant == "byte260" else f"fineweb10B_{variant}"
 train = []
 val = []
 if verify_data:
-    tokenizer = "./data/tokenizers/fineweb_1024_bpe.model"
-    assert os.path.isfile(tokenizer), f"missing tokenizer: {tokenizer}"
+    tokenizer = os.environ.get("TOKENIZER_PATH", tokenizer_map.get(variant, ""))
+    if tokenizer:
+        assert os.path.isfile(tokenizer), f"missing tokenizer: {tokenizer}"
 
-    train = glob.glob("./data/datasets/fineweb10B_sp1024/fineweb_train_*.bin")
-    val = glob.glob("./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin")
-    assert len(train) >= 1, "missing train shards"
-    assert len(val) >= 1, "missing val shards"
+    train = glob.glob(f"./data/datasets/{dataset_dir}/fineweb_train_*.bin")
+    val = glob.glob(f"./data/datasets/{dataset_dir}/fineweb_val_*.bin")
+    assert len(train) >= 1, f"missing train shards for {dataset_dir}"
+    assert len(val) >= 1, f"missing val shards for {dataset_dir}"
 
 print("VERIFY_OK")
 print(f"torch={torch.__version__} cuda={torch.version.cuda}")
 print(f"gpus={torch.cuda.device_count()}")
 if verify_data:
-    print(f"train_shards={len(train)} val_shards={len(val)}")
+    print(f"dataset={dataset_dir} train_shards={len(train)} val_shards={len(val)}")
 else:
     print("data_checks=skipped")
 PYEOF

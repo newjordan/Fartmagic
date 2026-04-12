@@ -31,6 +31,7 @@ if [[ -d "${_CANDIDATE}/.git" ]]; then
 else
     WORKSPACE="/workspace/parameter-golf"
 fi
+LOCAL_FA3_WHEEL="${LOCAL_FA3_WHEEL:-${WORKSPACE}/wheels/fa3_cu124_vast/flash_attn_3-3.0.0-cp39-abi3-linux_x86_64.whl}"
 
 echo "============================================"
 echo "  POD SETUP"
@@ -288,26 +289,59 @@ PYEOF
     return 1
 }
 
+verify_fa3_runtime() {
+    python3 - <<'PYEOF' >/dev/null 2>&1
+import importlib
+import flash_attn_interface  # noqa: F401
+importlib.import_module("flash_attn_3._C")
+PYEOF
+}
+
 install_fa3() {
     echo "  Searching system for pre-installed flash_attn_interface..."
     local system_fa3_dir=""
     system_fa3_dir="$(find_system_fa3_dir || true)"
     if [ -n "${system_fa3_dir}" ] && sync_fa3_dir_into_site "${system_fa3_dir}"; then
-        return 0
+        if verify_fa3_runtime; then
+            echo "  Attached system FA3 runtime"
+            return 0
+        fi
+        echo "  System FA3 path did not import cleanly; continuing..."
+    fi
+
+    if [ -f "${LOCAL_FA3_WHEEL}" ]; then
+        echo "  Injecting local emergency FA3 wheel..."
+        if pip install --no-deps --force-reinstall "${LOCAL_FA3_WHEEL}" 2>&1 | tail -3; then
+            if verify_fa3_runtime; then
+                echo "  Local FA3 wheel attached"
+                return 0
+            fi
+            echo "  Local FA3 wheel installed but did not import cleanly; continuing..."
+        else
+            echo "  Local FA3 wheel install failed; continuing..."
+        fi
+    fi
+
+    echo "  Checking for local flash-attention/hopper source..."
+    if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
+        if sync_fa3_dir_into_site "${WORKSPACE}/flash-attention/hopper"; then
+            if verify_fa3_runtime; then
+                echo "  Local Hopper FA3 attached"
+                return 0
+            fi
+            echo "  Local Hopper attach did not import cleanly; continuing..."
+        fi
     fi
 
     echo "  Attempting official FA3 abi3 wheel..."
     if pip install --no-cache-dir \
         "${FA3_WHEEL_URL}" \
         2>&1 | tail -3; then
-        return 0
-    fi
-
-    echo "  Wheels failed. Checking for local flash-attention/hopper source..."
-    if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
-        if sync_fa3_dir_into_site "${WORKSPACE}/flash-attention/hopper"; then
+        if verify_fa3_runtime; then
+            echo "  Official FA3 wheel attached"
             return 0
         fi
+        echo "  Official FA3 wheel installed but did not import cleanly."
     fi
 
     echo "  FATAL: Could not install or locate FA3 for the current torch stack."

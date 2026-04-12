@@ -708,12 +708,13 @@ def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
     F.linear = _capturing_linear
     stream = TokenStream(train_pattern)
     model.eval()
+    # Run calibration in float32 (no autocast) so that .to(x.dtype) in the
+    # forward pass is a no-op and bank slice data_ptrs match the ptr map.
     with torch.no_grad():
         for _ in range(n_samples):
             tokens = stream.take(seq_len + 1).to(device=device, dtype=torch.int64)
             x = tokens[:-1].unsqueeze(0)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model.forward_logits(x)
+            model.forward_logits(x)
     F.linear = _orig_linear
     for h in hooks:
         h.remove()

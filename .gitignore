@@ -1,0 +1,16 @@
+.agent_state/
+__pycache__/
+*.pyc
+*.pyo
+
+data/datasets/
+data/tokenizers/
+data/manifest.json
+
+legs/*/logs/
+logs/
+
+*.pt
+*.ptz
+*.bin
+*.jsonl

@@ -32,10 +32,15 @@ log "  nproc: ${NPROC_PER_NODE}"
 log "============================================"
 
 if [[ "${RUN_POD_SETUP}" == "1" ]]; then
-  log "[1/4] Running scripts/pod_setup.sh ..."
-  bash "${REPO_ROOT}/scripts/pod_setup.sh"
+  log "[1/4] Running scripts/Im_sorry_pod_setup.sh ..."
+  bash "${REPO_ROOT}/scripts/Im_sorry_pod_setup.sh"
 else
   log "[1/4] Skipping pod setup (RUN_POD_SETUP=${RUN_POD_SETUP})"
+fi
+
+if [[ -f "${REPO_ROOT}/scripts/activate_pod_env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${REPO_ROOT}/scripts/activate_pod_env.sh"
 fi
 
 PYTHON_BIN="$(command -v python3)"
@@ -48,7 +53,9 @@ SHIM
 chmod +x "${SHIM_DIR}/torchrun"
 
 export PATH="${SHIM_DIR}:${PYTHON_DIR}:${PATH}"
-export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
+if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
+  export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
+fi
 
 log "[2/4] Verifying live runtime ..."
 "${PYTHON_BIN}" - <<'PY'
@@ -66,8 +73,8 @@ print(f"torchrun : {shutil.which('torchrun')}")
 print(f"zstd     : {zstandard.__version__}")
 print("fa3      : OK")
 
-assert torch.__version__ == "2.4.1+cu124", f"wrong torch: {torch.__version__}"
-assert str(torch.version.cuda).startswith("12.4"), f"wrong cuda: {torch.version.cuda}"
+assert "+cu124" not in torch.__version__, f"stale torch stack: {torch.__version__}"
+assert not str(torch.version.cuda).startswith("12.4"), f"stale cuda stack: {torch.version.cuda}"
 PY
 
 log "[3/4] torchrun shim ..."

@@ -4,7 +4,7 @@ export PIP_ROOT_USER_ACTION=ignore   # suppress "running as root" pip warning
 # =============================================================================
 # POD SETUP — the only script you ever run on a pod
 #
-# Usage:  bash pod_setup.sh
+# Usage:  bash scripts/Im_sorry_pod_setup.sh
 #   (or curl from raw URL and pipe to bash — works either way)
 #
 # What it does:
@@ -18,6 +18,7 @@ REPO_URL="https://github.com/newjordan/parameter-golf.git"
 BRANCH="${BRANCH:-TEST_LAB}"
 TRAIN_SHARDS="${TRAIN_SHARDS:-80}"
 DATASET_VARIANT="${DATASET_VARIANT:-sp1024}"
+ACTIVATE_HELPER_REL="scripts/activate_pod_env.sh"
 if [[ -x /venv/main/bin/python3 ]]; then
     export PATH="/venv/main/bin:${PATH}"
 fi
@@ -67,8 +68,16 @@ echo ""
 echo "[2/6] Checking base environment..."
 
 python3 --version || { echo "FATAL: python3 not found"; exit 1; }
-python3 -c "import torch; print(f'  PyTorch {torch.__version__}  CUDA {torch.version.cuda}')" \
-    || { echo "FATAL: PyTorch not installed in system Python"; exit 1; }
+python3 - <<'PYEOF'
+import sys
+import torch
+
+torch_version = torch.__version__
+cuda_version = str(torch.version.cuda or "")
+print(f"  PyTorch {torch_version}  CUDA {cuda_version}")
+if "+cu124" in torch_version or cuda_version.startswith("12.4"):
+    raise SystemExit("FATAL: stale cu124 torch stack detected; use the correct pod image before running this setup.")
+PYEOF
 TORCH_LIB="$(python3 - <<'PYEOF'
 import os
 import torch
@@ -76,6 +85,24 @@ print(os.path.join(os.path.dirname(torch.__file__), "lib"))
 PYEOF
 )"
 export LD_LIBRARY_PATH="${TORCH_LIB}:${LD_LIBRARY_PATH:-}"
+ACTIVATE_HELPER="${WORKSPACE}/${ACTIVATE_HELPER_REL}"
+cat > "${ACTIVATE_HELPER}" <<'ACTEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
+TORCH_LIB="$(python3 - <<'PYEOF'
+import os
+import torch
+print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+PYEOF
+)"
+export LD_LIBRARY_PATH="${TORCH_LIB}:${LD_LIBRARY_PATH:-}"
+if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
+    export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
+fi
+ACTEOF
+chmod +x "${ACTIVATE_HELPER}"
 
 GPU_COUNT=$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo "0")
 if [ "$GPU_COUNT" -eq 0 ]; then
@@ -130,7 +157,56 @@ python3 -c "import brotli; print(f'  brotli {brotli.__version__}')" 2>/dev/null 
 echo ""
 echo "[5/6] FlashAttention-3..."
 
+sync_fa3_dir_into_site() {
+    local fa_dir="$1"
+    local site_dir
+    local linked=0
+    site_dir="$(python3 -c "import site; print(site.getsitepackages()[0])")"
+
+    for pattern in flash_attn_interface.py flash_attn_interface*.so flash_attn_config.py; do
+        for src in "${fa_dir}"/${pattern}; do
+            [ -e "${src}" ] || continue
+            ln -sf "${src}" "${site_dir}/$(basename "${src}")"
+            linked=1
+        done
+    done
+
+    if [ "${linked}" -eq 1 ]; then
+        echo "  Symlinked FA3 runtime from ${fa_dir} into ${site_dir}"
+        return 0
+    fi
+    return 1
+}
+
+find_system_fa3_dir() {
+    for py in $(which -a python3 2>/dev/null | awk '!seen[$0]++') /opt/conda/bin/python3 /usr/bin/python3; do
+        [ -x "${py}" ] || continue
+        fa_dir="$("${py}" - <<'PYEOF' 2>/dev/null || true
+import inspect
+import os
+try:
+    import flash_attn_interface
+    print(os.path.dirname(inspect.getfile(flash_attn_interface)))
+except Exception:
+    pass
+PYEOF
+)"
+        if [ -n "${fa_dir}" ]; then
+            printf '%s\n' "${fa_dir}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 install_fa3() {
+    echo "  Searching system for pre-installed flash_attn_interface..."
+    local system_fa3_dir=""
+    system_fa3_dir="$(find_system_fa3_dir || true)"
+    if [ -n "${system_fa3_dir}" ] && sync_fa3_dir_into_site "${system_fa3_dir}"; then
+        return 0
+    fi
+
     echo "  Attempting FA3 abi3 wheel (cu128)..."
     if pip install --no-cache-dir \
         "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
@@ -138,25 +214,14 @@ install_fa3() {
         return 0
     fi
 
-    echo "  cu128 failed, trying cu124..."
-    if pip install --no-cache-dir \
-        "https://download.pytorch.org/whl/cu124/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
-        2>&1 | tail -3; then
-        return 0
-    fi
-
     echo "  Wheels failed. Checking for local flash-attention/hopper source..."
     if [ -d "${WORKSPACE}/flash-attention/hopper" ]; then
-        SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
-        SRC="${WORKSPACE}/flash-attention/hopper/flash_attn_interface.py"
-        if [ -f "$SRC" ]; then
-            ln -sf "$SRC" "${SITE}/flash_attn_interface.py"
-            echo "  Symlinked flash_attn_interface.py into site-packages"
+        if sync_fa3_dir_into_site "${WORKSPACE}/flash-attention/hopper"; then
             return 0
         fi
     fi
 
-    echo "  WARNING: Could not install FA3. Will fall back to PyTorch SDPA."
+    echo "  FATAL: Could not install or locate FA3 for the current torch stack."
     return 1
 }
 
@@ -167,6 +232,12 @@ elif python3 -c "import flash_attn; v=flash_attn.__version__; assert v.startswit
 else
     install_fa3
 fi
+python3 - <<'PYEOF'
+import importlib
+importlib.import_module("flash_attn_3._C")
+from flash_attn_interface import flash_attn_func  # noqa: F401
+print("  FA3 runtime OK")
+PYEOF
 
 # =============================================================================
 # 6. Dataset (sp1024)
@@ -247,3 +318,4 @@ echo ""
 echo "============================================"
 echo " READY."
 echo "============================================"
+echo "Activation helper: ${ACTIVATE_HELPER_REL}"

@@ -19,6 +19,7 @@ BRANCH="${BRANCH:-TEST_LAB}"
 TRAIN_SHARDS="${TRAIN_SHARDS:-80}"
 DATASET_VARIANT="${DATASET_VARIANT:-sp1024}"
 ACTIVATE_HELPER_REL="scripts/activate_pod_env.sh"
+FA3_WHEEL_URL="${FA3_WHEEL_URL:-https://download.pytorch.org/whl/flash-attn-3/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl}"
 if [[ -x /venv/main/bin/python3 ]]; then
     export PATH="/venv/main/bin:${PATH}"
 fi
@@ -78,26 +79,114 @@ print(f"  PyTorch {torch_version}  CUDA {cuda_version}")
 if "+cu124" in torch_version or cuda_version.startswith("12.4"):
     raise SystemExit("FATAL: stale cu124 torch stack detected; use the correct pod image before running this setup.")
 PYEOF
-TORCH_LIB="$(python3 - <<'PYEOF'
+RUNTIME_LIB_PATHS="$(python3 - <<'PYEOF'
+import glob
 import os
+import site
 import torch
-print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+
+paths = []
+torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+if os.path.isdir(torch_lib):
+    paths.append(torch_lib)
+
+site_dirs = []
+try:
+    site_dirs.extend(site.getsitepackages())
+except Exception:
+    pass
+try:
+    site_dirs.append(site.getusersitepackages())
+except Exception:
+    pass
+
+for base in site_dirs:
+    if not base or not os.path.isdir(base):
+        continue
+    for pattern in (
+        os.path.join(base, "nvidia", "*", "lib"),
+        os.path.join(base, "nvidia", "*", "lib64"),
+    ):
+        for candidate in glob.glob(pattern):
+            if os.path.isdir(candidate):
+                paths.append(candidate)
+
+for candidate in (
+    "/usr/local/cuda/lib64",
+    "/usr/local/cuda/compat",
+    "/usr/local/nvidia/lib",
+    "/usr/local/nvidia/lib64",
+):
+    if os.path.isdir(candidate):
+        paths.append(candidate)
+
+seen = set()
+ordered = []
+for path in paths:
+    if path not in seen:
+        seen.add(path)
+        ordered.append(path)
+print(":".join(ordered))
 PYEOF
 )"
-export LD_LIBRARY_PATH="${TORCH_LIB}:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${RUNTIME_LIB_PATHS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 ACTIVATE_HELPER="${WORKSPACE}/${ACTIVATE_HELPER_REL}"
 cat > "${ACTIVATE_HELPER}" <<'ACTEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
-TORCH_LIB="$(python3 - <<'PYEOF'
+RUNTIME_LIB_PATHS="$(python3 - <<'PYEOF'
+import glob
 import os
+import site
 import torch
-print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+
+paths = []
+torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+if os.path.isdir(torch_lib):
+    paths.append(torch_lib)
+
+site_dirs = []
+try:
+    site_dirs.extend(site.getsitepackages())
+except Exception:
+    pass
+try:
+    site_dirs.append(site.getusersitepackages())
+except Exception:
+    pass
+
+for base in site_dirs:
+    if not base or not os.path.isdir(base):
+        continue
+    for pattern in (
+        os.path.join(base, "nvidia", "*", "lib"),
+        os.path.join(base, "nvidia", "*", "lib64"),
+    ):
+        for candidate in glob.glob(pattern):
+            if os.path.isdir(candidate):
+                paths.append(candidate)
+
+for candidate in (
+    "/usr/local/cuda/lib64",
+    "/usr/local/cuda/compat",
+    "/usr/local/nvidia/lib",
+    "/usr/local/nvidia/lib64",
+):
+    if os.path.isdir(candidate):
+        paths.append(candidate)
+
+seen = set()
+ordered = []
+for path in paths:
+    if path not in seen:
+        seen.add(path)
+        ordered.append(path)
+print(":".join(ordered))
 PYEOF
 )"
-export LD_LIBRARY_PATH="${TORCH_LIB}:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${RUNTIME_LIB_PATHS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 if [[ -d "${REPO_ROOT}/flash-attention/hopper" ]]; then
     export PYTHONPATH="${REPO_ROOT}/flash-attention/hopper:${PYTHONPATH:-}"
 fi
@@ -207,9 +296,9 @@ install_fa3() {
         return 0
     fi
 
-    echo "  Attempting FA3 abi3 wheel (cu128)..."
+    echo "  Attempting official FA3 abi3 wheel..."
     if pip install --no-cache-dir \
-        "https://download.pytorch.org/whl/cu128/flash_attn_3-3.0.0-cp39-abi3-manylinux_2_28_x86_64.whl" \
+        "${FA3_WHEEL_URL}" \
         2>&1 | tail -3; then
         return 0
     fi

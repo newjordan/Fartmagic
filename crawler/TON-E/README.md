@@ -8,6 +8,12 @@ This folder uses our stable Nightcrawler Cubed runner as the base and overlays a
 - Apply the PR-1579-style layer rhythm in our script, not his script.
 - Track concept notes separately in `NOTES_pr1579_concepts.md`.
 
+## Evidence Protocol
+
+- Mandatory protocol: [`../../EVIDENCE_PROTOCOL.md`](../../EVIDENCE_PROTOCOL.md)
+- Required response classes for analysis: `fact`, `inference`, `proposal`
+- Evidence-heavy tasks must start with corpus summary before implementation.
+
 ## What Changed In `train_gpt.py`
 
 - Base remains our runner (`records/track_10min_16mb/2026-04-10_Nightcrawler_Cubed_8xH100/train_gpt.py`).

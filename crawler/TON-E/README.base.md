@@ -2,6 +2,11 @@
 
 **val_bpb: 1.1372** (3-seed mean, std 0.0004) | **~15.03 MB** | 1x RTX 6000 Ada, 18000s
 
+## Evidence Protocol
+
+- Mandatory protocol: [`../../EVIDENCE_PROTOCOL.md`](../../EVIDENCE_PROTOCOL.md)
+- Analysis responses use statement classes: `fact`, `inference`, `proposal`.
+
 ### 3-Seed Results (1x RTX 6000 Ada 48GB)
 
 | Seed | Steps | Pre-quant BPB | GPTQ Roundtrip BPB | **TTT BPB** | Artifact |

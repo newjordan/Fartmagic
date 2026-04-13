@@ -6,6 +6,11 @@ The tables below are the fast read. I iterated on the concept of a transformer w
 
 The end state is straightforward. The legal 10-minute crawler runner is a depth-recurrent hybrid transformer `7F+3C, loops=3, loop-aware GPTQ, prune+pyminify` at `1.13536063` BPB and `15,844,157` bytes. The long-run confirmation is `7F+3C, loops=3, loop-aware GPTQ, 4-hour full run` at `1.07424983` BPB and `14,184,849` bytes. The final four-hour run establishes stable wind-down behavior and handling of the recursive elements.
 
+## Evidence Protocol
+
+- Mandatory protocol: [`../../EVIDENCE_PROTOCOL.md`](../../EVIDENCE_PROTOCOL.md)
+- Analysis responses use statement classes: `fact`, `inference`, `proposal`.
+
 ---
 
 ## Core Tables

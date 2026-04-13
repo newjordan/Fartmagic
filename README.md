@@ -26,6 +26,13 @@ The challenge runs from March 18th to April 30th.
 
 Happy training!
 
+## Evidence Protocol
+
+This project uses a mandatory evidence-first protocol for analysis and log-audit work.
+
+- Protocol document: [`EVIDENCE_PROTOCOL.md`](EVIDENCE_PROTOCOL.md)
+- Required statement classes: `fact`, `inference`, `proposal`
+
 ## Leaderboard
 
 | Run | Score | Author | Summary | Date | Info |

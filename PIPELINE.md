@@ -1,15 +1,24 @@
 # Midnight Pipeline
 
-## Official Leader
+## Current Legal SOTA
+- Leg: `legs/2026-04-13_midnight_iii_v_qattn6`
+- Status: promoted (submission-legal artifact)
+- Best exact seed in corpus: `1.09159026` (`seed=444`)
+- Size at promoted point: `15576180` bytes mixed+brotli
+- Corpus evidence:
+  - `legs/2026-04-13_midnight_iii_v_qattn6/logs/full_seed444_20260413_044438.log:111`
+  - `legs/2026-04-13_midnight_iii_v_qattn6/logs/full_seed444_20260413_044438.log:107`
+
+## Frozen Reference
 - File: `vault/train_gpt_midnight_12l_sota_REAL.py`
 - Status: frozen reference
-- Best exact seed: `1.10567949` (`seed=444`)
-- Role: legality-clean control and byte-clean benchmark
+- Prior documented best exact seed: `1.10567949` (`seed=444`)
+- Role: legality-clean historical control
 
 ## Working Base
 - File: `vault/train_gpt_midnight_iii_base.py`
 - Status: active growth base
-- Best exact seed: `1.10616680` (`seed=444`)
+- Prior documented best exact seed: `1.10616680` (`seed=444`)
 - Role: default parent for new legs
 
 ## Blessed Workflow
@@ -31,3 +40,8 @@
 ## Active Legs
 - `legs/2026-04-12_midnight_12l_clean`
 - `legs/2026-04-12_midnight_iii_clean`
+- `legs/2026-04-13_midnight_iii_v_qattn6`
+
+## Lane Runner Entrypoints
+- `bash scripts/run_midnight_iii_lane.sh gate|run [seed] [nproc_per_node]`
+- `bash scripts/run_midnight_12l_lane.sh gate|run [seed] [nproc_per_node]`

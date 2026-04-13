@@ -160,6 +160,8 @@ class Hyperparameters:
     crawler_forward_ramp_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_STEPS", "0"))
     crawler_forward_ramp_delay_frac = float(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_FRAC", "0.0"))
     crawler_forward_ramp_delay_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_STEPS", "0"))
+    # Optional compute staging: progressively enable crawler layers/loops as forward scale rises.
+    crawler_compute_staged = bool(int(os.environ.get("CRAWLER_COMPUTE_STAGED", "0")))
     # Counted crawler safety warmup: force crawler off for first N train steps.
     crawler_safe_warmup_steps = int(os.environ.get("CRAWLER_SAFE_WARMUP_STEPS", "0"))
     # TON-E: apply 3F+2Cx2 rhythm defaults unless explicitly disabled.
@@ -1183,6 +1185,7 @@ class CrawlerGPT(nn.Module):
         inst_dim: int = 32,
         anchor_dim: int = 0,
         flat_weight_share: bool = False,
+        crawler_compute_staged: bool = False,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
@@ -1194,9 +1197,14 @@ class CrawlerGPT(nn.Module):
         self.num_flat_layers = num_flat_layers
         self.num_crawler_layers = num_crawler_layers
         self.crawler_loops = crawler_loops
+        self.crawler_compute_staged = crawler_compute_staged
         self.inst_dim = inst_dim
         # Runtime scale for crawler forward path (0=skip crawler, 1=full crawler).
         self.register_buffer("crawler_forward_scale", torch.tensor(1.0, dtype=torch.float32), persistent=False)
+        # Python-side hard skip flag so compiled runs can truly bypass crawler compute at scale=0.
+        self._crawler_forward_force_skip = False
+        self._crawler_active_loops = crawler_loops
+        self._crawler_active_layers = num_crawler_layers
         # Compatibility stubs
         self.mtp_num_heads = 0
         self.mtp_loss_weight = 0.0
@@ -1391,10 +1399,31 @@ class CrawlerGPT(nn.Module):
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
 
     def set_crawler_forward_scale(self, scale: float) -> None:
-        self.crawler_forward_scale.fill_(float(max(0.0, min(1.0, scale))))
+        clamped = float(max(0.0, min(1.0, scale)))
+        self.crawler_forward_scale.fill_(clamped)
+        if clamped <= 0.0:
+            self._crawler_forward_force_skip = True
+            self._crawler_active_loops = 0
+            self._crawler_active_layers = 0
+            return
+        self._crawler_forward_force_skip = False
+        if self.crawler_compute_staged:
+            self._crawler_active_loops = max(1, min(self.crawler_loops, int(math.ceil(clamped * self.crawler_loops))))
+            self._crawler_active_layers = max(
+                1, min(self.num_crawler_layers, int(math.ceil(clamped * self.num_crawler_layers)))
+            )
+        else:
+            self._crawler_active_loops = self.crawler_loops
+            self._crawler_active_layers = self.num_crawler_layers
 
     def get_crawler_forward_scale(self) -> float:
         return float(self.crawler_forward_scale.item())
+
+    def get_crawler_active_loops(self) -> int:
+        return int(self._crawler_active_loops)
+
+    def get_crawler_active_layers(self) -> int:
+        return int(self._crawler_active_layers)
 
     def _run_encoder(self, x: Tensor, x0: Tensor) -> tuple[Tensor, list[Tensor]]:
         skips: list[Tensor] = []
@@ -1413,16 +1442,19 @@ class CrawlerGPT(nn.Module):
 
     def _run_crawler(self, x: Tensor, x0: Tensor, input_ids: Tensor, ve_cache: dict,
                      enc_outputs: list | None = None) -> Tensor:
+        # Hard skip path for both eager and compiled execution.
+        if self._crawler_forward_force_skip:
+            return x
+        active_loops = self._crawler_active_loops
+        active_layers = self._crawler_active_layers
+        if active_loops <= 0 or active_layers <= 0:
+            return x
         try:
             is_compiling = bool(torch.compiler.is_compiling())
         except Exception:
             is_compiling = False
         crawler_scale_tensor = self.crawler_forward_scale.to(dtype=x.dtype)
-        crawler_scale = float(crawler_scale_tensor.item())
-        # Eager fast-path: skip crawler compute when scale is exactly zero.
-        # Under torch.compile, avoid data-dependent Python branching on tensor-derived values.
-        if (not is_compiling) and crawler_scale <= 0.0:
-            return x
+        crawler_scale = 1.0 if is_compiling else float(crawler_scale_tensor.item())
         x_pre_crawler = x
         # FLOW instructions: recompute from current x at each loop (not static x_enc pre-plan).
         # This makes each loop's instruction respond to what the previous loop produced,
@@ -1437,7 +1469,7 @@ class CrawlerGPT(nn.Module):
             inv_freq = rotary.inv_freq.to(device=x.device, dtype=torch.float32)
             t = torch.arange(seqlen, device=x.device, dtype=torch.float32)
             loop_cos_sin = []
-            for scale in self.loop_rope_scales:
+            for scale in self.loop_rope_scales[:active_loops]:
                 inv_freq_scaled = inv_freq / scale  # divide → lower freq → wider range
                 freqs = torch.outer(t, inv_freq_scaled)
                 cos = freqs.cos()[None, :, None, :].to(dtype=x.dtype)
@@ -1457,7 +1489,7 @@ class CrawlerGPT(nn.Module):
             prev_anchor = torch.zeros(x.size(0), x.size(1), self.anchor_dim,
                                       device=x.device, dtype=x.dtype)
 
-        for loop in range(self.crawler_loops):
+        for loop in range(active_loops):
             if self.loop_inst_proj is not None:
                 # Flow: project CURRENT x through shared bottleneck, expand with loop-specific up
                 inst_k = self.loop_inst_up[loop](self.loop_inst_proj(x))  # [B, T, model_dim]
@@ -1476,7 +1508,8 @@ class CrawlerGPT(nn.Module):
                 else:
                     x_loop = x_loop + self.shared_tap_up(tap_signal)
             lcs = loop_cos_sin[loop] if loop_cos_sin is not None else None
-            for ci, block in enumerate(self.crawler_blocks):
+            for ci in range(active_layers):
+                block = self.crawler_blocks[ci]
                 ve = self._get_crawler_ve(ci, input_ids, ve_cache)
                 x_loop = block(x_loop, x0, v_embed=ve, loop_idx=loop, cos_sin=lcs)
             # DeltaNet: causal within-loop associative memory; state NOT carried between loops.
@@ -1607,6 +1640,7 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             inst_dim=args.inst_dim,
             anchor_dim=args.anchor_dim,
             flat_weight_share=args.flat_weight_share,
+            crawler_compute_staged=args.crawler_compute_staged,
         )
     else:
         model = GPT(
@@ -2451,6 +2485,12 @@ def main() -> None:
                 f"delay_steps:{crawler_forward_ramp_delay_steps} ramp_steps:{crawler_forward_ramp_steps} "
                 f"mode:{forward_schedule_mode}"
             )
+            if args.crawler_compute_staged:
+                log0(
+                    f"crawler_compute_staged:1 "
+                    f"active_layers:{base_model.get_crawler_active_layers()} "
+                    f"active_loops:{base_model.get_crawler_active_loops()}"
+                )
         elif args.crawler_forward_graduated:
             log0("crawler_forward_staged:requested but crawler model inactive; disabled")
     log0(
@@ -2564,6 +2604,16 @@ def main() -> None:
         current_crawler_grad_mul = crawler_grad_multiplier(step, elapsed_ms)
         current_crawler_forward_mul = crawler_forward_multiplier(step, elapsed_ms)
         apply_crawler_forward_multiplier(current_crawler_forward_mul)
+        current_crawler_active_layers = (
+            base_model.get_crawler_active_layers()
+            if isinstance(base_model, CrawlerGPT)
+            else 0
+        )
+        current_crawler_active_loops = (
+            base_model.get_crawler_active_loops()
+            if isinstance(base_model, CrawlerGPT)
+            else 0
+        )
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
@@ -2615,6 +2665,11 @@ def main() -> None:
                 + (
                     f" crawler_fwd_mul:{current_crawler_forward_mul:.3f}"
                     if crawler_forward_enabled
+                    else ""
+                )
+                + (
+                    f" crawler_active:{current_crawler_active_layers}Lx{current_crawler_active_loops}R"
+                    if (crawler_forward_enabled and args.crawler_compute_staged)
                     else ""
                 )
             )

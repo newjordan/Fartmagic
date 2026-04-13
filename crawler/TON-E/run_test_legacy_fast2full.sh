@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}"
+
+export SEED="${SEED:-4}"
+export MODEL_DIM="${MODEL_DIM:-448}"
+export RUN_ID="${RUN_ID:-tone_legacy_fast2full_s${SEED}}"
+
+# Legacy profile: true fast start, then staged crawler compute growth.
+export CRAWLER_SAFE_WARMUP_STEPS="${CRAWLER_SAFE_WARMUP_STEPS:-400}"
+export CRAWLER_GRADUATED="${CRAWLER_GRADUATED:-1}"
+export CRAWLER_START_FRAC="${CRAWLER_START_FRAC:-0.0}"
+export CRAWLER_RAMP_DELAY_FRAC="${CRAWLER_RAMP_DELAY_FRAC:-0.20}"
+export CRAWLER_RAMP_FRAC="${CRAWLER_RAMP_FRAC:-0.60}"
+export CRAWLER_FORWARD_GRADUATED="${CRAWLER_FORWARD_GRADUATED:-1}"
+export CRAWLER_FORWARD_START_FRAC="${CRAWLER_FORWARD_START_FRAC:-0.0}"
+export CRAWLER_FORWARD_RAMP_DELAY_FRAC="${CRAWLER_FORWARD_RAMP_DELAY_FRAC:-0.20}"
+export CRAWLER_FORWARD_RAMP_FRAC="${CRAWLER_FORWARD_RAMP_FRAC:-0.60}"
+export CRAWLER_COMPUTE_STAGED="${CRAWLER_COMPUTE_STAGED:-1}"
+
+bash "${SCRIPT_DIR}/run_test_4f3cx2_stage33_d480.sh"

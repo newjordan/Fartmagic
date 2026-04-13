@@ -79,6 +79,7 @@ mkdir -p "${ART_DIR}"
 cp -f train_gpt.py "${ART_DIR}/train_gpt.py"
 [[ -f final_model.pt ]] && cp -f final_model.pt "${ART_DIR}/"
 [[ -f final_model.int6.ptz ]] && cp -f final_model.int6.ptz "${ART_DIR}/"
+[[ -f final_model.int8.ptz ]] && cp -f final_model.int8.ptz "${ART_DIR}/"
 [[ -f "${LOG_PATH}" ]] && cp -f "${LOG_PATH}" "${ART_DIR}/train_seed${SEED}.log"
 
 echo "[TON-E] complete seed=${SEED} run_id=${RUN_ID}"

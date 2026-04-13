@@ -1411,8 +1411,15 @@ class CrawlerGPT(nn.Module):
 
     def _run_crawler(self, x: Tensor, x0: Tensor, input_ids: Tensor, ve_cache: dict,
                      enc_outputs: list | None = None) -> Tensor:
-        crawler_scale = self.get_crawler_forward_scale()
-        if crawler_scale <= 0.0:
+        try:
+            is_compiling = bool(torch.compiler.is_compiling())
+        except Exception:
+            is_compiling = False
+        crawler_scale_tensor = self.crawler_forward_scale.to(dtype=x.dtype)
+        crawler_scale = float(crawler_scale_tensor.item())
+        # Eager fast-path: skip crawler compute when scale is exactly zero.
+        # Under torch.compile, avoid data-dependent Python branching on tensor-derived values.
+        if (not is_compiling) and crawler_scale <= 0.0:
             return x
         x_pre_crawler = x
         # FLOW instructions: recompute from current x at each loop (not static x_enc pre-plan).
@@ -1484,7 +1491,9 @@ class CrawlerGPT(nn.Module):
                 prev_anchor = self.anchor_write[loop](x_loop)
             x_prev_loop = x_loop
             x = x_loop
-        if crawler_scale < 0.999999:
+        if is_compiling:
+            x = x_pre_crawler + (x - x_pre_crawler) * crawler_scale_tensor
+        elif crawler_scale < 0.999999:
             x = x_pre_crawler + (x - x_pre_crawler) * crawler_scale
         return x
 

@@ -149,6 +149,15 @@ class Hyperparameters:
     crawler_start_frac = float(os.environ.get("CRAWLER_START_FRAC", "0.33"))
     crawler_ramp_frac = float(os.environ.get("CRAWLER_RAMP_FRAC", "0.33"))
     crawler_ramp_steps = int(os.environ.get("CRAWLER_RAMP_STEPS", "0"))
+    crawler_ramp_delay_frac = float(os.environ.get("CRAWLER_RAMP_DELAY_FRAC", "0.0"))
+    crawler_ramp_delay_steps = int(os.environ.get("CRAWLER_RAMP_DELAY_STEPS", "0"))
+    # Optional forward-path staging (compute path), separate from gradient scaling.
+    crawler_forward_graduated = bool(int(os.environ.get("CRAWLER_FORWARD_GRADUATED", "0")))
+    crawler_forward_start_frac = float(os.environ.get("CRAWLER_FORWARD_START_FRAC", "1.0"))
+    crawler_forward_ramp_frac = float(os.environ.get("CRAWLER_FORWARD_RAMP_FRAC", "0.33"))
+    crawler_forward_ramp_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_STEPS", "0"))
+    crawler_forward_ramp_delay_frac = float(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_FRAC", "0.0"))
+    crawler_forward_ramp_delay_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_STEPS", "0"))
     # TON-E: apply 3F+2Cx2 rhythm defaults unless explicitly disabled.
     ton_e_rhythm = bool(int(os.environ.get("TON_E_RHYTHM", "1")))
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
@@ -1182,6 +1191,8 @@ class CrawlerGPT(nn.Module):
         self.num_crawler_layers = num_crawler_layers
         self.crawler_loops = crawler_loops
         self.inst_dim = inst_dim
+        # Runtime scale for crawler forward path (0=skip crawler, 1=full crawler).
+        self.register_buffer("crawler_forward_scale", torch.tensor(1.0, dtype=torch.float32), persistent=False)
         # Compatibility stubs
         self.mtp_num_heads = 0
         self.mtp_loss_weight = 0.0
@@ -1375,6 +1386,12 @@ class CrawlerGPT(nn.Module):
         ve_idx = self.ve_layer_indices.index(crawler_idx)
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
 
+    def set_crawler_forward_scale(self, scale: float) -> None:
+        self.crawler_forward_scale.fill_(float(max(0.0, min(1.0, scale))))
+
+    def get_crawler_forward_scale(self) -> float:
+        return float(self.crawler_forward_scale.item())
+
     def _run_encoder(self, x: Tensor, x0: Tensor) -> tuple[Tensor, list[Tensor]]:
         skips: list[Tensor] = []
         for i in range(self.flat_encoder_layers):
@@ -1392,6 +1409,10 @@ class CrawlerGPT(nn.Module):
 
     def _run_crawler(self, x: Tensor, x0: Tensor, input_ids: Tensor, ve_cache: dict,
                      enc_outputs: list | None = None) -> Tensor:
+        crawler_scale = self.get_crawler_forward_scale()
+        if crawler_scale <= 0.0:
+            return x
+        x_pre_crawler = x
         # FLOW instructions: recompute from current x at each loop (not static x_enc pre-plan).
         # This makes each loop's instruction respond to what the previous loop produced,
         # reducing gradient conflict and activation distribution drift across loops.
@@ -1461,6 +1482,8 @@ class CrawlerGPT(nn.Module):
                 prev_anchor = self.anchor_write[loop](x_loop)
             x_prev_loop = x_loop
             x = x_loop
+        if crawler_scale < 0.999999:
+            x = x_pre_crawler + (x - x_pre_crawler) * crawler_scale
         return x
 
     def _compute_logits(self, x: Tensor) -> Tensor:
@@ -2164,6 +2187,8 @@ def main() -> None:
         else compiled_model
     )
     block_named_params = _get_block_named_params(base_model)
+    schedule_total_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
+
     crawler_grad_enabled = (
         args.use_crawler
         and args.crawler_graduated
@@ -2171,13 +2196,11 @@ def main() -> None:
     )
     crawler_start_frac = float(np.clip(args.crawler_start_frac, 0.0, 1.0))
     crawler_ramp_frac = max(args.crawler_ramp_frac, 0.0)
-    crawler_ramp_steps = 0
+    crawler_ramp_delay_frac = max(args.crawler_ramp_delay_frac, 0.0)
+    crawler_ramp_steps = max(args.crawler_ramp_steps, 0)
+    crawler_ramp_delay_steps = max(args.crawler_ramp_delay_steps, 0)
     crawler_grad_params: list[Tensor] = []
     if crawler_grad_enabled:
-        if args.crawler_ramp_steps > 0:
-            crawler_ramp_steps = args.crawler_ramp_steps
-        else:
-            crawler_ramp_steps = max(1, int(args.iterations * crawler_ramp_frac))
         crawler_grad_params = [
             p
             for name, p in base_model.named_parameters()
@@ -2186,11 +2209,70 @@ def main() -> None:
         if not crawler_grad_params:
             crawler_grad_enabled = False
 
-    def crawler_grad_multiplier(step_idx: int) -> float:
+    crawler_forward_enabled = (
+        args.use_crawler
+        and args.crawler_forward_graduated
+        and isinstance(base_model, CrawlerGPT)
+    )
+    crawler_forward_start_frac = float(np.clip(args.crawler_forward_start_frac, 0.0, 1.0))
+    crawler_forward_ramp_frac = max(args.crawler_forward_ramp_frac, 0.0)
+    crawler_forward_ramp_delay_frac = max(args.crawler_forward_ramp_delay_frac, 0.0)
+    crawler_forward_ramp_steps = max(args.crawler_forward_ramp_steps, 0)
+    crawler_forward_ramp_delay_steps = max(args.crawler_forward_ramp_delay_steps, 0)
+    if crawler_forward_enabled:
+        base_model.set_crawler_forward_scale(crawler_forward_start_frac)
+
+    def _scheduled_multiplier(
+        step_idx: int,
+        elapsed_ms: float,
+        start_frac: float,
+        delay_frac: float,
+        ramp_frac: float,
+        delay_steps: int,
+        ramp_steps: int,
+    ) -> float:
+        use_step_schedule = delay_steps > 0 or ramp_steps > 0 or schedule_total_ms is None
+        if use_step_schedule:
+            delay = delay_steps if delay_steps > 0 else int(args.iterations * delay_frac)
+            ramp = ramp_steps if ramp_steps > 0 else int(args.iterations * ramp_frac)
+            if step_idx < delay:
+                return start_frac
+            progress = (step_idx - delay) / max(ramp, 1)
+        else:
+            assert schedule_total_ms is not None
+            delay_ms = delay_frac * schedule_total_ms
+            ramp_ms = ramp_frac * schedule_total_ms
+            if elapsed_ms < delay_ms:
+                return start_frac
+            progress = (elapsed_ms - delay_ms) / max(ramp_ms, 1e-9)
+        progress = float(np.clip(progress, 0.0, 1.0))
+        return start_frac + (1.0 - start_frac) * progress
+
+    def crawler_grad_multiplier(step_idx: int, elapsed_ms: float) -> float:
         if not crawler_grad_enabled:
             return 1.0
-        progress = min(max(step_idx, 0) / max(crawler_ramp_steps, 1), 1.0)
-        return crawler_start_frac + (1.0 - crawler_start_frac) * progress
+        return _scheduled_multiplier(
+            step_idx,
+            elapsed_ms,
+            crawler_start_frac,
+            crawler_ramp_delay_frac,
+            crawler_ramp_frac,
+            crawler_ramp_delay_steps,
+            crawler_ramp_steps,
+        )
+
+    def crawler_forward_multiplier(step_idx: int, elapsed_ms: float) -> float:
+        if not crawler_forward_enabled:
+            return 1.0
+        return _scheduled_multiplier(
+            step_idx,
+            elapsed_ms,
+            crawler_forward_start_frac,
+            crawler_forward_ramp_delay_frac,
+            crawler_forward_ramp_frac,
+            crawler_forward_ramp_delay_steps,
+            crawler_forward_ramp_steps,
+        )
 
     def apply_crawler_grad_multiplier(mult: float) -> None:
         if not crawler_grad_enabled or mult >= 0.999999:
@@ -2198,6 +2280,11 @@ def main() -> None:
         for param in crawler_grad_params:
             if param.grad is not None:
                 param.grad.mul_(mult)
+
+    def apply_crawler_forward_multiplier(mult: float) -> None:
+        if not crawler_forward_enabled:
+            return
+        base_model.set_crawler_forward_scale(mult)
 
     matrix_params = [
         p
@@ -2296,13 +2383,37 @@ def main() -> None:
             f"xsa_include_flat:{int(args.xsa_include_flat)}"
         )
         if crawler_grad_enabled:
+            grad_schedule_mode = (
+                "steps"
+                if (crawler_ramp_delay_steps > 0 or crawler_ramp_steps > 0 or schedule_total_ms is None)
+                else "wallclock"
+            )
             log0(
                 f"crawler_graduated:start_frac:{crawler_start_frac:.3f} "
-                f"ramp_steps:{crawler_ramp_steps} ramp_frac:{crawler_ramp_frac:.3f} "
-                f"grad_params:{len(crawler_grad_params)}"
+                f"delay_frac:{crawler_ramp_delay_frac:.3f} ramp_frac:{crawler_ramp_frac:.3f} "
+                f"delay_steps:{crawler_ramp_delay_steps} ramp_steps:{crawler_ramp_steps} "
+                f"mode:{grad_schedule_mode} grad_params:{len(crawler_grad_params)}"
             )
         elif args.crawler_graduated:
             log0("crawler_graduated:requested but no crawler params matched; disabled")
+        if crawler_forward_enabled:
+            forward_schedule_mode = (
+                "steps"
+                if (
+                    crawler_forward_ramp_delay_steps > 0
+                    or crawler_forward_ramp_steps > 0
+                    or schedule_total_ms is None
+                )
+                else "wallclock"
+            )
+            log0(
+                f"crawler_forward_staged:start_frac:{crawler_forward_start_frac:.3f} "
+                f"delay_frac:{crawler_forward_ramp_delay_frac:.3f} ramp_frac:{crawler_forward_ramp_frac:.3f} "
+                f"delay_steps:{crawler_forward_ramp_delay_steps} ramp_steps:{crawler_forward_ramp_steps} "
+                f"mode:{forward_schedule_mode}"
+            )
+        elif args.crawler_forward_graduated:
+            log0("crawler_forward_staged:requested but crawler model inactive; disabled")
     log0(
         f"ablate:skip_train={int(args.skip_train)} init_model_path:{args.init_model_path or '-'} "
         f"gptq_cal_samples:{args.gptq_cal_samples} gptq_cal_seq_len:{args.gptq_cal_seq_len or args.train_seq_len}"
@@ -2344,6 +2455,8 @@ def main() -> None:
         initial_optimizer_states = [copy.deepcopy(opt.state_dict()) for opt in optimizers]
         model.train()
         for warmup_step in range(args.warmup_steps):
+            warmup_elapsed_ms = 0.0
+            apply_crawler_forward_multiplier(crawler_forward_multiplier(warmup_step, warmup_elapsed_ms))
             zero_grad_all()
             for micro_step in range(grad_accum_steps):
                 if distributed:
@@ -2352,7 +2465,7 @@ def main() -> None:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     warmup_loss = model(x, y)
                 (warmup_loss * grad_scale).backward()
-            apply_crawler_grad_multiplier(crawler_grad_multiplier(warmup_step))
+            apply_crawler_grad_multiplier(crawler_grad_multiplier(warmup_step, warmup_elapsed_ms))
             for opt in optimizers:
                 opt.step()
             zero_grad_all()
@@ -2380,6 +2493,8 @@ def main() -> None:
         if should_validate:
             torch.cuda.synchronize()
             training_time_ms += 1000.0 * (time.perf_counter() - t0)
+            current_crawler_forward_mul = crawler_forward_multiplier(step, training_time_ms)
+            apply_crawler_forward_multiplier(current_crawler_forward_mul)
             val_loss, val_bpb = eval_val(
                 args,
                 model,
@@ -2407,7 +2522,9 @@ def main() -> None:
             break
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         scale = lr_mul(step, elapsed_ms)
-        current_crawler_grad_mul = crawler_grad_multiplier(step)
+        current_crawler_grad_mul = crawler_grad_multiplier(step, elapsed_ms)
+        current_crawler_forward_mul = crawler_forward_multiplier(step, elapsed_ms)
+        apply_crawler_forward_multiplier(current_crawler_forward_mul)
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
@@ -2454,6 +2571,11 @@ def main() -> None:
                 + (
                     f" crawler_grad_mul:{current_crawler_grad_mul:.3f}"
                     if crawler_grad_enabled
+                    else ""
+                )
+                + (
+                    f" crawler_fwd_mul:{current_crawler_forward_mul:.3f}"
+                    if crawler_forward_enabled
                     else ""
                 )
             )
@@ -2522,6 +2644,8 @@ def main() -> None:
         T = args.distill_temperature
         alpha = args.distill_alpha
         for d_step in range(args.distill_steps):
+            distill_elapsed_ms = training_time_ms
+            apply_crawler_forward_multiplier(crawler_forward_multiplier(step + d_step, distill_elapsed_ms))
             zero_grad_all()
             for opt in optimizers:
                 for group in opt.param_groups:
@@ -2548,7 +2672,7 @@ def main() -> None:
                 for p in base_model.parameters():
                     if p.grad is not None:
                         dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
-            apply_crawler_grad_multiplier(crawler_grad_multiplier(step + d_step))
+            apply_crawler_grad_multiplier(crawler_grad_multiplier(step + d_step, distill_elapsed_ms))
             if args.grad_clip_norm > 0:
                 torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
             for opt in optimizers:
@@ -2574,6 +2698,9 @@ def main() -> None:
         current_state = base_model.state_dict()
         avg_state = {name: t.to(dtype=current_state[name].dtype) for name, t in ema_state.items()}
         base_model.load_state_dict(avg_state, strict=True)
+    if crawler_forward_enabled:
+        apply_crawler_forward_multiplier(1.0)
+        log0("crawler_forward_staged:forcing_scale=1.0 for final eval/export")
     torch.cuda.synchronize()
     t_diag = time.perf_counter()
     diag_val_loss, diag_val_bpb = eval_val(

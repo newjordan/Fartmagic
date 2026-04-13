@@ -43,11 +43,11 @@ def parse_log(path: Path) -> dict:
 
     sw = _last_float_pair(
         text,
-        r"final_int6_sliding_window_exact val_loss:([0-9.eE+-]+) val_bpb:([0-9.eE+-]+)",
+        r"final_[a-z0-9_]+_sliding_window_exact val_loss:([0-9.eE+-]+) val_bpb:([0-9.eE+-]+)",
     )
     rt = _last_float_pair(
         text,
-        r"final_int6_roundtrip_exact val_loss:([0-9.eE+-]+) val_bpb:([0-9.eE+-]+)",
+        r"final_[a-z0-9_]+_roundtrip_exact val_loss:([0-9.eE+-]+) val_bpb:([0-9.eE+-]+)",
     )
     if sw is not None:
         val_loss, val_bpb = sw
@@ -61,7 +61,9 @@ def parse_log(path: Path) -> dict:
     bytes_total = _last_int(text, r"^\s*bytes_total:\s+(\d+)\s+\(limit 16000000\)\s*$")
     bytes_code = _last_int(text, r"^\s*bytes_code:\s+(\d+)\s*$")
     if bytes_total is None:
-        bytes_total = _last_int(text, r"Total submission size int6\+\w+:\s+(\d+)\s+bytes")
+        bytes_total = _last_int(text, r"Total submission size [a-z0-9_+]+\+\w+:\s+(\d+)\s+bytes")
+    quant_mode_match = re.findall(r"^\s*quant_mode:\s+([a-z0-9_]+)\s*$", text, flags=re.MULTILINE)
+    quant_mode = quant_mode_match[-1] if quant_mode_match else "int6"
 
     legal_match = re.findall(r"^\s*artifact_legal:(yes|no)\s*$", text, flags=re.MULTILINE)
     artifact_legal = legal_match[-1] == "yes" if legal_match else (
@@ -73,7 +75,9 @@ def parse_log(path: Path) -> dict:
         "val_bpb": round(val_bpb, 4),
         "val_bpb_exact": val_bpb,
         "val_loss_exact": val_loss,
-        "int6_sw_bpb": val_bpb,
+        "quant_sw_bpb": val_bpb,
+        "int6_sw_bpb": val_bpb,  # kept for backward compatibility with prior schema
+        "quant_mode": quant_mode,
         "raw_bpb": raw_bpb,
         "artifact_legal": artifact_legal,
     }
@@ -115,7 +119,7 @@ def main() -> None:
         "--blurb",
         default=(
             "Nightcrawler Cubed runner with TON-E rhythm overlay "
-            "(3 flat + 2 crawler x2), loop-aware GPTQ, selective pruning"
+            "(4 flat + 2 crawler x2), flat int8 export"
         ),
     )
     args = ap.parse_args()
@@ -143,7 +147,9 @@ def main() -> None:
             "val_bpb": item["val_bpb"],
             "val_bpb_exact": item["val_bpb_exact"],
             "val_loss_exact": item["val_loss_exact"],
+            "quant_sw_bpb": item["quant_sw_bpb"],
             "int6_sw_bpb": item["int6_sw_bpb"],
+            "quant_mode": item["quant_mode"],
             **({"steps": item["steps"]} if "steps" in item else {}),
             **({"train_time_s": item["train_time_s"]} if "train_time_s" in item else {}),
             **({"bytes_total": item["bytes_total"]} if "bytes_total" in item else {}),

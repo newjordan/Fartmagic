@@ -182,6 +182,24 @@ def apply_ton_e_rhythm_profile(args: Hyperparameters) -> None:
     """Apply TON-E rhythm defaults on top of our crawler runner."""
     if not args.ton_e_rhythm:
         return
+    if "VOCAB_SIZE" not in os.environ:
+        args.vocab_size = int(os.environ.get("TON_E_VOCAB_SIZE", "8192"))
+    if "DATA_PATH" not in os.environ:
+        tone_data_path = os.environ.get("TON_E_DATA_PATH", "").strip()
+        if not tone_data_path:
+            local_sp8192 = Path("/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192")
+            tone_data_path = str(local_sp8192 if local_sp8192.exists() else Path("./data/datasets/fineweb10B_sp8192"))
+        args.data_path = tone_data_path
+        args.train_files = os.path.join(args.data_path, "fineweb_train_*.bin")
+        args.val_files = os.path.join(args.data_path, "fineweb_val_*.bin")
+    if "TOKENIZER_PATH" not in os.environ:
+        tone_tokenizer_path = os.environ.get("TON_E_TOKENIZER_PATH", "").strip()
+        if not tone_tokenizer_path:
+            local_sp8192_tok = Path("/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model")
+            tone_tokenizer_path = str(
+                local_sp8192_tok if local_sp8192_tok.exists() else Path("./data/tokenizers/fineweb_8192_bpe.model")
+            )
+        args.tokenizer_path = tone_tokenizer_path
     if "USE_CRAWLER" not in os.environ:
         args.use_crawler = True
     if "NUM_FLAT_LAYERS" not in os.environ:

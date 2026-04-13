@@ -6,23 +6,24 @@ cd "${SCRIPT_DIR}"
 
 # Prefer local lab paths when available; allow caller override.
 if [[ -z "${DATA_PATH:-}" ]]; then
-  if [[ -d "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp1024" ]]; then
-    export DATA_PATH="/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp1024"
+  if [[ -d "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192" ]]; then
+    export DATA_PATH="/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"
   else
-    export DATA_PATH="../../data/datasets/fineweb10B_sp1024"
+    export DATA_PATH="../../data/datasets/fineweb10B_sp8192"
   fi
 fi
 if [[ -z "${TOKENIZER_PATH:-}" ]]; then
-  if [[ -f "/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_1024_bpe.model" ]]; then
-    export TOKENIZER_PATH="/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_1024_bpe.model"
+  if [[ -f "/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model" ]]; then
+    export TOKENIZER_PATH="/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model"
   else
-    export TOKENIZER_PATH="../../data/tokenizers/fineweb_1024_bpe.model"
+    export TOKENIZER_PATH="../../data/tokenizers/fineweb_8192_bpe.model"
   fi
 fi
 
 export SEED="${SEED:-4}"
 export RUN_ID="${RUN_ID:-tone_comp_s${SEED}}"
 export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-600}"
+export VOCAB_SIZE="${VOCAB_SIZE:-8192}"
 
 # TON-E architecture profile (our runner + his rhythm).
 export USE_CRAWLER="${USE_CRAWLER:-1}"
@@ -54,6 +55,7 @@ RUN_ID=${RUN_ID}
 SEED=${SEED}
 DATA_PATH=${DATA_PATH}
 TOKENIZER_PATH=${TOKENIZER_PATH}
+VOCAB_SIZE=${VOCAB_SIZE}
 TON_E=${TON_E_NUM_FLAT_LAYERS}F+${TON_E_NUM_CRAWLER_LAYERS}Cx${TON_E_CRAWLER_LOOPS}
 MAX_WALLCLOCK_SECONDS=${MAX_WALLCLOCK_SECONDS}
 GPTQ(loop-aware)=${LOOP_AWARE_GPTQ}

@@ -164,6 +164,8 @@ class Hyperparameters:
     # BW10: Loop-aware GPTQ (post-training Hessian calibration on uncompiled base_model)
     skip_gptq = bool(int(os.environ.get("SKIP_GPTQ", "1")))
     loop_aware_gptq = bool(int(os.environ.get("LOOP_AWARE_GPTQ", "0")))
+    # Export quantization mode: int6 (legacy) or int8_flat (full int8 clean path).
+    export_quant = os.environ.get("EXPORT_QUANT", "int6").strip().lower()
     # BW12 ablation harness:
     # - INIT_MODEL_PATH lets quant/eval-only arms reuse a completed training window.
     # - SKIP_TRAIN=1 runs post-window quantization/eval without another 2k-step train.
@@ -203,7 +205,7 @@ def apply_ton_e_rhythm_profile(args: Hyperparameters) -> None:
     if "USE_CRAWLER" not in os.environ:
         args.use_crawler = True
     if "NUM_FLAT_LAYERS" not in os.environ:
-        args.num_flat_layers = int(os.environ.get("TON_E_NUM_FLAT_LAYERS", "3"))
+        args.num_flat_layers = int(os.environ.get("TON_E_NUM_FLAT_LAYERS", "4"))
     if "NUM_CRAWLER_LAYERS" not in os.environ:
         args.num_crawler_layers = int(os.environ.get("TON_E_NUM_CRAWLER_LAYERS", "2"))
     if "CRAWLER_LOOPS" not in os.environ:
@@ -2246,6 +2248,7 @@ def main() -> None:
         f"compile:enabled={int(args.compile_enabled)} fullgraph={int(args.compile_fullgraph)} "
         f"optimize_ddp={optimize_ddp_flag}"
     )
+    log0(f"export_quant:{args.export_quant}")
     log0(f"ddp:find_unused_parameters={int(args.ddp_find_unused_parameters)}")
     log0(f"seed:{args.seed}")
     if args.skip_train and not args.init_model_path:
@@ -2394,7 +2397,10 @@ def main() -> None:
     # BW10: GPTQ calibration runs post-training on uncompiled base_model.
     # COMPILE_FULLGRAPH=1 is incompatible with forward hooks — base_model is uncompiled.
     gptq_seq_len = args.gptq_cal_seq_len if args.gptq_cal_seq_len > 0 else args.train_seq_len
-    if args.skip_gptq:
+    if args.export_quant == "int8_flat":
+        log0("gptq:SKIPPED (EXPORT_QUANT=int8_flat) — not used by flat int8 export")
+        gptq_hessians: dict = {}
+    elif args.skip_gptq:
         log0("gptq:SKIPPED (SKIP_GPTQ=1) — using naive int6")
         gptq_hessians: dict = {}
     elif args.loop_aware_gptq:
@@ -2516,59 +2522,82 @@ def main() -> None:
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
     sd_cpu = {k: v.detach().cpu() for k, v in export_sd.items()}
-    if args.skip_gptq:
-        quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn", "aux"})
-    else:
-        quant_result, quant_meta = mixed_quantize_int6_gptq(
-            sd_cpu, {"mlp", "attn", "aux"}, gptq_hessians,
-            crawler_int8=args.crawler_quant_int8,
+    quant_mode = args.export_quant
+    if quant_mode not in ("int6", "int8_flat"):
+        raise ValueError(f"Unsupported EXPORT_QUANT={args.export_quant}. Expected int6 or int8_flat.")
+    if quant_mode == "int8_flat":
+        quant_obj, int8_stats = quantize_state_dict_int8(sd_cpu)
+        quant_buf = io.BytesIO()
+        torch.save(quant_obj, quant_buf)
+        quant_raw = quant_buf.getvalue()
+        quant_blob = _compress_quant_payload(quant_raw)
+        quant_file_name = "final_model.int8.ptz"
+        quant_report_label = "int8_flat"
+        quant_mode_summary = (
+            f"int8_stats:param_count={int8_stats['param_count']} "
+            f"float_tensors={int8_stats['num_float_tensors']} "
+            f"baseline_tensor_bytes={int8_stats['baseline_tensor_bytes']} "
+            f"int8_payload_bytes={int8_stats['int8_payload_bytes']}"
         )
-    quant_buf = io.BytesIO()
-    torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
-    quant_raw = quant_buf.getvalue()
-    quant_blob = _compress_quant_payload(quant_raw)
-    quant_file_bytes = len(quant_blob)
-    selective_prune_enable = bool(int(os.environ.get("SELECTIVE_PRUNE_ENABLE", "0")))
-    size_target_bytes = int(os.environ.get("SIZE_TARGET_BYTES", "0"))
-    selective_prune_factor = float(os.environ.get("SELECTIVE_PRUNE_FACTOR", "8"))
-    selective_prune_reserve_bytes = int(os.environ.get("SELECTIVE_PRUNE_RESERVE_BYTES", "0"))
-    selective_prune_max_values = int(os.environ.get("SELECTIVE_PRUNE_MAX_VALUES", "0"))
-    if selective_prune_enable and size_target_bytes > 0:
-        pre_total = len(quant_blob) + code_bytes
-        if pre_total > size_target_bytes:
-            excess = pre_total - size_target_bytes + max(selective_prune_reserve_bytes, 0)
-            n_prune = int(math.ceil(max(excess, 0) * max(selective_prune_factor, 0.0)))
-            if selective_prune_max_values > 0:
-                n_prune = min(n_prune, selective_prune_max_values)
-            pruned = selective_prune_int6_low_error(quant_result, quant_meta, n_prune)
-            if pruned > 0:
-                quant_buf = io.BytesIO()
-                torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
-                quant_raw = quant_buf.getvalue()
-                quant_blob = _compress_quant_payload(quant_raw)
-            post_total = len(quant_blob) + code_bytes
-            log0(
-                f"selective_prune_int6 enabled target:{size_target_bytes} "
-                f"pre_total:{pre_total} post_total:{post_total} "
-                f"excess_pre:{pre_total - size_target_bytes} values_pruned:{pruned}"
+        log0(quant_mode_summary)
+    else:
+        if args.skip_gptq:
+            quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn", "aux"})
+        else:
+            quant_result, quant_meta = mixed_quantize_int6_gptq(
+                sd_cpu, {"mlp", "attn", "aux"}, gptq_hessians,
+                crawler_int8=args.crawler_quant_int8,
             )
+        quant_buf = io.BytesIO()
+        torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
+        quant_raw = quant_buf.getvalue()
+        quant_blob = _compress_quant_payload(quant_raw)
+        selective_prune_enable = bool(int(os.environ.get("SELECTIVE_PRUNE_ENABLE", "0")))
+        size_target_bytes = int(os.environ.get("SIZE_TARGET_BYTES", "0"))
+        selective_prune_factor = float(os.environ.get("SELECTIVE_PRUNE_FACTOR", "8"))
+        selective_prune_reserve_bytes = int(os.environ.get("SELECTIVE_PRUNE_RESERVE_BYTES", "0"))
+        selective_prune_max_values = int(os.environ.get("SELECTIVE_PRUNE_MAX_VALUES", "0"))
+        if selective_prune_enable and size_target_bytes > 0:
+            pre_total = len(quant_blob) + code_bytes
+            if pre_total > size_target_bytes:
+                excess = pre_total - size_target_bytes + max(selective_prune_reserve_bytes, 0)
+                n_prune = int(math.ceil(max(excess, 0) * max(selective_prune_factor, 0.0)))
+                if selective_prune_max_values > 0:
+                    n_prune = min(n_prune, selective_prune_max_values)
+                pruned = selective_prune_int6_low_error(quant_result, quant_meta, n_prune)
+                if pruned > 0:
+                    quant_buf = io.BytesIO()
+                    torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
+                    quant_raw = quant_buf.getvalue()
+                    quant_blob = _compress_quant_payload(quant_raw)
+                post_total = len(quant_blob) + code_bytes
+                log0(
+                    f"selective_prune_int6 enabled target:{size_target_bytes} "
+                    f"pre_total:{pre_total} post_total:{post_total} "
+                    f"excess_pre:{pre_total - size_target_bytes} values_pruned:{pruned}"
+                )
+        quant_file_name = "final_model.int6.ptz"
+        quant_report_label = f"int6+{_COMPRESSOR}"
+    quant_file_bytes = len(quant_blob)
     if master_process:
-        with open("final_model.int6.ptz", "wb") as f:
+        with open(quant_file_name, "wb") as f:
             f.write(quant_blob)
-        quant_file_bytes = len(quant_blob)
-        log0(f"Serialized model int6+{_COMPRESSOR}: {quant_file_bytes} bytes")
-        log0(f"Total submission size int6+{_COMPRESSOR}: {quant_file_bytes + code_bytes} bytes")
+        log0(f"Serialized model {quant_report_label}: {quant_file_bytes} bytes")
+        log0(f"Total submission size {quant_report_label}: {quant_file_bytes + code_bytes} bytes")
         log0(f"Total submission size int8+zlib: {quant_file_bytes + code_bytes} bytes")
     if distributed:
         dist.barrier()
-    with open("final_model.int6.ptz", "rb") as f:
+    with open(quant_file_name, "rb") as f:
         quant_blob_disk = f.read()
     quant_payload = _decompress_quant_payload(quant_blob_disk)
     quant_state = torch.load(
         io.BytesIO(quant_payload),
         map_location="cpu",
     )
-    deq_state = dequantize_mixed_int6(quant_state["w"], quant_state["m"], sd_cpu)
+    if quant_mode == "int8_flat":
+        deq_state = dequantize_state_dict_int8(quant_state)
+    else:
+        deq_state = dequantize_mixed_int6(quant_state["w"], quant_state["m"], sd_cpu)
     eval_model = build_model(args, device)
     for m in eval_model.modules():
         if isinstance(m, CastedLinear):
@@ -2585,10 +2614,10 @@ def main() -> None:
     )
     torch.cuda.synchronize()
     log0(
-        f"final_int6_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
+        f"final_{quant_mode}_roundtrip val_loss:{q_val_loss:.4f} val_bpb:{q_val_bpb:.4f} "
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
-    log0(f"final_int6_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+    log0(f"final_{quant_mode}_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
     sw_seq_len = effective_eval_seq_len
     final_val_loss = q_val_loss
     final_val_bpb = q_val_bpb
@@ -2603,10 +2632,10 @@ def main() -> None:
         )
         torch.cuda.synchronize()
         log0(
-            f"final_int6_sliding_window val_loss:{sw_val_loss:.4f} val_bpb:{sw_val_bpb:.4f} "
+            f"final_{quant_mode}_sliding_window val_loss:{sw_val_loss:.4f} val_bpb:{sw_val_bpb:.4f} "
             f"stride:{args.eval_stride} eval_time:{1000.0 * (time.perf_counter() - t_slide):.0f}ms"
         )
-        log0(f"final_int6_sliding_window_exact val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}")
+        log0(f"final_{quant_mode}_sliding_window_exact val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}")
         log0(f"final_int8_zlib_roundtrip_exact val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}")
         final_val_loss = sw_val_loss
         final_val_bpb = sw_val_bpb
@@ -2618,7 +2647,8 @@ def main() -> None:
         log0(f"  RESULT — TON-E rhythm run seed={args.seed}")
         log0(f"  model_params:  {n_params}")
         log0(f"  raw_bpb:       {diag_val_bpb:.8f}")
-        log0(f"  int6_sw_bpb:   {final_val_bpb:.8f}")
+        log0(f"  quant_mode:    {quant_mode}")
+        log0(f"  quant_sw_bpb:  {final_val_bpb:.8f}")
         log0(f"  val_loss:      {final_val_loss:.8f}")
         log0(f"  step_avg_ms:   {training_time_ms / max(step, 1):.2f}")
         log0(f"  steps:         {step}")

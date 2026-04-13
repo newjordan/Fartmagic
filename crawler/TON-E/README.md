@@ -13,8 +13,9 @@ This folder uses our stable Nightcrawler Cubed runner as the base and overlays a
 - Base remains our runner (`records/track_10min_16mb/2026-04-10_Nightcrawler_Cubed_8xH100/train_gpt.py`).
 - Added TON-E rhythm profile (`TON_E_RHYTHM=1` by default in this folder):
   - defaults to `SP8192` (`VOCAB_SIZE=8192`, `fineweb10B_sp8192`, `fineweb_8192_bpe.model`) unless explicitly overridden
-  - defaults to `3F + 2C x2` if `NUM_*` values are not explicitly set
+  - defaults to `4F + 2C x2` if `NUM_*` values are not explicitly set
   - defaults to `XSA_INCLUDE_FLAT=1` so `XSA_LAST_N` can span flat+crawler blocks
+  - defaults to `EXPORT_QUANT=int8_flat` for flat int8 compressed export
 - Baseline can be restored instantly with `TON_E_RHYTHM=0`.
 
 ## TON-E Rhythm Knobs
@@ -23,7 +24,7 @@ This folder uses our stable Nightcrawler Cubed runner as the base and overlays a
 - `TON_E_VOCAB_SIZE` (default `8192`)
 - `TON_E_DATA_PATH` (default local `fineweb10B_sp8192` path if present)
 - `TON_E_TOKENIZER_PATH` (default local `fineweb_8192_bpe.model` path if present)
-- `TON_E_NUM_FLAT_LAYERS` (default `3`)
+- `TON_E_NUM_FLAT_LAYERS` (default `4`)
 - `TON_E_NUM_CRAWLER_LAYERS` (default `2`)
 - `TON_E_CRAWLER_LOOPS` (default `2`)
 - `TON_E_XSA_LAST_N` (default `F+C`)
@@ -31,7 +32,7 @@ This folder uses our stable Nightcrawler Cubed runner as the base and overlays a
 - `TON_E_CRAWLER_LOOP_ROPE_SCALES` (optional override)
 
 Explicit runner env vars still win:
-- `VOCAB_SIZE`, `DATA_PATH`, `TOKENIZER_PATH`, `USE_CRAWLER`, `NUM_FLAT_LAYERS`, `NUM_CRAWLER_LAYERS`, `CRAWLER_LOOPS`, `XSA_LAST_N`, `XSA_INCLUDE_FLAT`
+- `VOCAB_SIZE`, `DATA_PATH`, `TOKENIZER_PATH`, `EXPORT_QUANT`, `USE_CRAWLER`, `NUM_FLAT_LAYERS`, `NUM_CRAWLER_LAYERS`, `CRAWLER_LOOPS`, `XSA_LAST_N`, `XSA_INCLUDE_FLAT`
 
 ## Example: TON-E Rhythm On Our Runner
 

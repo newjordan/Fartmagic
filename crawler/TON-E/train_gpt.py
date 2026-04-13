@@ -1143,6 +1143,7 @@ class CrawlerGPT(nn.Module):
         bigram_vocab_size: int = 0,
         bigram_dim: int = 128,
         xsa_last_n: int = 0,
+        xsa_include_flat: bool = False,
         rope_dims: int = 0,
         ln_scale: bool = False,
         ve_enabled: bool = False,

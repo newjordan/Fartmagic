@@ -16,7 +16,7 @@
 1. Run `bash scripts/pod_setup.sh`
 2. Create a new tracked leg with `bash scripts/new_leg.sh <name>`
 3. Update that leg's `hypothesis.md`
-4. Make the code change inside that leg only
+4. Hardcode the tested condition inside that leg's tracked files only
 5. Run `python3 scripts/leg_diff_guard.py legs/<leg_name>`
 6. Run the leg's `gate.sh` or `run.sh`
 7. Fill `ablation.md` and `RESULTS.md`
@@ -24,6 +24,7 @@
 ## Hard Rules
 - Do not edit `vault/` directly.
 - Do not test new ideas with shell-typed env overrides against a leg or vault file.
+- Every test is a new leg; do not mutate an old leg into a different experiment.
 - Keep one variable per leg unless you explicitly re-baseline the branch.
 - Use `scripts/agent_guard.sh` if an agent is touching the repo.
 

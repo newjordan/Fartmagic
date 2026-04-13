@@ -15,6 +15,8 @@ What lives here:
 Operating rules:
 - Do not run ad-hoc experiment env changes directly against `vault/` or a leg trainer from the shell.
 - Every experiment gets its own `legs/<date>_<name>/` folder with tracked files.
+- Every new test condition requires a fresh leg; do not repurpose existing legs.
+- Hardcode the test in that leg's tracked files (`tracked_env.sh` and/or `train_gpt.py`).
 - New work starts from `vault/train_gpt_midnight_iii_base.py` unless you explicitly need the frozen 12L leader.
 - Use `bash scripts/new_leg.sh <name>` to create a new leg.
 - Run only a leg's tracked `gate.sh` or `run.sh`.

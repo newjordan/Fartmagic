@@ -158,6 +158,8 @@ class Hyperparameters:
     crawler_forward_ramp_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_STEPS", "0"))
     crawler_forward_ramp_delay_frac = float(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_FRAC", "0.0"))
     crawler_forward_ramp_delay_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_STEPS", "0"))
+    # Counted crawler safety warmup: force crawler off for first N train steps.
+    crawler_safe_warmup_steps = int(os.environ.get("CRAWLER_SAFE_WARMUP_STEPS", "0"))
     # TON-E: apply 3F+2Cx2 rhythm defaults unless explicitly disabled.
     ton_e_rhythm = bool(int(os.environ.get("TON_E_RHYTHM", "1")))
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
@@ -2219,6 +2221,7 @@ def main() -> None:
     crawler_forward_ramp_delay_frac = max(args.crawler_forward_ramp_delay_frac, 0.0)
     crawler_forward_ramp_steps = max(args.crawler_forward_ramp_steps, 0)
     crawler_forward_ramp_delay_steps = max(args.crawler_forward_ramp_delay_steps, 0)
+    crawler_safe_warmup_steps = max(args.crawler_safe_warmup_steps, 0)
     if crawler_forward_enabled:
         base_model.set_crawler_forward_scale(crawler_forward_start_frac)
 
@@ -2251,6 +2254,8 @@ def main() -> None:
     def crawler_grad_multiplier(step_idx: int, elapsed_ms: float) -> float:
         if not crawler_grad_enabled:
             return 1.0
+        if crawler_safe_warmup_steps > 0 and step_idx < crawler_safe_warmup_steps:
+            return 0.0
         return _scheduled_multiplier(
             step_idx,
             elapsed_ms,
@@ -2264,6 +2269,8 @@ def main() -> None:
     def crawler_forward_multiplier(step_idx: int, elapsed_ms: float) -> float:
         if not crawler_forward_enabled:
             return 1.0
+        if crawler_safe_warmup_steps > 0 and step_idx < crawler_safe_warmup_steps:
+            return 0.0
         return _scheduled_multiplier(
             step_idx,
             elapsed_ms,
@@ -2382,6 +2389,8 @@ def main() -> None:
             f"effective_depth:{effective_depth} ton_e_rhythm:{int(args.ton_e_rhythm)} "
             f"xsa_include_flat:{int(args.xsa_include_flat)}"
         )
+        if crawler_safe_warmup_steps > 0:
+            log0(f"crawler_safe_warmup:steps:{crawler_safe_warmup_steps} crawler_mul:0.000")
         if crawler_grad_enabled:
             grad_schedule_mode = (
                 "steps"

@@ -144,6 +144,11 @@ class Hyperparameters:
     crawler_mlp_mult = float(os.environ.get("CRAWLER_MLP_MULT", 4.0))  # MLP width multiplier for crawler
     inst_dim = int(os.environ.get("INST_DIM", "32"))          # instruction bottleneck dim per loop (0=disabled, use legacy loop_pos)
     crawler_quant_int8 = bool(int(os.environ.get("CRAWLER_QUANT_INT8", "0")))  # use int8 for shared crawler block (multi-context quant resilience)
+    # Graduated crawler schedule: scale crawler gradients from START_FRAC -> 1.0.
+    crawler_graduated = bool(int(os.environ.get("CRAWLER_GRADUATED", "0")))
+    crawler_start_frac = float(os.environ.get("CRAWLER_START_FRAC", "0.33"))
+    crawler_ramp_frac = float(os.environ.get("CRAWLER_RAMP_FRAC", "0.33"))
+    crawler_ramp_steps = int(os.environ.get("CRAWLER_RAMP_STEPS", "0"))
     # TON-E: apply 3F+2Cx2 rhythm defaults unless explicitly disabled.
     ton_e_rhythm = bool(int(os.environ.get("TON_E_RHYTHM", "1")))
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
@@ -1500,6 +1505,24 @@ class CrawlerGPT(nn.Module):
         return self._compute_logits(x)
 
 
+CRAWLER_GRAD_PARAM_PREFIXES = (
+    "crawler_blocks.",
+    "loop_inst_proj.",
+    "loop_inst_up.",
+    "loop_pos.",
+    "loop_smear.",
+    "anchor_write.",
+    "anchor_read.",
+    "tap_proj.",
+    "loop_tap_up.",
+    "shared_tap_up.",
+)
+
+
+def _is_crawler_grad_param_name(name: str) -> bool:
+    return name.startswith(CRAWLER_GRAD_PARAM_PREFIXES)
+
+
 def _get_block_named_params(model: nn.Module) -> list:
     """Return named parameters from all transformer blocks, compatible with both GPT and CrawlerGPT."""
     if isinstance(model, CrawlerGPT):
@@ -2141,6 +2164,41 @@ def main() -> None:
         else compiled_model
     )
     block_named_params = _get_block_named_params(base_model)
+    crawler_grad_enabled = (
+        args.use_crawler
+        and args.crawler_graduated
+        and isinstance(base_model, CrawlerGPT)
+    )
+    crawler_start_frac = float(np.clip(args.crawler_start_frac, 0.0, 1.0))
+    crawler_ramp_frac = max(args.crawler_ramp_frac, 0.0)
+    crawler_ramp_steps = 0
+    crawler_grad_params: list[Tensor] = []
+    if crawler_grad_enabled:
+        if args.crawler_ramp_steps > 0:
+            crawler_ramp_steps = args.crawler_ramp_steps
+        else:
+            crawler_ramp_steps = max(1, int(args.iterations * crawler_ramp_frac))
+        crawler_grad_params = [
+            p
+            for name, p in base_model.named_parameters()
+            if _is_crawler_grad_param_name(name)
+        ]
+        if not crawler_grad_params:
+            crawler_grad_enabled = False
+
+    def crawler_grad_multiplier(step_idx: int) -> float:
+        if not crawler_grad_enabled:
+            return 1.0
+        progress = min(max(step_idx, 0) / max(crawler_ramp_steps, 1), 1.0)
+        return crawler_start_frac + (1.0 - crawler_start_frac) * progress
+
+    def apply_crawler_grad_multiplier(mult: float) -> None:
+        if not crawler_grad_enabled or mult >= 0.999999:
+            return
+        for param in crawler_grad_params:
+            if param.grad is not None:
+                param.grad.mul_(mult)
+
     matrix_params = [
         p
         for name, p in block_named_params
@@ -2237,6 +2295,14 @@ def main() -> None:
             f"effective_depth:{effective_depth} ton_e_rhythm:{int(args.ton_e_rhythm)} "
             f"xsa_include_flat:{int(args.xsa_include_flat)}"
         )
+        if crawler_grad_enabled:
+            log0(
+                f"crawler_graduated:start_frac:{crawler_start_frac:.3f} "
+                f"ramp_steps:{crawler_ramp_steps} ramp_frac:{crawler_ramp_frac:.3f} "
+                f"grad_params:{len(crawler_grad_params)}"
+            )
+        elif args.crawler_graduated:
+            log0("crawler_graduated:requested but no crawler params matched; disabled")
     log0(
         f"ablate:skip_train={int(args.skip_train)} init_model_path:{args.init_model_path or '-'} "
         f"gptq_cal_samples:{args.gptq_cal_samples} gptq_cal_seq_len:{args.gptq_cal_seq_len or args.train_seq_len}"
@@ -2286,6 +2352,7 @@ def main() -> None:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     warmup_loss = model(x, y)
                 (warmup_loss * grad_scale).backward()
+            apply_crawler_grad_multiplier(crawler_grad_multiplier(warmup_step))
             for opt in optimizers:
                 opt.step()
             zero_grad_all()
@@ -2340,6 +2407,7 @@ def main() -> None:
             break
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         scale = lr_mul(step, elapsed_ms)
+        current_crawler_grad_mul = crawler_grad_multiplier(step)
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
@@ -2351,6 +2419,7 @@ def main() -> None:
             train_loss += loss.detach()
             loss.backward()
         train_loss /= grad_accum_steps
+        apply_crawler_grad_multiplier(current_crawler_grad_mul)
         frac = min(step / args.muon_momentum_warmup_steps, 1.0) if args.muon_momentum_warmup_steps > 0 else 1.0
         muon_momentum = (1 - frac) * args.muon_momentum_warmup_start + frac * args.muon_momentum
         for group in optimizer_muon.param_groups:
@@ -2382,6 +2451,11 @@ def main() -> None:
             log0(
                 f"step:{step}/{args.iterations} train_loss:{train_loss.item():.4f} "
                 f"train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / step:.2f}ms"
+                + (
+                    f" crawler_grad_mul:{current_crawler_grad_mul:.3f}"
+                    if crawler_grad_enabled
+                    else ""
+                )
             )
         reached_cap = effective_max_wallclock_ms is not None and approx_training_time_ms >= effective_max_wallclock_ms
         if distributed and effective_max_wallclock_ms is not None:
@@ -2474,6 +2548,7 @@ def main() -> None:
                 for p in base_model.parameters():
                     if p.grad is not None:
                         dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+            apply_crawler_grad_multiplier(crawler_grad_multiplier(step + d_step))
             if args.grad_clip_norm > 0:
                 torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
             for opt in optimizers:

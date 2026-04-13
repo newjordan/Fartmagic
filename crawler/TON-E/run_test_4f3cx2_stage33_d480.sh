@@ -22,7 +22,9 @@ fi
 
 export SEED="${SEED:-4}"
 export VOCAB_SIZE="${VOCAB_SIZE:-8192}"
-export MODEL_DIM="${MODEL_DIM:-480}"
+# FlashAttention-3 requires head_dim = MODEL_DIM / NUM_HEADS to be a multiple of 8.
+# With NUM_HEADS=8, valid MODEL_DIM values are multiples of 64 (e.g., 448, 512).
+export MODEL_DIM="${MODEL_DIM:-448}"
 export RUN_ID="${RUN_ID:-tone_test_4f3cx2_stage33_d${MODEL_DIM}_s${SEED}}"
 export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-600}"
 

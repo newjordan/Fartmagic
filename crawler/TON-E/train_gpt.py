@@ -38,7 +38,9 @@ from torch import Tensor, nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 try:
     from flash_attn_interface import flash_attn_func as flash_attn_3_func
+    _FLASH_ATTN3_AVAILABLE = True
 except ImportError:
+    _FLASH_ATTN3_AVAILABLE = False
     def flash_attn_3_func(q, k, v, causal=False):
         # q: (B, T, Hq, D), k/v: (B, T, Hkv, D) — expand KV for GQA
         q2 = q.transpose(1, 2)  # (B, Hq, T, D)
@@ -2086,6 +2088,25 @@ def main() -> None:
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
     apply_ton_e_rhythm_profile(args)
+    if args.num_heads <= 0:
+        raise ValueError(f"NUM_HEADS must be positive, got {args.num_heads}")
+    if args.model_dim % args.num_heads != 0:
+        raise ValueError(
+            f"MODEL_DIM={args.model_dim} must be divisible by NUM_HEADS={args.num_heads}"
+        )
+    head_dim = args.model_dim // args.num_heads
+    if _FLASH_ATTN3_AVAILABLE and head_dim % 8 != 0:
+        dim_quantum = args.num_heads * 8
+        lower = (args.model_dim // dim_quantum) * dim_quantum
+        upper = lower + dim_quantum
+        if lower <= 0:
+            lower = dim_quantum
+        raise ValueError(
+            "FlashAttention-3 requires head_dim multiple of 8. "
+            f"Got MODEL_DIM={args.model_dim}, NUM_HEADS={args.num_heads}, head_dim={head_dim}. "
+            f"Use MODEL_DIM as a multiple of {dim_quantum} (for NUM_HEADS={args.num_heads}), "
+            f"e.g. {lower} or {upper}."
+        )
     distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))

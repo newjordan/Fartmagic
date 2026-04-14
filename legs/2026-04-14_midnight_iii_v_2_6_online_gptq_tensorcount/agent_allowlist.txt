@@ -1,0 +1,5 @@
+# One path or prefix per line. Prefixes end with /
+# scripts/agent_guard.sh check will fail any changed file not listed here.
+
+legs/2026-04-14_midnight_iii_v_2_6_online_gptq_tensorcount/
+PIPELINE.md

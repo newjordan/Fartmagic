@@ -4,6 +4,9 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/launch_guard.sh"
+
 TRAIN_SCRIPT="${REPO_ROOT}/legs/2026-04-12_midnight_12l_clean/train_gpt.py"
 LOG_DIR="${REPO_ROOT}/legs/2026-04-12_midnight_12l_clean/logs"
 mkdir -p "${LOG_DIR}"
@@ -50,6 +53,8 @@ fi
 reject_adhoc_env
 # shellcheck disable=SC1090
 source "${TRACKED_ENV}"
+
+lg_preflight_and_lock "${REPO_ROOT}" "${TRAIN_SCRIPT}" "${TRACKED_ENV}" "${NPROC}" "$0"
 
 SEED="${SEED}" \
 NPROC_PER_NODE="${NPROC}" \

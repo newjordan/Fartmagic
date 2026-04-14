@@ -5,7 +5,7 @@ Minimal isolated repo for the Midnight neural line.
 What lives here:
 - `vault/train_gpt_midnight_12l_sota_REAL.py`: frozen official leader
 - `vault/train_gpt_midnight_iii_base.py`: working base for new growth experiments
-- `scripts/pod_setup.sh`: single blessed pod bootstrap
+- `scripts/Im_sorry_pod_setup.sh`: single blessed pod bootstrap
 - `scripts/new_leg.sh`: create a tracked experiment folder
 - `scripts/leg_diff_guard.py`: block overly broad trainer edits
 - `scripts/agent_guard.sh`: block out-of-scope file drift
@@ -20,12 +20,19 @@ Operating rules:
 - New work starts from `vault/train_gpt_midnight_iii_base.py` unless you explicitly need the frozen 12L leader.
 - Use `bash scripts/new_leg.sh <name>` to create a new leg.
 - Run only a leg's tracked `gate.sh` or `run.sh`.
+- Before any paid gate/full run, do startup preflight: `pwd`, `git remote -v`, `git rev-parse --abbrev-ref HEAD`, and file existence checks for the target leg script + tokenizer/model paths.
 
 Fast start:
 ```bash
-bash scripts/pod_setup.sh
+bash scripts/Im_sorry_pod_setup.sh
 bash scripts/new_leg.sh qk_gain_probe
 bash legs/2026-04-12_midnight_iii_clean/gate.sh
+```
+
+Lane runners:
+```bash
+bash scripts/run_midnight_iii_lane.sh gate
+bash scripts/run_midnight_12l_lane.sh gate
 ```
 
 Reference map: see `PIPELINE.md` and `RESEARCH_LINKS.md`.

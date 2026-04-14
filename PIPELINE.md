@@ -22,7 +22,7 @@
 - Role: default parent for new legs
 
 ## Blessed Workflow
-1. Run `bash scripts/pod_setup.sh`
+1. Run `bash scripts/Im_sorry_pod_setup.sh`
 2. Create a new tracked leg with `bash scripts/new_leg.sh <name>`
 3. Update that leg's `hypothesis.md`
 4. Hardcode the tested condition inside that leg's tracked files only

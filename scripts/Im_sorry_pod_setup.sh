@@ -15,11 +15,13 @@ DOWNLOAD_SP8192="${DOWNLOAD_SP8192:-1}"
 REQUIRE_FA3="${REQUIRE_FA3:-1}"
 REQUIRE_BROTLI="${REQUIRE_BROTLI:-1}"
 REQUIRE_PYMINIFIER="${REQUIRE_PYMINIFIER:-1}"
-REQUIRE_SP1024="${REQUIRE_SP1024:-1}"
-REQUIRE_SP8192="${REQUIRE_SP8192:-1}"
+REQUIRE_SP1024="1"
+REQUIRE_SP8192="1"
 BLOCK_CU124="${BLOCK_CU124:-1}"
+MIN_FREE_GB_FOR_DUAL_VOCABS="${MIN_FREE_GB_FOR_DUAL_VOCABS:-18}"
 export POD_VARIANT TRAIN_SHARDS DOWNLOAD_SP1024 DOWNLOAD_SP8192
 export REQUIRE_FA3 REQUIRE_BROTLI REQUIRE_PYMINIFIER REQUIRE_SP1024 REQUIRE_SP8192 BLOCK_CU124
+export MIN_FREE_GB_FOR_DUAL_VOCABS
 
 if [[ -n "${WORKSPACE:-}" ]]; then
     WORKSPACE="$(cd -- "${WORKSPACE}" && pwd)"
@@ -35,6 +37,78 @@ SP8192_REPO_PRIMARY="${MATCHED_FINEWEB_REPO_ID:-kevclark/parameter-golf}"
 SP8192_REPO_FALLBACK="${MATCHED_FINEWEB_REPO_FALLBACK:-willdepueoai/parameter-golf}"
 SP1024_REPO_PRIMARY="${MATCHED_FINEWEB_REPO_ID_1024:-willdepueoai/parameter-golf}"
 SP1024_REPO_FALLBACK="${MATCHED_FINEWEB_REPO_FALLBACK_1024:-kevclark/parameter-golf}"
+
+count_glob() {
+    local pattern="$1"
+    compgen -G "$pattern" | wc -l
+}
+
+sp1024_already_ready() {
+    local tok="${WORKSPACE}/data/tokenizers/fineweb_1024_bpe.model"
+    local train_pattern="${WORKSPACE}/data/datasets/fineweb10B_sp1024/fineweb_train_*.bin"
+    local val_pattern="${WORKSPACE}/data/datasets/fineweb10B_sp1024/fineweb_val_*.bin"
+    local train_count
+    local val_count
+    [[ -f "${tok}" ]] || return 1
+    train_count="$(count_glob "${train_pattern}")"
+    val_count="$(count_glob "${val_pattern}")"
+    [[ "${train_count}" -ge "${TRAIN_SHARDS}" ]] || return 1
+    [[ "${val_count}" -ge 1 ]] || return 1
+    return 0
+}
+
+sp8192_already_ready() {
+    local tok="${WORKSPACE}/data/tokenizers/fineweb_8192_bpe.model"
+    local train_pattern="${WORKSPACE}/data/datasets/fineweb10B_sp8192/fineweb_train_*.bin"
+    local val_pattern="${WORKSPACE}/data/datasets/fineweb10B_sp8192/fineweb_val_*.bin"
+    local train_count
+    local val_count
+    [[ -f "${tok}" ]] || return 1
+    train_count="$(count_glob "${train_pattern}")"
+    val_count="$(count_glob "${val_pattern}")"
+    [[ "${train_count}" -ge "${TRAIN_SHARDS}" ]] || return 1
+    [[ "${val_count}" -ge 1 ]] || return 1
+    return 0
+}
+
+cleanup_disk_pressure() {
+    echo "  Disk cleanup: pruning caches to preserve dual-vocab readiness..."
+    rm -rf "${WORKSPACE}/.cache/pip" "${WORKSPACE}/.cache/huggingface" 2>/dev/null || true
+    rm -rf "${HOME}/.cache/pip" "${HOME}/.cache/huggingface" 2>/dev/null || true
+    rm -rf /root/.cache/pip /root/.cache/huggingface 2>/dev/null || true
+    python3 -m pip cache purge >/dev/null 2>&1 || true
+}
+
+maybe_handle_disk_pressure() {
+    [[ "${REQUIRE_SP1024}" == "1" || "${REQUIRE_SP8192}" == "1" ]] || return 0
+
+    local need_dual="0"
+    if [[ "${REQUIRE_SP1024}" == "1" && "${REQUIRE_SP8192}" == "1" ]]; then
+        need_dual="1"
+    fi
+    [[ "${need_dual}" == "1" ]] || return 0
+
+    if sp1024_already_ready && sp8192_already_ready; then
+        return 0
+    fi
+
+    local free_bytes
+    free_bytes="$(df -PB1 "${WORKSPACE}" | awk 'NR==2 {print $4}')"
+    [[ "${free_bytes}" =~ ^[0-9]+$ ]] || return 0
+
+    local threshold_bytes=$((MIN_FREE_GB_FOR_DUAL_VOCABS * 1024 * 1024 * 1024))
+    if (( free_bytes < threshold_bytes )); then
+        echo "  DISK_PRESSURE: free_bytes=${free_bytes} below threshold_bytes=${threshold_bytes} (${MIN_FREE_GB_FOR_DUAL_VOCABS} GiB)"
+        cleanup_disk_pressure
+        free_bytes="$(df -PB1 "${WORKSPACE}" | awk 'NR==2 {print $4}')"
+        echo "  DISK_PRESSURE: free_bytes_after_cleanup=${free_bytes}"
+        if (( free_bytes < threshold_bytes )) && ! (sp1024_already_ready && sp8192_already_ready); then
+            echo "  FATAL: insufficient free disk for strict dual-vocab setup (sp1024 + sp8192)." >&2
+            echo "  FATAL: do not downshift vocab mode; expand disk or pre-stage both vocab datasets." >&2
+            exit 1
+        fi
+    fi
+}
 
 write_activation_helper() {
     local vocab_size="${POD_VARIANT#sp}"
@@ -118,8 +192,8 @@ label = variant.upper()
 require_fa3 = os.environ.get("REQUIRE_FA3", "1") == "1"
 require_brotli = os.environ.get("REQUIRE_BROTLI", "1") == "1"
 require_pyminifier = os.environ.get("REQUIRE_PYMINIFIER", "1") == "1"
-require_sp1024 = os.environ.get("REQUIRE_SP1024", "1") == "1"
-require_sp8192 = os.environ.get("REQUIRE_SP8192", "1") == "1"
+require_sp1024 = True
+require_sp8192 = True
 block_cu124 = os.environ.get("BLOCK_CU124", "1") == "1"
 
 def path_join(*parts: str) -> str:
@@ -252,6 +326,7 @@ if [[ -d /workspace/venv_cu124 ]]; then
     echo "  NOTE: ignoring stale /workspace/venv_cu124; setup uses the pod's active python3"
 fi
 
+maybe_handle_disk_pressure
 write_activation_helper
 
 echo ""

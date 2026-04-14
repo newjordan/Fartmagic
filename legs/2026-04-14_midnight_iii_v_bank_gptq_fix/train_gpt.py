@@ -2261,6 +2261,7 @@ def main() -> None:
         base_model._ngram_tracker = None
     # No DDP -- Parallel Muon handles bank grad communication via reduce-scatter,
     # and non-bank grads are manually all-reduced before Adam steps.
+    torch._dynamo.config.recompile_limit = 32
     compiled_model = maybe_compile(
         base_model,
         enabled=args.compile_enabled,

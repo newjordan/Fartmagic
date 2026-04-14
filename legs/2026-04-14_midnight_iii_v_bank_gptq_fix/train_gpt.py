@@ -768,7 +768,7 @@ def gptq_calibrate(model: nn.Module, train_pattern: str, device: torch.device,
             x = tokens[:-1].unsqueeze(0)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 model.forward_logits(x)
-    delattr(model, "_gptq_ctx")
+    model._gptq_ctx = None
     for h in hooks:
         h.remove()
     for name in hessians:
@@ -1460,6 +1460,7 @@ class GPT(nn.Module):
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
         self.looping_active = False
+        self._gptq_ctx = None
         _num_loops = int(os.environ.get("NUM_LOOPS", "2"))
         if _num_loops > 0:
             _loop_start = int(os.environ.get("LOOP_START", "3"))
@@ -1571,7 +1572,7 @@ class GPT(nn.Module):
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         n = self.num_layers
-        gptq_ctx = getattr(self, "_gptq_ctx", None)
+        gptq_ctx = self._gptq_ctx
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
@@ -1640,7 +1641,7 @@ class GPT(nn.Module):
     def forward_logits(self, input_ids: Tensor) -> Tensor:
         """Return logits (bsz, seq_len, vocab) without computing loss."""
         n = self.num_layers
-        gptq_ctx = getattr(self, "_gptq_ctx", None)
+        gptq_ctx = self._gptq_ctx
         x = self.tok_emb(input_ids)
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
@@ -2479,6 +2480,10 @@ def main() -> None:
         if should_validate:
             torch.cuda.synchronize()
             training_time_ms += 1000.0 * (time.perf_counter() - t0)
+            # Temporarily hide _gptq_ctx so compiled forward sees a stable graph
+            _saved_gptq_ctx = getattr(base_model, "_gptq_ctx", None)
+            if _saved_gptq_ctx is not None:
+                base_model._gptq_ctx = None
             val_loss, val_bpb = eval_val(
                 args,
                 model,
@@ -2495,6 +2500,8 @@ def main() -> None:
                 f"step:{step}/{args.iterations} val_loss:{val_loss:.4f} val_bpb:{val_bpb:.4f} "
                 f"train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms"
             )
+            if _saved_gptq_ctx is not None:
+                base_model._gptq_ctx = _saved_gptq_ctx
             torch.cuda.synchronize()
             t0 = time.perf_counter()
         if last_step:
@@ -2655,8 +2662,7 @@ def main() -> None:
                     f"collect_steps:{online_gptq_collect_steps} collect_micro:{online_gptq_collect_micro} "
                     f"{bank_summary} in {time.perf_counter()-t_gptq:.1f}s"
                 )
-    if hasattr(base_model, "_gptq_ctx"):
-        delattr(base_model, "_gptq_ctx")
+    base_model._gptq_ctx = None
     # Apply weight averaging
     if args.lawa_enabled and len(lawa_queue) > 1:
         log0(f"lawa:applying LAWA averaging k={len(lawa_queue)}")

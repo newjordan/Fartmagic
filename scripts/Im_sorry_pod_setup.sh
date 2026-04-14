@@ -48,7 +48,13 @@ export REQUIRE_FA3 REQUIRE_BROTLI REQUIRE_PYMINIFIER REQUIRE_SP1024 REQUIRE_SP81
 export MIN_FREE_GB_FOR_DUAL_VOCABS
 
 if [[ -n "${WORKSPACE:-}" ]]; then
-    WORKSPACE="$(cd -- "${WORKSPACE}" && pwd)"
+    _ws_candidate="$(cd -- "${WORKSPACE}" && pwd)"
+    if [[ -f "${_ws_candidate}/data/cached_challenge_fineweb.py" ]]; then
+        WORKSPACE="${_ws_candidate}"
+    else
+        echo "  NOTE: pod WORKSPACE=${_ws_candidate} has no data helper; using repo root ${REPO_ROOT}"
+        WORKSPACE="${REPO_ROOT}"
+    fi
 else
     WORKSPACE="${REPO_ROOT}"
 fi

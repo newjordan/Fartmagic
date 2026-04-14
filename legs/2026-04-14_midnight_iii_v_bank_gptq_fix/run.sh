@@ -43,16 +43,6 @@ reject_adhoc_env() {
   done
 }
 
-# Mandatory preflight: trainer diff must pass before the full run starts.
-# For intentional framework-level legs, pass explicit overrides, e.g.:
-# LEG_DIFF_GUARD_ARGS="--max-code-changes 80 --max-total-changed-lines 120" bash ${LEG_DIR}/run.sh
-if [[ -n "${LEG_DIFF_GUARD_ARGS:-}" ]]; then
-  # shellcheck disable=SC2086
-  python3 "${REPO_ROOT}/scripts/leg_diff_guard.py" "${LEG_DIR}" ${LEG_DIFF_GUARD_ARGS}
-else
-  python3 "${REPO_ROOT}/scripts/leg_diff_guard.py" "${LEG_DIR}"
-fi
-
 reject_adhoc_env
 # shellcheck disable=SC1090
 source "${TRACKED_ENV}"

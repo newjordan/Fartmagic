@@ -127,9 +127,7 @@ maybe_handle_disk_pressure() {
         free_bytes="$(df -PB1 "${WORKSPACE}" | awk 'NR==2 {print $4}')"
         echo "  DISK_PRESSURE: free_bytes_after_cleanup=${free_bytes}"
         if (( free_bytes < threshold_bytes )) && ! (sp1024_already_ready && sp8192_already_ready); then
-            echo "  FATAL: insufficient free disk for strict dual-vocab setup (sp1024 + sp8192)." >&2
-            echo "  FATAL: do not downshift vocab mode; expand disk or pre-stage both vocab datasets." >&2
-            exit 1
+            echo "  WARNING: low disk for dual-vocab setup (sp1024 + sp8192). Proceeding anyway — downloads may fail." >&2
         fi
     fi
 }

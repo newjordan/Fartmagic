@@ -465,6 +465,48 @@ else
 fi
 
 echo ""
+echo "  Ensuring tokenizers exist (safety net for interrupted downloads)..."
+python3 - <<'PYEOF'
+import os, shutil
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+
+root = Path(os.environ.get("WORKSPACE", "."))
+tok_dir = root / "data" / "tokenizers"
+tok_dir.mkdir(parents=True, exist_ok=True)
+
+repos = [
+    os.environ.get("MATCHED_FINEWEB_REPO_ID", "kevclark/parameter-golf"),
+    "willdepueoai/parameter-golf",
+]
+prefix = os.environ.get("MATCHED_FINEWEB_REMOTE_ROOT_PREFIX", "datasets")
+
+for tok_name in ["fineweb_8192_bpe.model", "fineweb_1024_bpe.model"]:
+    dest = tok_dir / tok_name
+    if dest.exists():
+        print(f"  {tok_name}: already present")
+        continue
+    ok = False
+    for repo_id in repos:
+        try:
+            cached = Path(hf_hub_download(
+                repo_id=repo_id, filename=tok_name,
+                subfolder=f"{prefix}/tokenizers", repo_type="dataset",
+            )).resolve(strict=True)
+            try:
+                os.link(cached, dest)
+            except OSError:
+                shutil.copy2(cached, dest)
+            print(f"  {tok_name}: fetched from {repo_id}")
+            ok = True
+            break
+        except Exception as e:
+            print(f"  {tok_name}: failed from {repo_id} ({e})")
+    if not ok:
+        print(f"  WARNING: could not fetch {tok_name} from any repo")
+PYEOF
+
+echo ""
 echo "============================================"
 echo " Verification"
 echo "============================================"

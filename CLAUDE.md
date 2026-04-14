@@ -8,6 +8,15 @@ These rules apply to Claude, Codex, and any other coding agent working here.
 - Treat `vault/train_gpt_midnight_12l_sota_REAL.py` as frozen.
 - Default parent for new work is `vault/train_gpt_midnight_iii_base.py`.
 
+## Frozen: Pod Setup Script
+- **`scripts/Im_sorry_pod_setup.sh` is FROZEN.  Do not edit without explicit user approval.**
+- A frozen backup exists at `scripts/Im_sorry_pod_setup.sh.cu130_frozen_20260414`.
+- The pod runs **CUDA 13.0 / PyTorch 2.11.0+cu130** on `vastai/pytorch:cuda-13.0.2-auto`.
+- The FA3 wheel URL must target **cu130**.  Not cu124. Not cu128. cu130.
+- The `/venv/main/bin` PATH prepend and the symlink fallback in `install_fa3()` are load-bearing.
+- If you believe a change is needed, show evidence first, then ask the user.
+- `pod_stack.lock` enforces the hash — if the guard fails, the setup script will not run.
+
 ## Experiment Discipline
 - Every experiment/test must be a brand-new leg created with `bash scripts/new_leg.sh <name>`.
 - Never repurpose an existing leg for a new hypothesis; create a child leg instead.
@@ -44,3 +53,19 @@ These rules apply to Claude, Codex, and any other coding agent working here.
 - If the diff guard fails, stop unless the user explicitly approves wider thresholds.
 - If you need a new experiment, create it with `bash scripts/new_leg.sh <name>`.
 - If evidence for a claim is missing or ambiguous, stop and mark the claim unsupported.
+
+## Startup Safety Protocol
+- Before giving any paid run command, declare the canonical runtime repo path and branch.
+- Never assume local path parity with pod paths; verify repo identity before run instructions.
+- Required preflight for any gate/full run (evidence must be shown first):
+  1. `pwd`
+  2. `git remote -v`
+  3. `git rev-parse --abbrev-ref HEAD`
+  4. `test -f legs/<leg>/run.sh` (or `gate.sh`)
+  5. `test -f <required tokenizer/model path>`
+- If any preflight check fails, do not issue launch commands.
+- If a startup error occurs, stop immediately. Do not issue a second launch until:
+  1. one-line `fact` cause is named from the error output
+  2. the fix is tracked in repo files (leg files/scripts), not shell-only
+  3. updated launch command is provided with corrected path/repo context
+- For compile-sensitive legs, compile behavior must be explicit in tracked files (`tracked_env.sh`), not implied defaults.

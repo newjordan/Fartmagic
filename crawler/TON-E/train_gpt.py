@@ -155,6 +155,8 @@ class Hyperparameters:
     lite_crawler_use_moe = bool(int(os.environ.get("LITE_CRAWLER_USE_MOE", "0")))
     lite_crawler_num_experts = int(os.environ.get("LITE_CRAWLER_NUM_EXPERTS", "4"))
     lite_crawler_expert_mult = float(os.environ.get("LITE_CRAWLER_EXPERT_MULT", "2.0"))
+    lite_crawler_parallel_residual = bool(int(os.environ.get("LITE_CRAWLER_PARALLEL_RESIDUAL", "0")))
+    lite_crawler_qk_gain_init = float(os.environ.get("LITE_CRAWLER_QK_GAIN_INIT", "1.0"))
     lite_crawler_cpu_cold = bool(int(os.environ.get("LITE_CRAWLER_CPU_COLD", "0")))
     lite_crawler_cold_max_pages = int(os.environ.get("LITE_CRAWLER_COLD_MAX_PAGES", "16"))
     lite_crawler_cold_scale = float(os.environ.get("LITE_CRAWLER_COLD_SCALE", "0.25"))
@@ -1206,7 +1208,7 @@ class LiteCrawlerMoE(nn.Module):
 
 
 class LiteCrawlerSlotAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int):
+    def __init__(self, dim: int, num_heads: int, qk_gain_init: float = 1.0):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError(f"lite crawler dim {dim} must be divisible by heads {num_heads}")
@@ -1217,12 +1219,16 @@ class LiteCrawlerSlotAttention(nn.Module):
         self.v_proj = CastedLinear(dim, dim, bias=False)
         self.proj = CastedLinear(dim, dim, bias=False)
         self.proj._zero_init = True
+        self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
 
     def forward(self, x: Tensor) -> Tensor:
         bsz, slots, dim = x.shape
         q = self.q_proj(x).reshape(bsz, slots, self.num_heads, self.head_dim)
         k = self.k_proj(x).reshape(bsz, slots, self.num_heads, self.head_dim)
         v = self.v_proj(x).reshape(bsz, slots, self.num_heads, self.head_dim)
+        q = F.rms_norm(q, (q.size(-1),))
+        k = F.rms_norm(k, (k.size(-1),))
+        q = q * self.q_gain.to(dtype=q.dtype)[None, None, :, None]
         out = flash_attn_3_func(q, k, v, causal=False)
         return self.proj(out.reshape(bsz, slots, dim))
 
@@ -1233,6 +1239,8 @@ class LiteCrawlerSlotBlock(nn.Module):
         dim: int,
         num_heads: int,
         mlp_mult: float,
+        qk_gain_init: float = 1.0,
+        parallel_residual: bool = False,
         use_moe: bool = False,
         num_experts: int = 4,
         expert_mult: float = 2.0,
@@ -1242,7 +1250,8 @@ class LiteCrawlerSlotBlock(nn.Module):
         super().__init__()
         self.attn_norm = RMSNorm()
         self.ffn_norm = RMSNorm()
-        self.attn = LiteCrawlerSlotAttention(dim, num_heads)
+        self.parallel_residual = parallel_residual
+        self.attn = LiteCrawlerSlotAttention(dim, num_heads, qk_gain_init=qk_gain_init)
         self.ffn = (
             LiteCrawlerMoE(
                 dim,
@@ -1258,6 +1267,13 @@ class LiteCrawlerSlotBlock(nn.Module):
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
 
     def forward(self, x: Tensor) -> Tensor:
+        if self.parallel_residual:
+            attn_out = self.attn(self.attn_norm(x))
+            ffn_out = self.ffn(self.ffn_norm(x))
+            return x + (
+                self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
+                + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * ffn_out
+            )
         x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * self.attn(self.attn_norm(x))
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.ffn(self.ffn_norm(x))
         return x
@@ -1275,6 +1291,8 @@ class LiteCrawlerCore(nn.Module):
         loops: int,
         chunk_size: int,
         mlp_mult: float,
+        qk_gain_init: float = 1.0,
+        parallel_residual: bool = False,
         use_moe: bool = False,
         num_experts: int = 4,
         expert_mult: float = 2.0,
@@ -1301,12 +1319,15 @@ class LiteCrawlerCore(nn.Module):
         self.read_value = CastedLinear(slot_dim, slot_dim, bias=False)
         self.read_out = CastedLinear(slot_dim, model_dim, bias=False)
         self.read_out._zero_init = True
+        self.read_q_gain = nn.Parameter(torch.tensor(qk_gain_init, dtype=torch.float32))
         self.slot_seed = nn.Parameter(torch.zeros(slot_count, slot_dim, dtype=torch.float32))
         nn.init.normal_(self.slot_seed, std=0.02)
         self.slot_block = LiteCrawlerSlotBlock(
             slot_dim,
             num_heads=slot_heads,
             mlp_mult=mlp_mult,
+            qk_gain_init=qk_gain_init,
+            parallel_residual=parallel_residual,
             use_moe=use_moe,
             num_experts=num_experts,
             expert_mult=expert_mult,
@@ -1341,6 +1362,9 @@ class LiteCrawlerCore(nn.Module):
             read_q = self.read_query(read_in)
             read_k = self.read_key(carry_slot)
             read_v = self.read_value(carry_slot)
+            read_q = F.rms_norm(read_q, (read_q.size(-1),))
+            read_k = F.rms_norm(read_k, (read_k.size(-1),))
+            read_q = read_q * self.read_q_gain.to(dtype=read_q.dtype)
             read_scores = torch.einsum("btd,bkd->btk", read_q, read_k) * self._inv_slot_scale
             read_attn = F.softmax(read_scores, dim=-1).to(dtype=x.dtype)
             read_state = torch.einsum("btk,bkd->btd", read_attn, read_v)
@@ -1409,6 +1433,8 @@ class LiteCrawlerGPT(nn.Module):
         lite_crawler_chunk_size: int,
         lite_crawler_trunk_chunk_size: int,
         lite_crawler_mlp_mult: float,
+        lite_crawler_qk_gain_init: float = 1.0,
+        lite_crawler_parallel_residual: bool = False,
         lite_crawler_use_moe: bool = False,
         lite_crawler_num_experts: int = 4,
         lite_crawler_expert_mult: float = 2.0,
@@ -1489,6 +1515,8 @@ class LiteCrawlerGPT(nn.Module):
             loops=lite_crawler_loops,
             chunk_size=lite_crawler_chunk_size,
             mlp_mult=lite_crawler_mlp_mult,
+            qk_gain_init=lite_crawler_qk_gain_init,
+            parallel_residual=lite_crawler_parallel_residual,
             use_moe=lite_crawler_use_moe,
             num_experts=lite_crawler_num_experts,
             expert_mult=lite_crawler_expert_mult,
@@ -2147,6 +2175,8 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             lite_crawler_chunk_size=args.lite_crawler_chunk_size,
             lite_crawler_trunk_chunk_size=args.lite_crawler_trunk_chunk_size,
             lite_crawler_mlp_mult=args.lite_crawler_mlp_mult,
+            lite_crawler_qk_gain_init=args.lite_crawler_qk_gain_init,
+            lite_crawler_parallel_residual=args.lite_crawler_parallel_residual,
             lite_crawler_use_moe=args.lite_crawler_use_moe,
             lite_crawler_num_experts=args.lite_crawler_num_experts,
             lite_crawler_expert_mult=args.lite_crawler_expert_mult,
@@ -3041,6 +3071,10 @@ def main() -> None:
             f"lite_crawler_moe:{int(args.lite_crawler_use_moe)} "
             f"experts:{args.lite_crawler_num_experts} expert_mult:{args.lite_crawler_expert_mult:.2f} "
             f"slot_heads:{args.lite_crawler_heads} slot_mlp_mult:{args.lite_crawler_mlp_mult:.2f}"
+        )
+        log0(
+            f"lite_crawler_parallel_residual:{int(args.lite_crawler_parallel_residual)} "
+            f"lite_crawler_qk_gain:{args.lite_crawler_qk_gain_init:.2f}"
         )
         log0(
             f"lite_crawler_cpu_cold:{int(args.lite_crawler_cpu_cold)} "

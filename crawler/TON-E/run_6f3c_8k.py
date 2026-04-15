@@ -56,24 +56,31 @@ class RunConfig:
             "MLP_ACT": "relu_sq",
             "MLP_LEAKY_SLOPE": "0.5",
             "CRAWLER_MLP_LEAKY_SLOPE": "0.5",
+            "CRAWLER_MLP_CHOKE_DIM": "0",
+            "CRAWLER_MLP_CHOKE_SHAPE": "flat",
+            "CRAWLER_MLP_CHOKE_GROUPS": "8",
+            "CRAWLER_LOOP_SMEAR": "0",
+            "CRAWLER_TAP_DIM": "0",
+            "CRAWLER_TAP_LOOP_SPECIFIC": "1",
+            "CRAWLER_TAP_LAYERS": "all",
             "ROPE_DIMS": "16",
             "VE_ENABLED": "1",
             "VE_LAYERS": "9,10",
             "XSA_LAST_N": "11",
             "XSA_INCLUDE_FLAT": "0",
             "CRAWLER_LOOP_ROPE_SCALES": "9,1,1",
-            # Stage crawler compute in the same 33/66 schedule as the plain 8k base.
-            "CRAWLER_COMPUTE_STAGED": "1",
+            # Force the plain SOTA baseline behavior: no crawler ramp, no staged activation.
+            "CRAWLER_COMPUTE_STAGED": "0",
             "CRAWLER_SAFE_WARMUP_STEPS": "0",
-            "CRAWLER_GRADUATED": "1",
-            "CRAWLER_START_FRAC": "0.0",
-            "CRAWLER_RAMP_DELAY_FRAC": "0.33",
-            "CRAWLER_RAMP_FRAC": "0.33",
-            "CRAWLER_FORWARD_GRADUATED": "1",
-            "CRAWLER_FORWARD_START_FRAC": "0.0",
-            "CRAWLER_FORWARD_RAMP_DELAY_FRAC": "0.33",
-            "CRAWLER_FORWARD_RAMP_FRAC": "0.33",
+            "CRAWLER_GRADUATED": "0",
+            "CRAWLER_FORWARD_GRADUATED": "0",
             # Proven optimization/export choices for the crawler line.
+            "TRAIN_BATCH_TOKENS": "786432",
+            "TRAIN_SEQ_LEN": "2048",
+            "EVAL_SEQ_LEN": "2048",
+            "ITERATIONS": "20000",
+            "VAL_LOSS_EVERY": "4000",
+            "WARMUP_STEPS": "20",
             "TIED_EMBED_LR": "0.035",
             "MATRIX_LR": "0.03",
             "EXPORT_QUANT": "int6",
@@ -86,7 +93,7 @@ class RunConfig:
             "SELECTIVE_PRUNE_ENABLE": "1",
             "SELECTIVE_PRUNE_FACTOR": "8",
             "COMPILE_ENABLED": "1",
-            "COMPILE_FULLGRAPH": "0",
+            "COMPILE_FULLGRAPH": "1",
         }
 
     def summary(self) -> str:
@@ -104,7 +111,7 @@ class RunConfig:
                 "  model_dim: 512",
                 "  export_quant: int6",
                 "  gptq: loop-aware",
-                "  crawler_schedule: staged 33/66",
+                "  crawler_schedule: none",
             ]
         )
 

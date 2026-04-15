@@ -159,7 +159,7 @@ class Hyperparameters:
     compile_enabled = True
     compile_fullgraph = True
     compile_mode = "max-autotune-no-cudagraphs"
-    mlp_kernel_mode = "triton"
+    mlp_kernel_mode = "triton_act"
     post_ema_diagnostic = True
     ngram_eval_order = 0
     ngram_eval_alpha = 0.1
@@ -195,6 +195,15 @@ def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = "
 
 
 if triton is not None:
+    @triton.autotune(
+        configs=[
+            triton.Config({"BLOCK_SIZE": 128}, num_warps=4),
+            triton.Config({"BLOCK_SIZE": 256}, num_warps=4),
+            triton.Config({"BLOCK_SIZE": 512}, num_warps=8),
+            triton.Config({"BLOCK_SIZE": 1024}, num_warps=8),
+        ],
+        key=["n_elements"],
+    )
     @triton.jit
     def _leaky_relu_sq_forward_kernel(x_ptr, y_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
         pid = tl.program_id(0)
@@ -205,6 +214,15 @@ if triton is not None:
         y = a * a
         tl.store(y_ptr + offsets, y, mask=mask)
 
+    @triton.autotune(
+        configs=[
+            triton.Config({"BLOCK_SIZE": 128}, num_warps=4),
+            triton.Config({"BLOCK_SIZE": 256}, num_warps=4),
+            triton.Config({"BLOCK_SIZE": 512}, num_warps=8),
+            triton.Config({"BLOCK_SIZE": 1024}, num_warps=8),
+        ],
+        key=["n_elements"],
+    )
     @triton.jit
     def _leaky_relu_sq_backward_kernel(x_ptr, grad_out_ptr, grad_in_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
         pid = tl.program_id(0)
@@ -229,7 +247,7 @@ class TritonLeakyReluSqFn(torch.autograd.Function):
         y = torch.empty_like(x_contig)
         n_elements = x_contig.numel()
         grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-        _leaky_relu_sq_forward_kernel[grid](x_contig, y, n_elements, BLOCK_SIZE=1024)
+        _leaky_relu_sq_forward_kernel[grid](x_contig, y, n_elements)
         ctx.save_for_backward(x_contig)
         return y
 
@@ -244,7 +262,7 @@ class TritonLeakyReluSqFn(torch.autograd.Function):
         grad_in = torch.empty_like(grad_out_contig)
         n_elements = grad_out_contig.numel()
         grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-        _leaky_relu_sq_backward_kernel[grid](x, grad_out_contig, grad_in, n_elements, BLOCK_SIZE=1024)
+        _leaky_relu_sq_backward_kernel[grid](x, grad_out_contig, grad_in, n_elements)
         return (grad_in,)
 
 

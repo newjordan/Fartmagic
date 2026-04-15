@@ -1311,31 +1311,27 @@ class LiteCrawlerCore(nn.Module):
         carry_num = x.new_zeros(bsz, self.slot_count, self.slot_dim)
         carry_den = x.new_zeros(bsz, self.slot_count, 1)
         updates: list[Tensor] = []
-        slot_seed = self.slot_seed.to(dtype=x.dtype)[None, None, :, :]
+        slot_seed = self.slot_seed.to(dtype=x.dtype)[None, :, :]
+        carry_slot = slot_seed.expand(bsz, -1, -1)
         for start in range(0, seqlen, self.chunk_size):
             end = min(start + self.chunk_size, seqlen)
             x_chunk = x[:, start:end]
+            read_in = self.read_norm(x_chunk)
+            read_q = self.read_query(read_in)
+            read_k = self.read_key(carry_slot)
+            read_v = self.read_value(carry_slot)
+            read_scores = torch.einsum("btd,bkd->btk", read_q, read_k) * self._inv_slot_scale
+            read_attn = F.softmax(read_scores, dim=-1).to(dtype=x.dtype)
+            read_state = torch.einsum("btk,bkd->btd", read_attn, read_v)
+            updates.append(self.read_out(read_state))
             write_in = self.write_norm(x_chunk)
             write_gate = F.softplus(self.write_router(write_in)) + 1e-4
             write_val = self.write_value(write_in)
-            chunk_num = torch.cumsum(write_gate.unsqueeze(-1) * write_val.unsqueeze(-2), dim=1)
-            chunk_den = torch.cumsum(write_gate, dim=1).unsqueeze(-1)
-            slot_states = (carry_num.unsqueeze(1) + chunk_num) / (carry_den.unsqueeze(1) + chunk_den).clamp_min(1e-4)
-            slot_states = slot_states + slot_seed
-            slot_flat = slot_states.reshape(-1, self.slot_count, self.slot_dim)
+            carry_num = carry_num + torch.sum(write_gate.unsqueeze(-1) * write_val.unsqueeze(-2), dim=1)
+            carry_den = carry_den + torch.sum(write_gate, dim=1, keepdim=False).unsqueeze(-1)
+            carry_slot = (carry_num / carry_den.clamp_min(1e-4)) + slot_seed
             for _ in range(self.loops):
-                slot_flat = self.slot_block(slot_flat)
-            slot_states = slot_flat.reshape(bsz, end - start, self.slot_count, self.slot_dim)
-            read_in = self.read_norm(x_chunk)
-            read_q = self.read_query(read_in)
-            read_k = self.read_key(slot_states)
-            read_v = self.read_value(slot_states)
-            read_scores = torch.einsum("btd,btkd->btk", read_q, read_k) * self._inv_slot_scale
-            read_attn = F.softmax(read_scores, dim=-1).to(dtype=x.dtype)
-            read_state = torch.sum(read_attn.unsqueeze(-1) * read_v, dim=-2)
-            updates.append(self.read_out(read_state))
-            carry_num = carry_num + chunk_num[:, -1]
-            carry_den = carry_den + chunk_den[:, -1]
+                carry_slot = self.slot_block(carry_slot)
         update = torch.cat(updates, dim=1)
         return x + self.read_scale.to(dtype=x.dtype)[None, None, :] * update
 

@@ -155,6 +155,9 @@ class Hyperparameters:
     lite_crawler_use_moe = bool(int(os.environ.get("LITE_CRAWLER_USE_MOE", "0")))
     lite_crawler_num_experts = int(os.environ.get("LITE_CRAWLER_NUM_EXPERTS", "4"))
     lite_crawler_expert_mult = float(os.environ.get("LITE_CRAWLER_EXPERT_MULT", "2.0"))
+    lite_crawler_cpu_cold = bool(int(os.environ.get("LITE_CRAWLER_CPU_COLD", "0")))
+    lite_crawler_cold_max_pages = int(os.environ.get("LITE_CRAWLER_COLD_MAX_PAGES", "16"))
+    lite_crawler_cold_scale = float(os.environ.get("LITE_CRAWLER_COLD_SCALE", "0.25"))
     inst_dim = int(os.environ.get("INST_DIM", "32"))          # instruction bottleneck dim per loop (0=disabled, use legacy loop_pos)
     crawler_quant_int8 = bool(int(os.environ.get("CRAWLER_QUANT_INT8", "0")))  # use int8 for shared crawler block (multi-context quant resilience)
     # Graduated crawler schedule: scale crawler gradients from START_FRAC -> 1.0.
@@ -1275,6 +1278,9 @@ class LiteCrawlerCore(nn.Module):
         use_moe: bool = False,
         num_experts: int = 4,
         expert_mult: float = 2.0,
+        cpu_cold: bool = False,
+        cold_max_pages: int = 16,
+        cold_scale: float = 0.25,
         mlp_act: str = "relu_sq",
         mlp_leaky_slope: float = 0.5,
     ):
@@ -1283,6 +1289,9 @@ class LiteCrawlerCore(nn.Module):
         self.slot_dim = slot_dim
         self.loops = loops
         self.chunk_size = max(1, chunk_size)
+        self.cpu_cold = cpu_cold
+        self.cold_max_pages = max(0, cold_max_pages)
+        self.cold_scale = float(max(0.0, min(1.0, cold_scale)))
         self.write_norm = RMSNorm()
         self.read_norm = RMSNorm()
         self.write_router = CastedLinear(model_dim, slot_count, bias=False)
@@ -1314,9 +1323,20 @@ class LiteCrawlerCore(nn.Module):
         updates: list[Tensor] = []
         slot_seed = self.slot_seed.to(dtype=x.dtype)[None, :, :]
         carry_slot = slot_seed.expand(bsz, -1, -1)
+        cold_pages: list[Tensor] = []
+        cold_keys: list[Tensor] = []
+        cold_ready_events: list[torch.cuda.Event] = []
+        cold_prefetch: Tensor | None = None
+        cold_prefetch_event: torch.cuda.Event | None = None
+        cold_stream = torch.cuda.Stream(device=x.device) if (self.cpu_cold and x.is_cuda and self.cold_max_pages > 0) else None
         for start in range(0, seqlen, self.chunk_size):
             end = min(start + self.chunk_size, seqlen)
             x_chunk = x[:, start:end]
+            if cold_prefetch is not None and cold_prefetch_event is not None:
+                torch.cuda.current_stream(device=x.device).wait_event(cold_prefetch_event)
+                carry_slot = torch.lerp(carry_slot, cold_prefetch.to(dtype=carry_slot.dtype), self.cold_scale)
+                cold_prefetch = None
+                cold_prefetch_event = None
             read_in = self.read_norm(x_chunk)
             read_q = self.read_query(read_in)
             read_k = self.read_key(carry_slot)
@@ -1333,6 +1353,35 @@ class LiteCrawlerCore(nn.Module):
             carry_slot = (carry_num / carry_den.clamp_min(1e-4)) + slot_seed
             for _ in range(self.loops):
                 carry_slot = self.slot_block(carry_slot)
+            if cold_stream is not None:
+                cpu_page = torch.empty(carry_slot.shape, dtype=carry_slot.dtype, device="cpu", pin_memory=True)
+                store_event = torch.cuda.Event()
+                with torch.cuda.stream(cold_stream):
+                    cpu_page.copy_(carry_slot.detach(), non_blocking=True)
+                    store_event.record(cold_stream)
+                cold_pages.append(cpu_page)
+                cold_keys.append(F.normalize(carry_slot.detach().float().mean(dim=1), dim=-1))
+                cold_ready_events.append(store_event)
+                if len(cold_pages) > self.cold_max_pages:
+                    cold_pages.pop(0)
+                    cold_keys.pop(0)
+                    cold_ready_events.pop(0)
+                eligible = [i for i, ev in enumerate(cold_ready_events[:-1]) if ev.query()]
+                if eligible:
+                    query = F.normalize(carry_slot.detach().float().mean(dim=1), dim=-1)
+                    key_bank = torch.stack([cold_keys[i] for i in eligible], dim=0)
+                    scores = torch.einsum("pbd,bd->pb", key_bank, query)
+                    choice = scores.argmax(dim=0)
+                    cpu_prefetch = torch.empty(carry_slot.shape, dtype=carry_slot.dtype, device="cpu", pin_memory=True)
+                    for rel_idx, bank_idx in enumerate(eligible):
+                        mask_cpu = (choice == rel_idx).cpu()
+                        if bool(mask_cpu.any()):
+                            cpu_prefetch[mask_cpu] = cold_pages[bank_idx][mask_cpu]
+                    cold_prefetch = torch.empty_like(carry_slot)
+                    cold_prefetch_event = torch.cuda.Event()
+                    with torch.cuda.stream(cold_stream):
+                        cold_prefetch.copy_(cpu_prefetch, non_blocking=True)
+                        cold_prefetch_event.record(cold_stream)
         update = torch.cat(updates, dim=1)
         return x + self.read_scale.to(dtype=x.dtype)[None, None, :] * update
 
@@ -1363,6 +1412,9 @@ class LiteCrawlerGPT(nn.Module):
         lite_crawler_use_moe: bool = False,
         lite_crawler_num_experts: int = 4,
         lite_crawler_expert_mult: float = 2.0,
+        lite_crawler_cpu_cold: bool = False,
+        lite_crawler_cold_max_pages: int = 16,
+        lite_crawler_cold_scale: float = 0.25,
         bigram_vocab_size: int = 0,
         bigram_dim: int = 128,
         xsa_last_n: int = 0,
@@ -1440,6 +1492,9 @@ class LiteCrawlerGPT(nn.Module):
             use_moe=lite_crawler_use_moe,
             num_experts=lite_crawler_num_experts,
             expert_mult=lite_crawler_expert_mult,
+            cpu_cold=lite_crawler_cpu_cold,
+            cold_max_pages=lite_crawler_cold_max_pages,
+            cold_scale=lite_crawler_cold_scale,
             mlp_act=mlp_act,
             mlp_leaky_slope=mlp_leaky_slope,
         )
@@ -2095,6 +2150,9 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             lite_crawler_use_moe=args.lite_crawler_use_moe,
             lite_crawler_num_experts=args.lite_crawler_num_experts,
             lite_crawler_expert_mult=args.lite_crawler_expert_mult,
+            lite_crawler_cpu_cold=args.lite_crawler_cpu_cold,
+            lite_crawler_cold_max_pages=args.lite_crawler_cold_max_pages,
+            lite_crawler_cold_scale=args.lite_crawler_cold_scale,
             bigram_vocab_size=args.bigram_vocab_size,
             bigram_dim=args.bigram_dim,
             xsa_last_n=args.xsa_last_n,
@@ -2983,6 +3041,11 @@ def main() -> None:
             f"lite_crawler_moe:{int(args.lite_crawler_use_moe)} "
             f"experts:{args.lite_crawler_num_experts} expert_mult:{args.lite_crawler_expert_mult:.2f} "
             f"slot_heads:{args.lite_crawler_heads} slot_mlp_mult:{args.lite_crawler_mlp_mult:.2f}"
+        )
+        log0(
+            f"lite_crawler_cpu_cold:{int(args.lite_crawler_cpu_cold)} "
+            f"cold_max_pages:{args.lite_crawler_cold_max_pages} "
+            f"cold_scale:{args.lite_crawler_cold_scale:.2f}"
         )
     elif args.use_crawler:
         effective_depth = args.num_flat_layers + (args.num_crawler_layers * args.crawler_loops)

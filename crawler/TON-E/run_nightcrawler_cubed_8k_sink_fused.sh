@@ -4,8 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
-# Legacy-name wrapper. Use the available 8k tokenizer/data defaults.
-# Caller can still override DATA_PATH/TOKENIZER_PATH/VOCAB_SIZE explicitly.
+# 8k tokenizer/data defaults. Caller can override DATA_PATH/TOKENIZER_PATH/VOCAB_SIZE explicitly.
 if [[ -z "${DATA_PATH:-}" ]]; then
   if [[ -d "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192" ]]; then
     export DATA_PATH="/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"
@@ -28,9 +27,9 @@ if [[ -z "${TOKENIZER_PATH:-}" ]]; then
   fi
 fi
 
-# Nightcrawler Cubed topology + your requested modifications.
+# Nightcrawler Cubed topology + staged crawler ramp + SINK TOKEN + FUSED NORM.
 export SEED="${SEED:-4}"
-export RUN_ID="${RUN_ID:-tone_nc3_v8k_ramp33_66_s${SEED}}"
+export RUN_ID="${RUN_ID:-tone_nc3_v8k_sink_fused_s${SEED}}"
 export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-600}"
 export MODEL_DIM="${MODEL_DIM:-512}"
 export VOCAB_SIZE="${VOCAB_SIZE:-8192}"
@@ -39,6 +38,11 @@ export USE_CRAWLER="${USE_CRAWLER:-1}"
 export NUM_FLAT_LAYERS="${NUM_FLAT_LAYERS:-7}"
 export NUM_CRAWLER_LAYERS="${NUM_CRAWLER_LAYERS:-3}"
 export CRAWLER_LOOPS="${CRAWLER_LOOPS:-3}"
+
+# NEW: Sink token — learnable attention dump target for crawler loop stability.
+export SINK_TOKEN="${SINK_TOKEN:-1}"
+# NEW: Fused RMSNorm — residual add + norm in one torch.compile-fused pass.
+export FUSED_NORM="${FUSED_NORM:-1}"
 
 # Speed-first stepped crawler:
 # - crawler stays off until 33% of run

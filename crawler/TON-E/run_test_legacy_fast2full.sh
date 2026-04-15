@@ -7,6 +7,8 @@ cd "${SCRIPT_DIR}"
 export SEED="${SEED:-4}"
 export MODEL_DIM="${MODEL_DIM:-448}"
 export RUN_ID="${RUN_ID:-tone_legacy_fast2full_s${SEED}}"
+export COMPILE_ENABLED="${COMPILE_ENABLED:-1}"
+export COMPILE_FULLGRAPH="${COMPILE_FULLGRAPH:-0}"
 
 # Legacy profile: true fast start, then staged crawler compute growth.
 export CRAWLER_SAFE_WARMUP_STEPS="${CRAWLER_SAFE_WARMUP_STEPS:-400}"

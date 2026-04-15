@@ -13,6 +13,7 @@ Source: user-pasted raw transcript in chat (run started around 19:24)
   - `crawler_safe_warmup:steps:400`
   - grad/fwd staged: `start_frac=0.000`, `delay_frac=0.330`, `ramp_frac=0.330`
 - Quant mode: `int8_flat`
+- Compile: `COMPILE_ENABLED=1`, `COMPILE_FULLGRAPH=1`
 
 ## Key metrics
 - `raw_bpb`: `1.23028190`
@@ -24,6 +25,13 @@ Source: user-pasted raw transcript in chat (run started around 19:24)
 - `train_time_s`: `600`
 - `peak_memory_allocated_mib`: `20676`
 - `peak_memory_reserved_mib`: `22152`
+
+## Timing samples from transcript
+- step `1`: `step_avg=145.19ms` with `crawler_grad_mul=0.000` and `crawler_fwd_mul=0.000`
+- step `500`: `step_avg=95.97ms` with `crawler_grad_mul=0.000` and `crawler_fwd_mul=0.000`
+- step `2000`: `step_avg=96.34ms` with `crawler_grad_mul=0.000` and `crawler_fwd_mul=0.000`
+- step `2500`: `step_avg=96.41ms` with `crawler_grad_mul=0.217` and `crawler_fwd_mul=0.217`
+- step `6208`: `step_avg=96.66ms`
 
 ## Size
 - `serialized_model_bytes`: `65868943`

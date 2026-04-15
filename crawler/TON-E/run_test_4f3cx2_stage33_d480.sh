@@ -57,7 +57,16 @@ export SIZE_TARGET_BYTES="${SIZE_TARGET_BYTES:-16000000}"
 export SELECTIVE_PRUNE_ENABLE="${SELECTIVE_PRUNE_ENABLE:-1}"
 export SELECTIVE_PRUNE_FACTOR="${SELECTIVE_PRUNE_FACTOR:-8}"
 export COMPILE_ENABLED="${COMPILE_ENABLED:-1}"
-export COMPILE_FULLGRAPH="${COMPILE_FULLGRAPH:-1}"
+# Staged crawler mutates active layer/loop integers; fullgraph is brittle there.
+if [[ -z "${COMPILE_FULLGRAPH+x}" ]]; then
+  if [[ "${CRAWLER_COMPUTE_STAGED}" == "1" ]]; then
+    export COMPILE_FULLGRAPH=0
+  else
+    export COMPILE_FULLGRAPH=1
+  fi
+else
+  export COMPILE_FULLGRAPH
+fi
 
 mkdir -p logs artifacts
 

@@ -174,6 +174,9 @@ class Hyperparameters:
     phrase_min_count = int(os.environ.get("PHRASE_MIN_COUNT", "1"))
     # Purple-1: regime tracker (PR #880 — scales cache trust for repetitive vs novel text)
     regime_tracker_enabled = bool(int(os.environ.get("REGIME_TRACKER", "0")))
+    # MOONSHOT: RWKV-style linear recurrence in crawler blocks
+    crawler_linear_recurrence = bool(int(os.environ.get("CRAWLER_LINEAR_RECURRENCE", "1")))
+    linear_recurrence_chunk_size = int(os.environ.get("LINEAR_RECURRENCE_CHUNK_SIZE", "64"))
     compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
     compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
     # Workaround for torch.compile + DDP higher-order-op backend issue on H100 runs.
@@ -193,11 +196,6 @@ class Hyperparameters:
     skip_train = bool(int(os.environ.get("SKIP_TRAIN", "0")))
     gptq_cal_samples = int(os.environ.get("GPTQ_CAL_SAMPLES", "256"))
     gptq_cal_seq_len = int(os.environ.get("GPTQ_CAL_SEQ_LEN", "0"))
-    # Sink token: learnable attention dump target prepended to every sequence.
-    # Stabilizes attention mass distribution across crawler loops (StreamingLLM insight).
-    sink_token_enabled = bool(int(os.environ.get("SINK_TOKEN", "0")))
-    # Fused RMSNorm: combine residual add + RMSNorm for better torch.compile fusion.
-    fused_norm = bool(int(os.environ.get("FUSED_NORM", "0")))
 
 
 def _parse_int_tuple(raw: str, fallback: tuple[int, ...]) -> tuple[int, ...]:
@@ -415,7 +413,7 @@ CONTROL_TENSOR_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
         "CONTROL_TENSOR_NAME_PATTERNS",
-        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,smear,dtg_gate,ve_layer_scales,ve_shared.scale",
+        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights,smear,dtg_gate,ve_layer_scales,ve_shared.scale,decay_bias",
     ).split(",")
     if pattern
 )
@@ -583,19 +581,6 @@ class RMSNorm(nn.Module):
         self.eps = eps
     def forward(self, x: Tensor) -> Tensor:
         return F.rms_norm(x, (x.size(-1),), eps=self.eps)
-class FusedRMSNormResidual(nn.Module):
-    """RMSNorm that also adds a scaled residual in a single fused pass.
-    Returns (normed, x_after_residual) so the caller gets both:
-      - normed: input to the next sublayer (attn or MLP)
-      - x_after_residual: the post-residual state for the next residual add
-    torch.compile fuses the element-wise add + norm into one kernel."""
-    def __init__(self, eps: float | None = None):
-        super().__init__()
-        self.eps = eps
-    def forward(self, x: Tensor, residual: Tensor, scale: Tensor) -> tuple[Tensor, Tensor]:
-        x_out = x + scale[None, None, :] * residual
-        normed = F.rms_norm(x_out, (x_out.size(-1),), eps=self.eps)
-        return normed, x_out
 class CastedLinear(nn.Linear):
     _qat_enabled: bool = False
     def forward(self, x: Tensor) -> Tensor:
@@ -721,6 +706,233 @@ class CausalSelfAttention(nn.Module):
             y = self._xsa_efficient(y, v)
         y = y.reshape(bsz, seqlen, dim)
         return self.proj(y)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MOONSHOT: RWKV-style Linear Recurrence Attention for Crawler Blocks
+# ──────────────────────────────────────────────────────────────────────────────
+# Replaces CausalSelfAttention in crawler blocks with a linear recurrence:
+#   state[t] = state[t-1] * decay + k[t] (outer) v[t]
+#   out[t]   = state[t] @ r[t]   (receptance readout)
+# Complexity: O(T * HEAD_SIZE^2) per head instead of O(T^2 * HEAD_SIZE).
+# Chunked implementation for speed: O(T * C * HEAD_SIZE) where C=chunk_size.
+# ──────────────────────────────────────────────────────────────────────────────
+class LinearRecurrenceAttention(nn.Module):
+    """RWKV-style linear recurrence with chunked forward pass.
+
+    Each timestep maintains a fixed-size state matrix per head:
+        state: [B, H, D, D] where D = head_dim
+
+    Per-timestep update:
+        decay = sigmoid(-softplus(-w) - 0.5)   # learned per-dim decay ~0.95 init
+        state = state * decay_outer + k_outer_v
+        out   = (state * r).sum(dim=-2)         # receptance readout
+
+    Chunked implementation processes CHUNK_SIZE tokens at a time:
+        - Intra-chunk: causal matmul with decay masking within chunk
+        - Inter-chunk: state propagation between chunks
+    """
+
+    def __init__(self, dim: int, num_heads: int, chunk_size: int = 64):
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError("model_dim must be divisible by num_heads for LinearRecurrenceAttention")
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.chunk_size = chunk_size
+
+        # Projections: receptance, key, value, decay, output
+        self.c_r = CastedLinear(dim, dim, bias=False)  # receptance
+        self.c_k = CastedLinear(dim, dim, bias=False)  # key
+        self.c_v = CastedLinear(dim, dim, bias=False)  # value
+        self.c_w = CastedLinear(dim, dim, bias=False)  # decay logits
+        self.proj = CastedLinear(dim, dim, bias=False)  # output projection
+        self.proj._zero_init = True
+
+        # Initialize decay weights so initial sigmoid output ~ 0.95
+        # sigmoid(-softplus(-w) - 0.5) ~ 0.95  =>  -softplus(-w) - 0.5 ~ logit(0.95) ~ 2.944
+        # softplus(-w) ~ -3.444  — not achievable (softplus > 0), so we use:
+        # For large positive w: softplus(-w) ~ 0, so decay ~ sigmoid(-0.5) ~ 0.378
+        # For w ~ 0: softplus(0) ~ 0.693, decay ~ sigmoid(-1.193) ~ 0.233
+        # Actually: we want decay ~ 0.95. sigmoid(x) = 0.95 => x ~ 2.944
+        # -softplus(-w) - 0.5 = 2.944 => softplus(-w) = -3.444 — impossible.
+        # Instead, initialize w such that the effective decay is around 0.95.
+        # Use the parametrization: decay = sigmoid(w_eff) where w_eff = w - 0.5
+        # We want w_eff ~ 2.944 => w ~ 3.444
+        # But softplus transforms first: w_eff = -softplus(-w) - 0.5
+        # For w = 4: softplus(-4) ~ 0.0183, w_eff ~ -0.518, decay ~ 0.373 — too low
+        # For the desired behavior, we'll just use: decay = sigmoid(w_param)
+        # and init w_param ~ 3.0 so decay starts at ~0.95
+        # Simplified: use decay = sigmoid(self.c_w(x)) with bias init
+        with torch.no_grad():
+            # Initialize c_w weights small, we'll add a learnable bias
+            nn.init.normal_(self.c_w.weight, std=0.01)
+
+        # Learnable per-head-dim bias for decay, initialized for ~0.95 decay
+        # sigmoid(3.0) ~ 0.953
+        self.decay_bias = nn.Parameter(torch.full((dim,), 3.0, dtype=torch.float32))
+
+        # Output normalization (matches QK norm pattern in original)
+        self.out_norm = RMSNorm()
+
+    def _compute_decay(self, w_raw: Tensor) -> Tensor:
+        """Compute decay factor from raw logits.
+
+        Args:
+            w_raw: [B, T, H, D] raw decay logits from projection + bias
+
+        Returns:
+            decay: [B, T, H, D] in (0, 1), initialized near 0.95
+        """
+        # RWKV-7 style: decay = sigmoid(-softplus(-w) - 0.5)
+        # This ensures decay is always in (0, sigmoid(-0.5)) ~ (0, 0.378)
+        # which is too restrictive. Instead use a simpler parametrization:
+        # decay = sigmoid(w_raw) where w_raw includes the bias (~3.0)
+        return torch.sigmoid(w_raw)
+
+    def forward(self, x: Tensor, v_embed: Tensor | None = None,
+                cos_sin: tuple | None = None) -> Tensor:
+        """Forward pass with chunked linear recurrence.
+
+        Args:
+            x: [B, T, D] input tensor
+            v_embed: optional value embedding (added to v projection)
+            cos_sin: ignored (no RoPE in linear recurrence)
+
+        Returns:
+            [B, T, D] output tensor
+        """
+        B, T, D = x.shape
+        H = self.num_heads
+        d = self.head_dim
+        C = self.chunk_size
+
+        # Project to r, k, v, w
+        r = self.c_r(x).reshape(B, T, H, d)  # receptance
+        k = self.c_k(x).reshape(B, T, H, d)  # key
+        v = self.c_v(x)
+        if v_embed is not None:
+            v = v + v_embed
+        v = v.reshape(B, T, H, d)  # value
+
+        # Decay: project + bias, then sigmoid
+        w_raw = self.c_w(x).reshape(B, T, H, d) + self.decay_bias.to(dtype=x.dtype).reshape(1, 1, H, d)
+        decay = self._compute_decay(w_raw)  # [B, T, H, d]
+
+        # Normalize r and k for stability (like QK norm in original)
+        r = F.rms_norm(r, (d,))
+        k = F.rms_norm(k, (d,))
+
+        # Pad T to multiple of C so num_chunks is static (avoids torch.compile graph breaks)
+        T_padded = ((T + C - 1) // C) * C
+        if T_padded > T:
+            pad_len = T_padded - T
+            r = F.pad(r, (0, 0, 0, 0, 0, pad_len))      # [B, T_padded, H, d]
+            k = F.pad(k, (0, 0, 0, 0, 0, pad_len))
+            v = F.pad(v, (0, 0, 0, 0, 0, pad_len))
+            decay = F.pad(decay, (0, 0, 0, 0, 0, pad_len), value=1.0)  # pad decay=1 (no decay for padding)
+
+        num_chunks = T_padded // C
+
+        # Collect output chunks into a list (avoid in-place indexing which breaks torch.compile)
+        out_chunks: list[Tensor] = []
+
+        # State: [B, H, d, d] — accumulated key-value outer products with decay.
+        # Use fp32 for state accumulation to avoid bf16 precision loss over many chunks.
+        state = torch.zeros(B, H, d, d, device=x.device, dtype=torch.float32)
+
+        # Pre-compute causal mask once (constant across all chunks since they all have size C).
+        causal_mask = torch.tril(torch.ones(C, C, device=x.device, dtype=torch.float32))
+
+        for chunk_idx in range(num_chunks):
+            cs = chunk_idx * C
+            ce = cs + C
+
+            # Extract chunk slices: [B, C, H, d]
+            r_c = r[:, cs:ce]
+            k_c = k[:, cs:ce]
+            v_c = v[:, cs:ce]
+            w_c = decay[:, cs:ce]  # [B, C, H, d]
+
+            # ── Log-space decay computation in fp32 for numerical stability ──
+            log_w = torch.log(w_c.float().clamp(min=1e-8))  # [B, C, H, d] fp32
+            cum_log_w = torch.cumsum(log_w, dim=1)            # [B, C, H, d] fp32
+
+            # ── Inter-chunk contribution: readout from accumulated state ──
+            # Instead of materializing [B, C, H, d, d] (memory explosion), compute
+            # per-position as batched matmul: inter[t] = state_decayed_to_t @ r[t]
+            # where state_decayed_to_t = state * cum_decay[t] (per-dim decay on rows).
+            #
+            # Formulation: inter[b,t,h,:] = sum_dk state[b,h,dk,:] * cum_decay[b,t,h,dk] * r[b,t,h,dk]
+            #            = (state^T @ diag(cum_decay[t] * r[t]))  summed = state^T @ (cum_decay[t] * r[t])
+            # Equivalently: inter = einsum('bhde, bthd -> bthe', state, r_c * cum_decay)
+            # This is a [B,H,d,d] x [B,C,H,d] contraction — O(B*C*H*d*d) but NO 5D tensor.
+            cum_decay = torch.exp(cum_log_w).to(dtype=r_c.dtype)  # [B, C, H, d]
+            r_weighted = r_c * cum_decay  # [B, C, H, d] — r scaled by cumulative decay
+
+            # Reshape for batched matmul: state [B*H, d, d], r_weighted [B*H, C, d]
+            state_bh = state.reshape(B * H, d, d).to(dtype=r_c.dtype)  # [BH, d, d]
+            rw_bh = r_weighted.permute(0, 2, 1, 3).reshape(B * H, C, d)  # [BH, C, d]
+            # inter = rw_bh @ state_bh^T  but we need sum over dk (first d dim of state)
+            # state is [BH, dk, dv], rw is [BH, C, dk]
+            # inter[BH, C, dv] = rw[BH, C, dk] @ state[BH, dk, dv]
+            inter_bh = torch.bmm(rw_bh, state_bh)  # [BH, C, d]
+            inter = inter_bh.reshape(B, H, C, d).permute(0, 2, 1, 3)  # [B, C, H, d]
+
+            # ── Intra-chunk contribution: causal attention-like within chunk ──
+            # Per-head scalar decay (geometric mean across dims) — same as RWKV-4/5 intra-chunk.
+            mean_log_w = log_w.mean(dim=-1)  # [B, C, H] fp32
+            cum_mean_log_w = torch.cumsum(mean_log_w, dim=1)  # [B, C, H] fp32
+
+            # Causal decay mask: mask[i,j] = exp(cum[i] - cum[j]) for j <= i, else 0
+            cum_i = cum_mean_log_w.unsqueeze(2)  # [B, C, 1, H]
+            cum_j = cum_mean_log_w.unsqueeze(1)  # [B, 1, C, H]
+            log_mask = cum_i - cum_j               # [B, C, C, H]
+            decay_mask = torch.exp(log_mask) * causal_mask.unsqueeze(0).unsqueeze(-1)  # [B, C, C, H]
+
+            # r_c: [B, C, H, d] -> [B, H, C, d] for matmul
+            r_t = r_c.permute(0, 2, 1, 3)  # [B, H, C, d]
+            k_t = k_c.permute(0, 2, 1, 3)  # [B, H, C, d]
+            v_t = v_c.permute(0, 2, 1, 3)  # [B, H, C, d]
+
+            # qk: [B, H, C, C] = r_t @ k_t^T
+            qk = torch.matmul(r_t, k_t.transpose(-1, -2))  # [B, H, C, C]
+
+            # Apply decay mask: [B, C, C, H] -> [B, H, C, C]
+            decay_mask_t = decay_mask.permute(0, 3, 1, 2).to(dtype=qk.dtype)  # [B, H, C, C]
+            qk = qk * decay_mask_t
+
+            # Intra-chunk output: qk @ v => [B, H, C, d]
+            intra = torch.matmul(qk, v_t).permute(0, 2, 1, 3)  # [B, C, H, d]
+
+            # Combine inter + intra
+            out_chunks.append(intra + inter)
+
+            # ── Update state for next chunk (fp32 accumulation) ──
+            total_decay = torch.exp(cum_log_w[:, -1:])  # [B, 1, H, d] fp32
+            # Decay state: [B, H, d, d] * [B, H, d, 1] (broadcast across last d)
+            state = state * total_decay.squeeze(1).unsqueeze(-1)  # [B, H, d, d] fp32
+
+            # Add contributions from this chunk's k-v pairs, each decayed to end of chunk
+            decay_from_j = torch.exp(cum_log_w[:, -1:] - cum_log_w)  # [B, C, H, d] fp32
+            k_decayed = k_c.float() * decay_from_j  # [B, C, H, d] fp32
+
+            # Accumulate: state += sum_j (k_decayed[j] outer v[j])
+            k_dec_t = k_decayed.permute(0, 2, 1, 3).reshape(B * H, C, d)  # [BH, C, d]
+            v_c_t = v_c.permute(0, 2, 1, 3).reshape(B * H, C, d).float()  # [BH, C, d]
+
+            # outer product sum: [BH, d, C] @ [BH, C, d] = [BH, d, d]
+            state = state + torch.bmm(k_dec_t.transpose(-1, -2), v_c_t).reshape(B, H, d, d)
+
+        # Concatenate chunks and trim padding
+        out = torch.cat(out_chunks, dim=1)[:, :T]  # [B, T, H, d]
+
+        # Apply output norm and projection
+        out = self.out_norm(out)  # [B, T, H, d]
+        out = out.reshape(B, T, D)
+        return self.proj(out)
+
+
 class SmearGate(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
@@ -934,13 +1146,17 @@ class Block(nn.Module):
         crawler_loops: int = 1,
         crawler_choke_shape: str = "flat",
         crawler_choke_groups: int = 8,
-        fused_norm: bool = False,
+        use_linear_recurrence: bool = False,
+        linear_recurrence_chunk_size: int = 64,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
-        self.fused_norm_enabled = fused_norm
-        self.mlp_norm = FusedRMSNormResidual() if fused_norm else RMSNorm()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.mlp_norm = RMSNorm()
+        if use_linear_recurrence:
+            self.attn = LinearRecurrenceAttention(dim, num_heads, chunk_size=linear_recurrence_chunk_size)
+        else:
+            self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.use_linear_recurrence = use_linear_recurrence
         if crawler_choke_dim > 0:
             self.mlp = CrawlerMLP(dim, mlp_mult, crawler_choke_dim, crawler_loops,
                                   mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
@@ -963,13 +1179,8 @@ class Block(nn.Module):
         mix = self.resid_mix.to(dtype=x.dtype)
         x_in = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
         attn_out = self.attn(self.attn_norm(x_in) * self.ln_scale_factor, v_embed=v_embed, cos_sin=cos_sin)
-        if self.fused_norm_enabled:
-            # Fused path: residual add + RMSNorm in one pass (torch.compile fuses these)
-            mlp_in, x_out = self.mlp_norm(x_in, attn_out, self.attn_scale.to(dtype=x_in.dtype))
-            mlp_in = mlp_in * self.ln_scale_factor
-        else:
-            x_out = x_in + self.attn_scale.to(dtype=x_in.dtype)[None, None, :] * attn_out
-            mlp_in = self.mlp_norm(x_out) * self.ln_scale_factor
+        x_out = x_in + self.attn_scale.to(dtype=x_in.dtype)[None, None, :] * attn_out
+        mlp_in = self.mlp_norm(x_out) * self.ln_scale_factor
         mlp_out = self.mlp(mlp_in, loop_idx) if loop_idx is not None else self.mlp(mlp_in)
         x_out = x_out + self.mlp_scale.to(dtype=x_out.dtype)[None, None, :] * mlp_out
         if self.dtg_gate is not None:
@@ -1211,11 +1422,17 @@ class CrawlerGPT(nn.Module):
         anchor_dim: int = 0,
         flat_weight_share: bool = False,
         crawler_compute_staged: bool = False,
-        sink_token_enabled: bool = False,
-        fused_norm: bool = False,
+        use_linear_recurrence: bool = False,
+        linear_recurrence_chunk_size: int = 64,
     ):
         super().__init__()
-        self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
+        self.use_linear_recurrence = use_linear_recurrence
+        # MOONSHOT: when linear recurrence is active, VE must project to full model_dim
+        # (not kv_dim) because LinearRecurrenceAttention uses num_heads not num_kv_heads for v.
+        if use_linear_recurrence:
+            self._ve_target_dim = model_dim
+        else:
+            self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
         self.tie_embeddings = tie_embeddings
@@ -1226,7 +1443,6 @@ class CrawlerGPT(nn.Module):
         self.crawler_loops = crawler_loops
         self.crawler_compute_staged = crawler_compute_staged
         self.inst_dim = inst_dim
-        self.sink_token_enabled = sink_token_enabled
         # Runtime scale for crawler forward path (0=skip crawler, 1=full crawler).
         self.register_buffer("crawler_forward_scale", torch.tensor(1.0, dtype=torch.float32), persistent=False)
         # Python-side hard skip flag so compiled runs can truly bypass crawler compute at scale=0.
@@ -1244,12 +1460,6 @@ class CrawlerGPT(nn.Module):
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim) if bigram_vocab_size > 0 else None
         self.smear = SmearGate(model_dim)
-        # Sink token: learnable attention dump target prepended to every sequence.
-        if sink_token_enabled:
-            self.sink_emb = nn.Parameter(torch.zeros(1, 1, model_dim, dtype=torch.float32))
-            nn.init.normal_(self.sink_emb, std=0.02)
-        else:
-            self.sink_emb = None
         # Flat section: U-Net encoder / decoder with skip connections
         self.flat_encoder_layers = num_flat_layers // 2
         self.flat_decoder_layers = num_flat_layers - self.flat_encoder_layers
@@ -1259,23 +1469,22 @@ class CrawlerGPT(nn.Module):
         if flat_weight_share and num_flat_layers == 4:
             _outer = Block(model_dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init,
                            layer_idx=0, ln_scale=ln_scale, dtg=False,
-                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
-                           fused_norm=fused_norm)
+                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
             _inner = Block(model_dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init,
                            layer_idx=1, ln_scale=ln_scale, dtg=False,
-                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
-                           fused_norm=fused_norm)
+                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
             # PyTorch deduplicates params by object identity — 2 blocks instead of 4
             self.flat_blocks = nn.ModuleList([_outer, _inner, _inner, _outer])
         else:
             self.flat_blocks = nn.ModuleList([
                 Block(model_dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init,
                       layer_idx=i, ln_scale=ln_scale, dtg=False,
-                      mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
-                      fused_norm=fused_norm)
+                      mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
                 for i in range(num_flat_layers)
             ])
         # Crawler section: shared blocks, looped crawler_loops times at bottleneck
+        # MOONSHOT: when use_linear_recurrence=True, crawler blocks use RWKV-style
+        # linear recurrence instead of Flash Attention
         self.crawler_blocks = nn.ModuleList([
             Block(model_dim, num_heads, num_kv_heads, crawler_mlp_mult, rope_base, qk_gain_init,
                   layer_idx=num_flat_layers + i, ln_scale=ln_scale, dtg=False,
@@ -1283,14 +1492,18 @@ class CrawlerGPT(nn.Module):
                   crawler_choke_dim=crawler_mlp_choke_dim, crawler_loops=crawler_loops,
                   crawler_choke_shape=crawler_mlp_choke_shape,
                   crawler_choke_groups=crawler_mlp_choke_groups,
-                  fused_norm=fused_norm)
+                  use_linear_recurrence=use_linear_recurrence,
+                  linear_recurrence_chunk_size=linear_recurrence_chunk_size)
             for i in range(num_crawler_layers)
         ])
         if rope_dims > 0:
             head_dim = model_dim // num_heads
-            for block in list(self.flat_blocks) + list(self.crawler_blocks):
-                block.attn.rope_dims = rope_dims
-                block.attn.rotary = Rotary(head_dim, base=rope_base, train_seq_len=1024, rope_dims=rope_dims)
+            all_blocks = list(self.flat_blocks) + list(self.crawler_blocks)
+            for block in all_blocks:
+                # LinearRecurrenceAttention blocks don't use RoPE — skip them
+                if isinstance(block.attn, CausalSelfAttention):
+                    block.attn.rope_dims = rope_dims
+                    block.attn.rotary = Rotary(head_dim, base=rope_base, train_seq_len=1024, rope_dims=rope_dims)
         # Instructed recurrence — FLOW version (FX_Wing_Delta):
         # Instructions are recomputed from CURRENT x at each loop (not pre-planned from x_enc).
         # perturbation→flow: each loop's instruction responds to what the previous loop produced.
@@ -1400,14 +1613,17 @@ class CrawlerGPT(nn.Module):
             self.ve_layer_scales = nn.ParameterList()
         self.value_embeds = nn.ModuleList()
         # XSA on last N blocks, optionally spanning both flat and crawler sections.
+        # Skip XSA for LinearRecurrenceAttention blocks (no self-value subtraction needed).
         if xsa_last_n > 0:
             if xsa_include_flat:
                 stack_blocks = list(self.flat_blocks) + list(self.crawler_blocks)
                 for block in stack_blocks[max(0, len(stack_blocks) - xsa_last_n):]:
-                    block.attn.use_xsa = True
+                    if isinstance(block.attn, CausalSelfAttention):
+                        block.attn.use_xsa = True
             else:
                 for i in range(max(0, num_crawler_layers - xsa_last_n), num_crawler_layers):
-                    self.crawler_blocks[i].attn.use_xsa = True
+                    if isinstance(self.crawler_blocks[i].attn, CausalSelfAttention):
+                        self.crawler_blocks[i].attn.use_xsa = True
         self.final_norm = RMSNorm()
         self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
         if self.lm_head is not None:
@@ -1431,11 +1647,7 @@ class CrawlerGPT(nn.Module):
         if self.ve_shared is None or crawler_idx not in self.ve_layer_indices:
             return None
         if 've' not in ve_cache:
-            ve_raw = self.ve_shared(input_ids)
-            # Pad with zero for sink token position if enabled
-            if self.sink_emb is not None:
-                ve_raw = F.pad(ve_raw, (0, 0, 1, 0))  # [B, T+1, kv_dim]
-            ve_cache['ve'] = ve_raw
+            ve_cache['ve'] = self.ve_shared(input_ids)
         ve_base = ve_cache['ve']
         ve_idx = self.ve_layer_indices.index(crawler_idx)
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
@@ -1504,8 +1716,9 @@ class CrawlerGPT(nn.Module):
         x_prev_loop = x  # encoder output = stable anchor for loop 0 smear
 
         # Pre-compute per-loop cos/sin for RoPE battery (scale > 1 → wider attention range)
+        # MOONSHOT: skip RoPE for linear recurrence blocks (they don't use positional encoding)
         loop_cos_sin: list | None = None
-        if self.loop_rope_scales is not None:
+        if self.loop_rope_scales is not None and not self.use_linear_recurrence:
             seqlen = x.size(1)
             rotary = self.crawler_blocks[0].attn.rotary
             inv_freq = rotary.inv_freq.to(device=x.device, dtype=torch.float32)
@@ -1587,10 +1800,6 @@ class CrawlerGPT(nn.Module):
             x = x + self.bigram(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x = self.smear(x)
-        # Sink token: prepend learnable attention dump target
-        if self.sink_emb is not None:
-            sink = self.sink_emb.to(dtype=x.dtype).expand(x.size(0), -1, -1)
-            x = torch.cat([sink, x], dim=1)
         x0 = x
         x, skips = self._run_encoder(x, x0)
         ve_cache: dict = {}
@@ -1598,9 +1807,6 @@ class CrawlerGPT(nn.Module):
             x = self._run_crawler(x, x0, input_ids, ve_cache, enc_outputs=skips)
         x = self._run_decoder(x, x0, skips)
         x = self.final_norm(x)
-        # Strip sink token before loss computation
-        if self.sink_emb is not None:
-            x = x[:, 1:]
         x_flat = x.reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
         logits = self._compute_logits(x_flat)
@@ -1613,10 +1819,6 @@ class CrawlerGPT(nn.Module):
             x = x + self.bigram(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x = self.smear(x)
-        # Sink token: prepend learnable attention dump target
-        if self.sink_emb is not None:
-            sink = self.sink_emb.to(dtype=x.dtype).expand(x.size(0), -1, -1)
-            x = torch.cat([sink, x], dim=1)
         x0 = x
         x, skips = self._run_encoder(x, x0)
         ve_cache: dict = {}
@@ -1624,9 +1826,6 @@ class CrawlerGPT(nn.Module):
             x = self._run_crawler(x, x0, input_ids, ve_cache, enc_outputs=skips)
         x = self._run_decoder(x, x0, skips)
         x = self.final_norm(x)
-        # Strip sink token before returning logits
-        if self.sink_emb is not None:
-            x = x[:, 1:]
         return self._compute_logits(x)
 
 
@@ -1641,7 +1840,6 @@ CRAWLER_GRAD_PARAM_PREFIXES = (
     "tap_proj.",
     "loop_tap_up.",
     "shared_tap_up.",
-    "sink_emb",
 )
 
 
@@ -1698,8 +1896,8 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             anchor_dim=args.anchor_dim,
             flat_weight_share=args.flat_weight_share,
             crawler_compute_staged=args.crawler_compute_staged,
-            sink_token_enabled=args.sink_token_enabled,
-            fused_norm=args.fused_norm,
+            use_linear_recurrence=args.crawler_linear_recurrence,
+            linear_recurrence_chunk_size=args.linear_recurrence_chunk_size,
         )
     else:
         model = GPT(
@@ -2533,6 +2731,11 @@ def main() -> None:
             f"effective_depth:{effective_depth} ton_e_rhythm:{int(args.ton_e_rhythm)} "
             f"xsa_include_flat:{int(args.xsa_include_flat)}"
         )
+        if args.crawler_linear_recurrence:
+            log0(
+                f"MOONSHOT:linear_recurrence=1 chunk_size={args.linear_recurrence_chunk_size} "
+                f"crawler_attn=RWKV_linear flat_attn=FlashAttention"
+            )
         if crawler_safe_warmup_steps > 0:
             log0(f"crawler_safe_warmup:steps:{crawler_safe_warmup_steps} crawler_mul:0.000")
         if crawler_grad_enabled:
@@ -3020,7 +3223,7 @@ def main() -> None:
         artifact_legal = submission_total_bytes <= 16_000_000
         log0("")
         log0("============================================")
-        log0(f"  RESULT — TON-E rhythm run seed={args.seed}")
+        log0(f"  RESULT — TON-E RWKV MOONSHOT run seed={args.seed}")
         log0(f"  model_params:  {n_params}")
         log0(f"  raw_bpb:       {diag_val_bpb:.8f}")
         log0(f"  quant_mode:    {quant_mode}")

@@ -38,9 +38,7 @@ from torch import Tensor, nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 try:
     from flash_attn_interface import flash_attn_func as flash_attn_3_func
-    _FLASH_ATTN3_AVAILABLE = True
 except ImportError:
-    _FLASH_ATTN3_AVAILABLE = False
     def flash_attn_3_func(q, k, v, causal=False):
         # q: (B, T, Hq, D), k/v: (B, T, Hkv, D) — expand KV for GQA
         q2 = q.transpose(1, 2)  # (B, Hq, T, D)
@@ -160,10 +158,6 @@ class Hyperparameters:
     crawler_forward_ramp_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_STEPS", "0"))
     crawler_forward_ramp_delay_frac = float(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_FRAC", "0.0"))
     crawler_forward_ramp_delay_steps = int(os.environ.get("CRAWLER_FORWARD_RAMP_DELAY_STEPS", "0"))
-    # Optional compute staging: progressively enable crawler layers/loops as forward scale rises.
-    crawler_compute_staged = bool(int(os.environ.get("CRAWLER_COMPUTE_STAGED", "0")))
-    # Counted crawler safety warmup: force crawler off for first N train steps.
-    crawler_safe_warmup_steps = int(os.environ.get("CRAWLER_SAFE_WARMUP_STEPS", "0"))
     # TON-E: apply 3F+2Cx2 rhythm defaults unless explicitly disabled.
     ton_e_rhythm = bool(int(os.environ.get("TON_E_RHYTHM", "1")))
     # Purple-1: variable-length phrase suffix cache (PR #880/900 — legal)
@@ -193,11 +187,6 @@ class Hyperparameters:
     skip_train = bool(int(os.environ.get("SKIP_TRAIN", "0")))
     gptq_cal_samples = int(os.environ.get("GPTQ_CAL_SAMPLES", "256"))
     gptq_cal_seq_len = int(os.environ.get("GPTQ_CAL_SEQ_LEN", "0"))
-    # Sink token: learnable attention dump target prepended to every sequence.
-    # Stabilizes attention mass distribution across crawler loops (StreamingLLM insight).
-    sink_token_enabled = bool(int(os.environ.get("SINK_TOKEN", "0")))
-    # Fused RMSNorm: combine residual add + RMSNorm for better torch.compile fusion.
-    fused_norm = bool(int(os.environ.get("FUSED_NORM", "0")))
 
 
 def _parse_int_tuple(raw: str, fallback: tuple[int, ...]) -> tuple[int, ...]:
@@ -583,19 +572,6 @@ class RMSNorm(nn.Module):
         self.eps = eps
     def forward(self, x: Tensor) -> Tensor:
         return F.rms_norm(x, (x.size(-1),), eps=self.eps)
-class FusedRMSNormResidual(nn.Module):
-    """RMSNorm that also adds a scaled residual in a single fused pass.
-    Returns (normed, x_after_residual) so the caller gets both:
-      - normed: input to the next sublayer (attn or MLP)
-      - x_after_residual: the post-residual state for the next residual add
-    torch.compile fuses the element-wise add + norm into one kernel."""
-    def __init__(self, eps: float | None = None):
-        super().__init__()
-        self.eps = eps
-    def forward(self, x: Tensor, residual: Tensor, scale: Tensor) -> tuple[Tensor, Tensor]:
-        x_out = x + scale[None, None, :] * residual
-        normed = F.rms_norm(x_out, (x_out.size(-1),), eps=self.eps)
-        return normed, x_out
 class CastedLinear(nn.Linear):
     _qat_enabled: bool = False
     def forward(self, x: Tensor) -> Tensor:
@@ -934,12 +910,10 @@ class Block(nn.Module):
         crawler_loops: int = 1,
         crawler_choke_shape: str = "flat",
         crawler_choke_groups: int = 8,
-        fused_norm: bool = False,
     ):
         super().__init__()
         self.attn_norm = RMSNorm()
-        self.fused_norm_enabled = fused_norm
-        self.mlp_norm = FusedRMSNormResidual() if fused_norm else RMSNorm()
+        self.mlp_norm = RMSNorm()
         self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
         if crawler_choke_dim > 0:
             self.mlp = CrawlerMLP(dim, mlp_mult, crawler_choke_dim, crawler_loops,
@@ -963,13 +937,8 @@ class Block(nn.Module):
         mix = self.resid_mix.to(dtype=x.dtype)
         x_in = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
         attn_out = self.attn(self.attn_norm(x_in) * self.ln_scale_factor, v_embed=v_embed, cos_sin=cos_sin)
-        if self.fused_norm_enabled:
-            # Fused path: residual add + RMSNorm in one pass (torch.compile fuses these)
-            mlp_in, x_out = self.mlp_norm(x_in, attn_out, self.attn_scale.to(dtype=x_in.dtype))
-            mlp_in = mlp_in * self.ln_scale_factor
-        else:
-            x_out = x_in + self.attn_scale.to(dtype=x_in.dtype)[None, None, :] * attn_out
-            mlp_in = self.mlp_norm(x_out) * self.ln_scale_factor
+        x_out = x_in + self.attn_scale.to(dtype=x_in.dtype)[None, None, :] * attn_out
+        mlp_in = self.mlp_norm(x_out) * self.ln_scale_factor
         mlp_out = self.mlp(mlp_in, loop_idx) if loop_idx is not None else self.mlp(mlp_in)
         x_out = x_out + self.mlp_scale.to(dtype=x_out.dtype)[None, None, :] * mlp_out
         if self.dtg_gate is not None:
@@ -1210,9 +1179,6 @@ class CrawlerGPT(nn.Module):
         inst_dim: int = 32,
         anchor_dim: int = 0,
         flat_weight_share: bool = False,
-        crawler_compute_staged: bool = False,
-        sink_token_enabled: bool = False,
-        fused_norm: bool = False,
     ):
         super().__init__()
         self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
@@ -1224,15 +1190,9 @@ class CrawlerGPT(nn.Module):
         self.num_flat_layers = num_flat_layers
         self.num_crawler_layers = num_crawler_layers
         self.crawler_loops = crawler_loops
-        self.crawler_compute_staged = crawler_compute_staged
         self.inst_dim = inst_dim
-        self.sink_token_enabled = sink_token_enabled
         # Runtime scale for crawler forward path (0=skip crawler, 1=full crawler).
         self.register_buffer("crawler_forward_scale", torch.tensor(1.0, dtype=torch.float32), persistent=False)
-        # Python-side hard skip flag so compiled runs can truly bypass crawler compute at scale=0.
-        self._crawler_forward_force_skip = False
-        self._crawler_active_loops = crawler_loops
-        self._crawler_active_layers = num_crawler_layers
         # Compatibility stubs
         self.mtp_num_heads = 0
         self.mtp_loss_weight = 0.0
@@ -1244,12 +1204,6 @@ class CrawlerGPT(nn.Module):
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim) if bigram_vocab_size > 0 else None
         self.smear = SmearGate(model_dim)
-        # Sink token: learnable attention dump target prepended to every sequence.
-        if sink_token_enabled:
-            self.sink_emb = nn.Parameter(torch.zeros(1, 1, model_dim, dtype=torch.float32))
-            nn.init.normal_(self.sink_emb, std=0.02)
-        else:
-            self.sink_emb = None
         # Flat section: U-Net encoder / decoder with skip connections
         self.flat_encoder_layers = num_flat_layers // 2
         self.flat_decoder_layers = num_flat_layers - self.flat_encoder_layers
@@ -1259,20 +1213,17 @@ class CrawlerGPT(nn.Module):
         if flat_weight_share and num_flat_layers == 4:
             _outer = Block(model_dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init,
                            layer_idx=0, ln_scale=ln_scale, dtg=False,
-                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
-                           fused_norm=fused_norm)
+                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
             _inner = Block(model_dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init,
                            layer_idx=1, ln_scale=ln_scale, dtg=False,
-                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
-                           fused_norm=fused_norm)
+                           mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
             # PyTorch deduplicates params by object identity — 2 blocks instead of 4
             self.flat_blocks = nn.ModuleList([_outer, _inner, _inner, _outer])
         else:
             self.flat_blocks = nn.ModuleList([
                 Block(model_dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init,
                       layer_idx=i, ln_scale=ln_scale, dtg=False,
-                      mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope,
-                      fused_norm=fused_norm)
+                      mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
                 for i in range(num_flat_layers)
             ])
         # Crawler section: shared blocks, looped crawler_loops times at bottleneck
@@ -1282,8 +1233,7 @@ class CrawlerGPT(nn.Module):
                   mlp_act=mlp_act, mlp_leaky_slope=crawler_mlp_leaky_slope,
                   crawler_choke_dim=crawler_mlp_choke_dim, crawler_loops=crawler_loops,
                   crawler_choke_shape=crawler_mlp_choke_shape,
-                  crawler_choke_groups=crawler_mlp_choke_groups,
-                  fused_norm=fused_norm)
+                  crawler_choke_groups=crawler_mlp_choke_groups)
             for i in range(num_crawler_layers)
         ])
         if rope_dims > 0:
@@ -1431,41 +1381,16 @@ class CrawlerGPT(nn.Module):
         if self.ve_shared is None or crawler_idx not in self.ve_layer_indices:
             return None
         if 've' not in ve_cache:
-            ve_raw = self.ve_shared(input_ids)
-            # Pad with zero for sink token position if enabled
-            if self.sink_emb is not None:
-                ve_raw = F.pad(ve_raw, (0, 0, 1, 0))  # [B, T+1, kv_dim]
-            ve_cache['ve'] = ve_raw
+            ve_cache['ve'] = self.ve_shared(input_ids)
         ve_base = ve_cache['ve']
         ve_idx = self.ve_layer_indices.index(crawler_idx)
         return ve_base * self.ve_layer_scales[ve_idx].to(dtype=ve_base.dtype)
 
     def set_crawler_forward_scale(self, scale: float) -> None:
-        clamped = float(max(0.0, min(1.0, scale)))
-        self.crawler_forward_scale.fill_(clamped)
-        if clamped <= 0.0:
-            self._crawler_forward_force_skip = True
-            self._crawler_active_loops = 0
-            self._crawler_active_layers = 0
-            return
-        self._crawler_forward_force_skip = False
-        if self.crawler_compute_staged:
-            self._crawler_active_loops = max(1, min(self.crawler_loops, int(math.ceil(clamped * self.crawler_loops))))
-            self._crawler_active_layers = max(
-                1, min(self.num_crawler_layers, int(math.ceil(clamped * self.num_crawler_layers)))
-            )
-        else:
-            self._crawler_active_loops = self.crawler_loops
-            self._crawler_active_layers = self.num_crawler_layers
+        self.crawler_forward_scale.fill_(float(max(0.0, min(1.0, scale))))
 
     def get_crawler_forward_scale(self) -> float:
         return float(self.crawler_forward_scale.item())
-
-    def get_crawler_active_loops(self) -> int:
-        return int(self._crawler_active_loops)
-
-    def get_crawler_active_layers(self) -> int:
-        return int(self._crawler_active_layers)
 
     def _run_encoder(self, x: Tensor, x0: Tensor) -> tuple[Tensor, list[Tensor]]:
         skips: list[Tensor] = []
@@ -1484,19 +1409,9 @@ class CrawlerGPT(nn.Module):
 
     def _run_crawler(self, x: Tensor, x0: Tensor, input_ids: Tensor, ve_cache: dict,
                      enc_outputs: list | None = None) -> Tensor:
-        # Hard skip path for both eager and compiled execution.
-        if self._crawler_forward_force_skip:
+        crawler_scale = self.get_crawler_forward_scale()
+        if crawler_scale <= 0.0:
             return x
-        active_loops = self._crawler_active_loops
-        active_layers = self._crawler_active_layers
-        if active_loops <= 0 or active_layers <= 0:
-            return x
-        try:
-            is_compiling = bool(torch.compiler.is_compiling())
-        except Exception:
-            is_compiling = False
-        crawler_scale_tensor = self.crawler_forward_scale.to(dtype=x.dtype)
-        crawler_scale = 1.0 if is_compiling else float(crawler_scale_tensor.item())
         x_pre_crawler = x
         # FLOW instructions: recompute from current x at each loop (not static x_enc pre-plan).
         # This makes each loop's instruction respond to what the previous loop produced,
@@ -1511,7 +1426,7 @@ class CrawlerGPT(nn.Module):
             inv_freq = rotary.inv_freq.to(device=x.device, dtype=torch.float32)
             t = torch.arange(seqlen, device=x.device, dtype=torch.float32)
             loop_cos_sin = []
-            for scale in self.loop_rope_scales[:active_loops]:
+            for scale in self.loop_rope_scales:
                 inv_freq_scaled = inv_freq / scale  # divide → lower freq → wider range
                 freqs = torch.outer(t, inv_freq_scaled)
                 cos = freqs.cos()[None, :, None, :].to(dtype=x.dtype)
@@ -1531,7 +1446,7 @@ class CrawlerGPT(nn.Module):
             prev_anchor = torch.zeros(x.size(0), x.size(1), self.anchor_dim,
                                       device=x.device, dtype=x.dtype)
 
-        for loop in range(active_loops):
+        for loop in range(self.crawler_loops):
             if self.loop_inst_proj is not None:
                 # Flow: project CURRENT x through shared bottleneck, expand with loop-specific up
                 inst_k = self.loop_inst_up[loop](self.loop_inst_proj(x))  # [B, T, model_dim]
@@ -1550,8 +1465,7 @@ class CrawlerGPT(nn.Module):
                 else:
                     x_loop = x_loop + self.shared_tap_up(tap_signal)
             lcs = loop_cos_sin[loop] if loop_cos_sin is not None else None
-            for ci in range(active_layers):
-                block = self.crawler_blocks[ci]
+            for ci, block in enumerate(self.crawler_blocks):
                 ve = self._get_crawler_ve(ci, input_ids, ve_cache)
                 x_loop = block(x_loop, x0, v_embed=ve, loop_idx=loop, cos_sin=lcs)
             # DeltaNet: causal within-loop associative memory; state NOT carried between loops.
@@ -1568,9 +1482,7 @@ class CrawlerGPT(nn.Module):
                 prev_anchor = self.anchor_write[loop](x_loop)
             x_prev_loop = x_loop
             x = x_loop
-        if is_compiling:
-            x = x_pre_crawler + (x - x_pre_crawler) * crawler_scale_tensor
-        elif crawler_scale < 0.999999:
+        if crawler_scale < 0.999999:
             x = x_pre_crawler + (x - x_pre_crawler) * crawler_scale
         return x
 
@@ -1587,10 +1499,6 @@ class CrawlerGPT(nn.Module):
             x = x + self.bigram(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x = self.smear(x)
-        # Sink token: prepend learnable attention dump target
-        if self.sink_emb is not None:
-            sink = self.sink_emb.to(dtype=x.dtype).expand(x.size(0), -1, -1)
-            x = torch.cat([sink, x], dim=1)
         x0 = x
         x, skips = self._run_encoder(x, x0)
         ve_cache: dict = {}
@@ -1598,9 +1506,6 @@ class CrawlerGPT(nn.Module):
             x = self._run_crawler(x, x0, input_ids, ve_cache, enc_outputs=skips)
         x = self._run_decoder(x, x0, skips)
         x = self.final_norm(x)
-        # Strip sink token before loss computation
-        if self.sink_emb is not None:
-            x = x[:, 1:]
         x_flat = x.reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
         logits = self._compute_logits(x_flat)
@@ -1613,10 +1518,6 @@ class CrawlerGPT(nn.Module):
             x = x + self.bigram(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x = self.smear(x)
-        # Sink token: prepend learnable attention dump target
-        if self.sink_emb is not None:
-            sink = self.sink_emb.to(dtype=x.dtype).expand(x.size(0), -1, -1)
-            x = torch.cat([sink, x], dim=1)
         x0 = x
         x, skips = self._run_encoder(x, x0)
         ve_cache: dict = {}
@@ -1624,9 +1525,6 @@ class CrawlerGPT(nn.Module):
             x = self._run_crawler(x, x0, input_ids, ve_cache, enc_outputs=skips)
         x = self._run_decoder(x, x0, skips)
         x = self.final_norm(x)
-        # Strip sink token before returning logits
-        if self.sink_emb is not None:
-            x = x[:, 1:]
         return self._compute_logits(x)
 
 
@@ -1641,7 +1539,6 @@ CRAWLER_GRAD_PARAM_PREFIXES = (
     "tap_proj.",
     "loop_tap_up.",
     "shared_tap_up.",
-    "sink_emb",
 )
 
 
@@ -1697,9 +1594,6 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             inst_dim=args.inst_dim,
             anchor_dim=args.anchor_dim,
             flat_weight_share=args.flat_weight_share,
-            crawler_compute_staged=args.crawler_compute_staged,
-            sink_token_enabled=args.sink_token_enabled,
-            fused_norm=args.fused_norm,
         )
     else:
         model = GPT(
@@ -2181,32 +2075,6 @@ def main() -> None:
     code = Path(__file__).read_text(encoding="utf-8")
     args = Hyperparameters()
     apply_ton_e_rhythm_profile(args)
-    compile_policy_notes: list[str] = []
-    if args.compile_enabled and args.compile_fullgraph and args.crawler_compute_staged:
-        args.compile_fullgraph = False
-        compile_policy_notes.append(
-            "compile_policy:auto_fullgraph_off reason=crawler_compute_staged "
-            "(prevents torch.compile recompile-limit hard fail)"
-        )
-    if args.num_heads <= 0:
-        raise ValueError(f"NUM_HEADS must be positive, got {args.num_heads}")
-    if args.model_dim % args.num_heads != 0:
-        raise ValueError(
-            f"MODEL_DIM={args.model_dim} must be divisible by NUM_HEADS={args.num_heads}"
-        )
-    head_dim = args.model_dim // args.num_heads
-    if _FLASH_ATTN3_AVAILABLE and head_dim % 8 != 0:
-        dim_quantum = args.num_heads * 8
-        lower = (args.model_dim // dim_quantum) * dim_quantum
-        upper = lower + dim_quantum
-        if lower <= 0:
-            lower = dim_quantum
-        raise ValueError(
-            "FlashAttention-3 requires head_dim multiple of 8. "
-            f"Got MODEL_DIM={args.model_dim}, NUM_HEADS={args.num_heads}, head_dim={head_dim}. "
-            f"Use MODEL_DIM as a multiple of {dim_quantum} (for NUM_HEADS={args.num_heads}), "
-            f"e.g. {lower} or {upper}."
-        )
     distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -2217,18 +2085,6 @@ def main() -> None:
         # analysis on PyTorch 2.4. suppress_errors lets that subgraph fall back to
         # eager (just the tiny sin/cos kernel) while everything else stays compiled.
         dynamo.config.suppress_errors = True
-        if args.crawler_compute_staged:
-            # Staged crawler updates nn.Module integer attrs each step; make them dynamic
-            # to avoid compile cache churn/recompile-limit crashes.
-            try:
-                dynamo.config.allow_unspec_int_on_nn_module = True
-                compile_policy_notes.append(
-                    "compile_policy:allow_unspec_int_on_nn_module=1 reason=crawler_compute_staged"
-                )
-            except Exception:
-                compile_policy_notes.append(
-                    "compile_policy:allow_unspec_int_on_nn_module_unavailable"
-                )
     if args.compile_enabled and distributed and dynamo is not None:
         dynamo.config.optimize_ddp = args.torchdynamo_optimize_ddp
     if args.compile_enabled:
@@ -2271,8 +2127,6 @@ def main() -> None:
     log0("=" * 100, console=False)
     log0(f"Running Python {sys.version}", console=False)
     log0(f"Running PyTorch {torch.__version__}", console=False)
-    for _note in compile_policy_notes:
-        log0(_note)
     log0(
         subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False).stdout,
         console=False,
@@ -2365,7 +2219,6 @@ def main() -> None:
     crawler_forward_ramp_delay_frac = max(args.crawler_forward_ramp_delay_frac, 0.0)
     crawler_forward_ramp_steps = max(args.crawler_forward_ramp_steps, 0)
     crawler_forward_ramp_delay_steps = max(args.crawler_forward_ramp_delay_steps, 0)
-    crawler_safe_warmup_steps = max(args.crawler_safe_warmup_steps, 0)
     if crawler_forward_enabled:
         base_model.set_crawler_forward_scale(crawler_forward_start_frac)
 
@@ -2398,8 +2251,6 @@ def main() -> None:
     def crawler_grad_multiplier(step_idx: int, elapsed_ms: float) -> float:
         if not crawler_grad_enabled:
             return 1.0
-        if crawler_safe_warmup_steps > 0 and step_idx < crawler_safe_warmup_steps:
-            return 0.0
         return _scheduled_multiplier(
             step_idx,
             elapsed_ms,
@@ -2413,8 +2264,6 @@ def main() -> None:
     def crawler_forward_multiplier(step_idx: int, elapsed_ms: float) -> float:
         if not crawler_forward_enabled:
             return 1.0
-        if crawler_safe_warmup_steps > 0 and step_idx < crawler_safe_warmup_steps:
-            return 0.0
         return _scheduled_multiplier(
             step_idx,
             elapsed_ms,
@@ -2533,8 +2382,6 @@ def main() -> None:
             f"effective_depth:{effective_depth} ton_e_rhythm:{int(args.ton_e_rhythm)} "
             f"xsa_include_flat:{int(args.xsa_include_flat)}"
         )
-        if crawler_safe_warmup_steps > 0:
-            log0(f"crawler_safe_warmup:steps:{crawler_safe_warmup_steps} crawler_mul:0.000")
         if crawler_grad_enabled:
             grad_schedule_mode = (
                 "steps"
@@ -2565,12 +2412,6 @@ def main() -> None:
                 f"delay_steps:{crawler_forward_ramp_delay_steps} ramp_steps:{crawler_forward_ramp_steps} "
                 f"mode:{forward_schedule_mode}"
             )
-            if args.crawler_compute_staged:
-                log0(
-                    f"crawler_compute_staged:1 "
-                    f"active_layers:{base_model.get_crawler_active_layers()} "
-                    f"active_loops:{base_model.get_crawler_active_loops()}"
-                )
         elif args.crawler_forward_graduated:
             log0("crawler_forward_staged:requested but crawler model inactive; disabled")
     log0(
@@ -2684,16 +2525,6 @@ def main() -> None:
         current_crawler_grad_mul = crawler_grad_multiplier(step, elapsed_ms)
         current_crawler_forward_mul = crawler_forward_multiplier(step, elapsed_ms)
         apply_crawler_forward_multiplier(current_crawler_forward_mul)
-        current_crawler_active_layers = (
-            base_model.get_crawler_active_layers()
-            if isinstance(base_model, CrawlerGPT)
-            else 0
-        )
-        current_crawler_active_loops = (
-            base_model.get_crawler_active_loops()
-            if isinstance(base_model, CrawlerGPT)
-            else 0
-        )
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
@@ -2745,11 +2576,6 @@ def main() -> None:
                 + (
                     f" crawler_fwd_mul:{current_crawler_forward_mul:.3f}"
                     if crawler_forward_enabled
-                    else ""
-                )
-                + (
-                    f" crawler_active:{current_crawler_active_layers}Lx{current_crawler_active_loops}R"
-                    if (crawler_forward_enabled and args.crawler_compute_staged)
                     else ""
                 )
             )

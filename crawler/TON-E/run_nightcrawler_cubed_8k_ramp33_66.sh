@@ -4,8 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
-# Legacy-name wrapper. Use the available 8k tokenizer/data defaults.
-# Caller can still override DATA_PATH/TOKENIZER_PATH/VOCAB_SIZE explicitly.
+# 8k tokenizer/data defaults. Caller can override DATA_PATH/TOKENIZER_PATH/VOCAB_SIZE explicitly.
 if [[ -z "${DATA_PATH:-}" ]]; then
   if [[ -d "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192" ]]; then
     export DATA_PATH="/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"
@@ -28,7 +27,7 @@ if [[ -z "${TOKENIZER_PATH:-}" ]]; then
   fi
 fi
 
-# Nightcrawler Cubed topology + your requested modifications.
+# Nightcrawler Cubed topology + staged crawler ramp.
 export SEED="${SEED:-4}"
 export RUN_ID="${RUN_ID:-tone_nc3_v8k_ramp33_66_s${SEED}}"
 export MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-600}"

@@ -126,18 +126,18 @@ class Hyperparameters:
     lawa_freq = int(os.environ.get("LAWA_FREQ", 100))
     muon_wd = float(os.environ.get("MUON_WD", 0.095))
     adam_wd = float(os.environ.get("ADAM_WD", 0.04))
-    qat_enabled = bool(int(os.environ.get("QAT_ENABLED", "0")))
+    qat_enabled = bool(int(os.environ.get("QAT_ENABLED", "1")))
     bigram_vocab_size = int(os.environ.get("BIGRAM_VOCAB_SIZE", 2048))
     bigram_dim = int(os.environ.get("BIGRAM_DIM", 128))
-    quant_attn_bits = int(os.environ.get("QUANT_ATTN_BITS", 5))
+    quant_attn_bits = int(os.environ.get("QUANT_ATTN_BITS", 6))
     quant_mlp_bits = int(os.environ.get("QUANT_MLP_BITS", 6))
     quant_aux_bits = int(os.environ.get("QUANT_AUX_BITS", 6))
     quant_embed_bits = int(os.environ.get("QUANT_EMBED_BITS", 8))
     quant_other_bits = int(os.environ.get("QUANT_OTHER_BITS", 8))
     quant_artifact_path = os.environ.get("QUANT_ARTIFACT_PATH", "final_model.mixed.ptz")
     init_model_path = os.environ.get("INIT_MODEL_PATH", "").strip()
-    trigram_enabled = bool(int(os.environ.get("TRIGRAM", "0")))  # TrigramHash (off by default, risky)
-    xsa_last_n = int(os.environ.get("XSA_LAST_N", 11))  # XSA on ALL layers (our novel contribution)
+    trigram_enabled = bool(int(os.environ.get("TRIGRAM", "0")))
+    xsa_last_n = int(os.environ.get("XSA_LAST_N", 11))
     rope_dims = int(os.environ.get("ROPE_DIMS", 16))
     ln_scale = bool(int(os.environ.get("LN_SCALE", "1")))
     dtg_enabled = bool(int(os.environ.get("DTG_ENABLED", "0")))
@@ -146,40 +146,32 @@ class Hyperparameters:
     ve_dim = int(os.environ.get("VE_DIM", 128))
     ve_layers = os.environ.get("VE_LAYERS", "9,10")
     gated_attention = bool(int(os.environ.get("GATED_ATTENTION", "0")))
-    value_residual = bool(int(os.environ.get("VALUE_RESIDUAL", "0")))  # VRL with sigmoid gates (off by default, risky)
-    attn_scale_init = float(os.environ.get("ATTN_SCALE_INIT", 1.0))
-    mlp_scale_init = float(os.environ.get("MLP_SCALE_INIT", 1.0))
-    resid_mix_x_init = float(os.environ.get("RESID_MIX_X_INIT", 1.0))
-    resid_mix_x0_init = float(os.environ.get("RESID_MIX_X0_INIT", 0.0))
-    complement_alpha = float(os.environ.get("COMPLEMENT_ALPHA", "0"))
-    ngram_eval_order = int(os.environ.get("NGRAM_EVAL_ORDER", 0))
-    ngram_eval_min_order = int(os.environ.get("NGRAM_EVAL_MIN_ORDER", 2))
-    ngram_eval_alpha = float(os.environ.get("NGRAM_EVAL_ALPHA", 0.30))
-    ngram_eval_adaptive = bool(int(os.environ.get("NGRAM_EVAL_ADAPTIVE", "1")))
-    ngram_eval_alpha_min = float(os.environ.get("NGRAM_EVAL_ALPHA_MIN", 0.05))
-    ngram_eval_alpha_max = float(os.environ.get("NGRAM_EVAL_ALPHA_MAX", 0.60))
-    ngram_eval_entropy_center = float(os.environ.get("NGRAM_EVAL_ENTROPY_CENTER", 4.0))
-    ngram_eval_entropy_scale = float(os.environ.get("NGRAM_EVAL_ENTROPY_SCALE", 2.0))
-    ngram_eval_min_count = int(os.environ.get("NGRAM_EVAL_MIN_COUNT", 2))
-    ngram_eval_buckets = int(os.environ.get("NGRAM_EVAL_BUCKETS", 4_194_304))
-    ngram_eval_max_seconds = float(os.environ.get("NGRAM_EVAL_MAX_SECONDS", 0.0))
-    ngram_entropy_shift = bool(int(os.environ.get("NGRAM_ENTROPY_SHIFT", "0")))
-    ngram_order_mults_str = os.environ.get("NGRAM_ORDER_MULTS", "")
-    cubric_cadence = int(os.environ.get("CUBRIC_CADENCE", 0))
-    skip_final_eval = bool(int(os.environ.get("SKIP_FINAL_EVAL", "0")))
-    post_ema_diagnostic = bool(int(os.environ.get("POST_EMA_DIAGNOSTIC", "1")))
-    compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
-    compile_mode = os.environ.get("COMPILE_MODE", "").strip()
-    compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
-    mlp_kernel_mode = os.environ.get("MLP_KERNEL_MODE", "").strip().lower()
-    loader_mode = os.environ.get("LOADER_MODE", "coprime").strip().lower()
-    coprime_max_loaded_shards = int(os.environ.get("COPRIME_MAX_LOADED_SHARDS", 4))
-    coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", 1))
-    coprime_shard_hold_steps = int(os.environ.get("COPRIME_SHARD_HOLD_STEPS", 64))
+    value_residual = bool(int(os.environ.get("VALUE_RESIDUAL", "1")))
     num_loops = int(os.environ.get("NUM_LOOPS", 2))
     loop_start = int(os.environ.get("LOOP_START", 3))
     loop_end = int(os.environ.get("LOOP_END", 5))
-    enable_looping_at = float(os.environ.get("ENABLE_LOOPING_AT", 0.35))
+    enable_looping_at = float(os.environ.get("ENABLE_LOOPING_AT", "0.35"))
+    compile_enabled = bool(int(os.environ.get("COMPILE_ENABLED", "1")))
+    compile_fullgraph = bool(int(os.environ.get("COMPILE_FULLGRAPH", "1")))
+    compile_mode = os.environ.get("COMPILE_MODE", "max-autotune-no-cudagraphs")
+    mlp_kernel_mode = os.environ.get("MLP_KERNEL_MODE", "triton")
+    post_ema_diagnostic = bool(int(os.environ.get("POST_EMA_DIAGNOSTIC", "1")))
+    ngram_eval_order = int(os.environ.get("NGRAM_EVAL_ORDER", "0"))
+    ngram_eval_alpha = float(os.environ.get("NGRAM_EVAL_ALPHA", "0.1"))
+    ngram_eval_min_count = int(os.environ.get("NGRAM_EVAL_MIN_COUNT", "2"))
+    ngram_eval_buckets = int(os.environ.get("NGRAM_EVAL_BUCKETS", "1000000"))
+    ngram_eval_max_seconds = float(os.environ.get("NGRAM_EVAL_MAX_SECONDS", "60.0"))
+    skip_final_eval = bool(int(os.environ.get("SKIP_FINAL_EVAL", "0")))
+    loader_mode = os.environ.get("LOADER_MODE", "coprime")
+    coprime_max_loaded_shards = int(os.environ.get("COPRIME_MAX_LOADED_SHARDS", "12"))
+    coprime_shards_per_batch = int(os.environ.get("COPRIME_SHARDS_PER_BATCH", "8"))
+    coprime_shard_hold_steps = int(os.environ.get("COPRIME_SHARD_HOLD_STEPS", "1"))
+    complement_alpha = float(os.environ.get("COMPLEMENT_ALPHA", "0.0"))
+    ttt_enabled = bool(int(os.environ.get("TTT_ENABLED", "1")))
+    ttt_lr = float(os.environ.get("TTT_LR", 0.005))
+    ttt_epochs = int(os.environ.get("TTT_EPOCHS", 3))
+    ttt_momentum = float(os.environ.get("TTT_MOMENTUM", 0.9))
+    ttt_chunk_tokens = int(os.environ.get("TTT_CHUNK_TOKENS", 32768))
 
 
 def maybe_compile(fn_or_module, *, enabled: bool, fullgraph: bool, mode: str = ""):
@@ -1152,6 +1144,18 @@ def apply_rotary_emb(x: Tensor, cos: Tensor, sin: Tensor, rope_dims: int = 0) ->
     x1, x2 = x[..., :half], x[..., half:]
     return torch.cat((x1 * cos + x2 * sin, x1 * (-sin) + x2 * cos), dim=-1)
 
+def functional_linear_qat(x: Tensor, weight: Tensor, bias: Tensor | None = None, bits: int = 6) -> Tensor:
+    if not CastedLinear._qat_enabled or not torch.is_grad_enabled():
+        return F.linear(x, weight.to(x.dtype), bias.to(x.dtype) if bias is not None else None)
+    w32 = weight.float()
+    clip_range = (1 << (bits - 1)) - 1
+    # MSE-optimal clipping approximation: 0.95 * amax is often better than raw amax for int6
+    row_max = w32.abs().amax(dim=1)
+    scale = (row_max * 0.95 / clip_range).clamp_min(1.0 / clip_range)
+    w_q = (torch.clamp(torch.round(w32 / scale[:, None]), -clip_range-1, clip_range) * scale[:, None]).to(x.dtype)
+    w = weight.to(x.dtype) + (w_q - weight.to(x.dtype)).detach()
+    return F.linear(x, w, bias.to(x.dtype) if bias is not None else None)
+
 class CausalSelfAttention(nn.Module):
     def __init__(
         self,
@@ -1202,9 +1206,9 @@ class CausalSelfAttention(nn.Module):
         _accum_gptq_bank_hessian(gptq_ctx, "qo_bank", q_idx, x)
         _accum_gptq_bank_hessian(gptq_ctx, "kv_bank", k_idx, x)
         _accum_gptq_bank_hessian(gptq_ctx, "kv_bank", v_idx, x)
-        q = F.linear(x, q_w.to(x.dtype)).reshape(bsz, seqlen, self.num_heads, self.head_dim)
-        k = F.linear(x, k_w.to(x.dtype)).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim)
-        v = F.linear(x, v_w.to(x.dtype))
+        q = functional_linear_qat(x, q_w, bits=6).reshape(bsz, seqlen, self.num_heads, self.head_dim)
+        k = functional_linear_qat(x, k_w, bits=6).reshape(bsz, seqlen, self.num_kv_heads, self.head_dim)
+        v = functional_linear_qat(x, v_w, bits=6)
         if v_embed is not None:
             v = v + v_embed
         v = v.reshape(bsz, seqlen, self.num_kv_heads, self.head_dim)
@@ -1242,7 +1246,7 @@ class CausalSelfAttention(nn.Module):
             y = y * gate
         y = y.reshape(bsz, seqlen, dim)
         _accum_gptq_bank_hessian(gptq_ctx, "qo_bank", out_idx, y)
-        return F.linear(y, out_w.to(x.dtype)), raw_v
+        return functional_linear_qat(y, out_w, bits=6), raw_v
 
 class SmearGate(nn.Module):
     def __init__(self, dim: int):
@@ -1311,10 +1315,10 @@ class MLP(nn.Module):
         self.kernel_mode = os.environ.get("MLP_KERNEL_MODE", "").strip().lower()
     def forward(self, x: Tensor, up_w: Tensor, down_w: Tensor, *, up_idx: int | None = None, down_idx: int | None = None, gptq_ctx: dict | None = None) -> Tensor:
         _accum_gptq_bank_hessian(gptq_ctx, "mlp_up_bank", up_idx, x)
-        x = F.linear(x, up_w.to(x.dtype))
+        x = functional_linear_qat(x, up_w, bits=6)
         x = leaky_relu_sq(x, kernel_mode=self.kernel_mode)
         _accum_gptq_bank_hessian(gptq_ctx, "mlp_down_bank", down_idx, x)
-        return F.linear(x, down_w.to(x.dtype))
+        return functional_linear_qat(x, down_w, bits=6)
 
 class Block(nn.Module):
     def __init__(
@@ -1989,6 +1993,65 @@ def eval_val_sliding_hashed_ngram(
 
 # --- Sliding window evaluation ---
 
+def eval_val_ttt(
+    h: Hyperparameters,
+    device: torch.device,
+    val_data: ValidationData,
+    model: nn.Module,
+) -> tuple[float, float]:
+    """Test-Time Training: adaptively update quantized model weights during validation."""
+    model.train()
+    for p in model.parameters():
+        p.requires_grad_(False)
+    # TTT only trains the Parameter Banks
+    ttt_params = [model.qo_bank, model.kv_bank, model.mlp_up_bank, model.mlp_down_bank]
+    for p in ttt_params:
+        p.requires_grad_(True)
+    optimizer = torch.optim.SGD(ttt_params, lr=h.ttt_lr, momentum=h.ttt_momentum)
+    val_tokens = val_data.val_tokens
+    base_bytes_lut = val_data.base_bytes_lut
+    has_leading_space_lut = val_data.has_leading_space_lut
+    is_boundary_token_lut = val_data.is_boundary_token_lut
+    seq_len = h.train_seq_len
+    chunk_tokens = h.ttt_chunk_tokens
+    num_chunks = (val_tokens.numel() - 1) // chunk_tokens
+    loss_sum = torch.zeros((), device=device, dtype=torch.float64)
+    token_count = torch.zeros((), device=device, dtype=torch.float64)
+    byte_count = torch.zeros((), device=device, dtype=torch.float64)
+    for i in range(num_chunks):
+        start = i * chunk_tokens
+        end = min(start + chunk_tokens, val_tokens.numel() - 1)
+        chunk = val_tokens[start:end+1].to(device=device, dtype=torch.int64)
+        # 1. Score first (following competition rules)
+        with torch.no_grad():
+            x = chunk[:-1].reshape(-1, seq_len)
+            y = chunk[1:].reshape(-1, seq_len)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = model.forward_logits(x)
+                loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)).float(), y.reshape(-1), reduction="sum")
+            loss_sum += loss.to(torch.float64)
+            token_count += y.numel()
+            prev_ids = x.reshape(-1)
+            tgt_ids = y.reshape(-1)
+            token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+            token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+            byte_count += token_bytes.to(torch.float64).sum()
+        # 2. Update model weights
+        for _ in range(h.ttt_epochs):
+            optimizer.zero_grad()
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                loss_ttt = model(x, y)
+            loss_ttt.backward()
+            torch.nn.utils.clip_grad_norm_(ttt_params, 1.0)
+            optimizer.step()
+    for p in model.parameters():
+        p.requires_grad_(True)
+    model.eval()
+    val_loss = loss_sum / token_count
+    bits_per_token = val_loss.item() / math.log(2.0)
+    tokens_per_byte = token_count.item() / byte_count.item()
+    return float(val_loss.item()), float(bits_per_token * tokens_per_byte)
+
 def eval_val_sliding(
     args: Hyperparameters,
     base_model: nn.Module,
@@ -2654,6 +2717,17 @@ def main() -> None:
     deployed_model = eval_model
     del deq_state, quant_state, sd_cpu
     torch.cuda.empty_cache()
+    
+    val_data = ValidationData(args, device)
+    
+    if args.ttt_enabled:
+        torch.cuda.synchronize()
+        t_ttt = time.perf_counter()
+        ttt_loss, ttt_bpb = eval_val_ttt(args, device, val_data, deployed_model)
+        torch.cuda.synchronize()
+        log0(f"final_quant_ttt val_loss:{ttt_loss:.4f} val_bpb:{ttt_bpb:.4f} eval_time:{1000.0*(time.perf_counter()-t_ttt):.0f}ms")
+        log0(f"final_quant_ttt_exact val_loss:{ttt_loss:.8f} val_bpb:{ttt_bpb:.8f}")
+
     sw_seq_len = effective_eval_seq_len
     if args.skip_final_eval:
         log0("final_eval:skipped sliding/ngram by SKIP_FINAL_EVAL=1")

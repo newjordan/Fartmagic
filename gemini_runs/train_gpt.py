@@ -75,10 +75,10 @@ if os.environ.get("TORCHDYNAMO_SUPPRESS_ERRORS", "0") == "1":
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True
 class Hyperparameters:
-    data_path = "./data/datasets/fineweb10B_sp1024"
-    train_files = "./data/datasets/fineweb10B_sp1024/fineweb_train_*.bin"
-    val_files = "./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin"
-    tokenizer_path = "./data/tokenizers/fineweb_1024_bpe.model"
+    data_path = "./data/datasets/fineweb10B_sp8192"
+    train_files = "./data/datasets/fineweb10B_sp8192/fineweb_train_*.bin"
+    val_files = "./data/datasets/fineweb10B_sp8192/fineweb_val_*.bin"
+    tokenizer_path = "./data/tokenizers/fineweb_8192_bpe.model"
     run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
     seed = int(os.environ.get("SEED", 1337))
     val_batch_size = 524_288
@@ -92,12 +92,12 @@ class Hyperparameters:
     eval_seq_len = 2048
     max_wallclock_seconds = 600.0
     qk_gain_init = 5.25
-    vocab_size = 1024
-    num_layers = 12
+    vocab_size = 8192
+    num_layers = 11
     num_kv_heads = 4
     model_dim = 512
     num_heads = 8
-    mlp_mult = 3.0
+    mlp_mult = 4.0
     tie_embeddings = True
     rope_base = 10000.0
     logit_softcap = 30.0

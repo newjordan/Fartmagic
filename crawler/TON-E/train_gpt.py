@@ -1332,7 +1332,7 @@ class LiteCrawlerCore(nn.Module):
         for start in range(0, seqlen, self.chunk_size):
             end = min(start + self.chunk_size, seqlen)
             x_chunk = x[:, start:end]
-            if cold_prefetch is not None and cold_prefetch_event is not None:
+            if cold_prefetch is not None and cold_prefetch_event is not None and cold_prefetch_event.query():
                 torch.cuda.current_stream(device=x.device).wait_event(cold_prefetch_event)
                 carry_slot = torch.lerp(carry_slot, cold_prefetch.to(dtype=carry_slot.dtype), self.cold_scale)
                 cold_prefetch = None
@@ -1367,7 +1367,7 @@ class LiteCrawlerCore(nn.Module):
                     cold_keys.pop(0)
                     cold_ready_events.pop(0)
                 eligible = [i for i, ev in enumerate(cold_ready_events[:-1]) if ev.query()]
-                if eligible:
+                if eligible and cold_prefetch is None:
                     query = F.normalize(carry_slot.detach().float().mean(dim=1), dim=-1)
                     key_bank = torch.stack([cold_keys[i] for i in eligible], dim=0)
                     scores = torch.einsum("pbd,bd->pb", key_bank, query)

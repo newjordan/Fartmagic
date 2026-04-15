@@ -1,0 +1,16 @@
+{
+  "target_path": "legs/2026-04-15_midnight_anchor_modelbuild/train_gpt.py",
+  "parent_path": "legs/2026-04-13_midnight_iii_v_qattn6/train_gpt.py",
+  "target_sha256": "a5294343f86cb53a8668ee3210054219884e5d44e0cd667e7cf5e74dab39f9e7",
+  "parent_sha256": "4d265579556279e3b0d652abf078fe762117227cd2408c9eca1afd81bdb15365",
+  "summary": {
+    "total_changed_lines": 21,
+    "hyperparam_changed_lines": 1,
+    "hyperparam_envs": [
+      "EXPORT_MODEL_PATH"
+    ],
+    "hyperparam_non_env_lines": 0,
+    "non_hyperparam_changed_lines": 20,
+    "hunks": 2
+  }
+}

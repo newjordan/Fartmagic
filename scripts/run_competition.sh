@@ -4,20 +4,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
-# Prefer local lab paths when available; allow caller override.
+# Auto-detect data/tokenizer paths. Check common pod locations.
 if [[ -z "${DATA_PATH:-}" ]]; then
-  if [[ -d "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192" ]]; then
-    export DATA_PATH="/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"
-  else
-    export DATA_PATH="../../data/datasets/fineweb10B_sp8192"
-  fi
+  for _d in "${SCRIPT_DIR}/../data/datasets/fineweb10B_sp8192" \
+            "${SCRIPT_DIR}/../../data/datasets/fineweb10B_sp8192" \
+            "/root/Fartmagic/data/datasets/fineweb10B_sp8192" \
+            "/dev/shm/fineweb10B_sp8192" \
+            "/workspace/SOTA_FINAL/data/datasets/fineweb10B_sp8192" \
+            "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"; do
+    if [[ -d "$_d" ]]; then export DATA_PATH="$_d"; break; fi
+  done
+  [[ -z "${DATA_PATH:-}" ]] && { echo "FATAL: Cannot find fineweb10B_sp8192 dataset. Set DATA_PATH."; exit 1; }
 fi
 if [[ -z "${TOKENIZER_PATH:-}" ]]; then
-  if [[ -f "/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model" ]]; then
-    export TOKENIZER_PATH="/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model"
-  else
-    export TOKENIZER_PATH="../../data/tokenizers/fineweb_8192_bpe.model"
-  fi
+  for _t in "${SCRIPT_DIR}/../data/tokenizers/fineweb_8192_bpe.model" \
+            "${SCRIPT_DIR}/../../data/tokenizers/fineweb_8192_bpe.model" \
+            "/root/Fartmagic/data/tokenizers/fineweb_8192_bpe.model" \
+            "/dev/shm/fineweb_8192_bpe.model" \
+            "/workspace/SOTA_FINAL/data/tokenizers/fineweb_8192_bpe.model" \
+            "/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model"; do
+    if [[ -f "$_t" ]]; then export TOKENIZER_PATH="$_t"; break; fi
+  done
+  [[ -z "${TOKENIZER_PATH:-}" ]] && { echo "FATAL: Cannot find fineweb_8192_bpe.model tokenizer. Set TOKENIZER_PATH."; exit 1; }
 fi
 
 export SEED="${SEED:-4}"
@@ -66,9 +74,14 @@ EOF
   exit 0
 fi
 
+# Auto-detect venv paths so torchrun/python3 always resolve.
+for _p in /venv/main/bin /opt/conda/bin /usr/local/bin; do
+  [[ -d "$_p" ]] && export PATH="$_p:$PATH"
+done
+
 WORLD_SIZE="${WORLD_SIZE:-1}"
 if [[ "${WORLD_SIZE}" -gt 1 ]]; then
-  torchrun --standalone --nproc_per_node="${WORLD_SIZE}" train_gpt.py
+  python3 -m torch.distributed.run --standalone --nproc_per_node="${WORLD_SIZE}" train_gpt.py
 else
   python3 train_gpt.py
 fi

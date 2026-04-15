@@ -2496,6 +2496,15 @@ def main() -> None:
                 if args.warmup_steps <= 20 or (warmup_step + 1) % 10 == 0 or warmup_step + 1 == args.warmup_steps:
                     log0(f"loop_warmup_step:{warmup_step + 1}/{args.warmup_steps}")
             base_model.looping_active = False
+        
+        # Log tuned kernel data if available
+        if triton is not None and master_process:
+            try:
+                log0(f"triton_tuning_data: forward_best_config={_leaky_relu_sq_forward_kernel.best_config}")
+                log0(f"triton_tuning_data: backward_best_config={_leaky_relu_sq_backward_kernel.best_config}")
+            except Exception as e:
+                log0(f"triton_tuning_data: could not retrieve configs: {e}")
+
         base_model.load_state_dict(initial_model_state, strict=True)
         for opt, state in zip(optimizers, initial_optimizer_states, strict=True):
             opt.load_state_dict(state)

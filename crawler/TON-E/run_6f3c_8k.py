@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+RUN_SCRIPT = Path(__file__).resolve()
+ROOT = RUN_SCRIPT.parent
 TRAIN_SCRIPT = ROOT / "train_gpt.py"
 DEFAULT_DATASET_CANDIDATES = (
     Path("/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"),
@@ -177,7 +178,7 @@ def archive_outputs(config: RunConfig, started_at: float | None = None) -> None:
     artifact_dir = ROOT / "artifacts" / config.run_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
     always_copy = (
-        ROOT / "run.py",
+        RUN_SCRIPT,
         TRAIN_SCRIPT,
         ROOT / "logs" / f"{config.run_id}.txt",
     )

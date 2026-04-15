@@ -146,6 +146,10 @@ class Hyperparameters:
     ve_enabled = True
     ve_dim = 128
     ve_layers = "9,10"
+    attn_scale_init = 1.0
+    mlp_scale_init = 1.0
+    resid_mix_x_init = 1.0
+    resid_mix_x0_init = 0.0
     gated_attention = False
     value_residual = True
     num_loops = 2

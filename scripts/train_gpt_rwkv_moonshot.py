@@ -823,148 +823,109 @@ class LinearRecurrenceAttention(nn.Module):
         r = F.rms_norm(r, (d,))
         k = F.rms_norm(k, (d,))
 
-        # Chunked linear recurrence
-        out = torch.zeros(B, T, H, d, device=x.device, dtype=x.dtype)
+        # Pad T to multiple of C so num_chunks is static (avoids torch.compile graph breaks)
+        T_padded = ((T + C - 1) // C) * C
+        if T_padded > T:
+            pad_len = T_padded - T
+            r = F.pad(r, (0, 0, 0, 0, 0, pad_len))      # [B, T_padded, H, d]
+            k = F.pad(k, (0, 0, 0, 0, 0, pad_len))
+            v = F.pad(v, (0, 0, 0, 0, 0, pad_len))
+            decay = F.pad(decay, (0, 0, 0, 0, 0, pad_len), value=1.0)  # pad decay=1 (no decay for padding)
 
-        # State: [B, H, d, d] — accumulated key-value outer products with decay
-        state = torch.zeros(B, H, d, d, device=x.device, dtype=x.dtype)
+        num_chunks = T_padded // C
 
-        num_chunks = (T + C - 1) // C
+        # Collect output chunks into a list (avoid in-place indexing which breaks torch.compile)
+        out_chunks: list[Tensor] = []
+
+        # State: [B, H, d, d] — accumulated key-value outer products with decay.
+        # Use fp32 for state accumulation to avoid bf16 precision loss over many chunks.
+        state = torch.zeros(B, H, d, d, device=x.device, dtype=torch.float32)
+
+        # Pre-compute causal mask once (constant across all chunks since they all have size C).
+        causal_mask = torch.tril(torch.ones(C, C, device=x.device, dtype=torch.float32))
 
         for chunk_idx in range(num_chunks):
             cs = chunk_idx * C
-            ce = min(cs + C, T)
-            chunk_len = ce - cs
+            ce = cs + C
 
-            # Extract chunk slices: [B, chunk_len, H, d]
+            # Extract chunk slices: [B, C, H, d]
             r_c = r[:, cs:ce]
             k_c = k[:, cs:ce]
             v_c = v[:, cs:ce]
-            w_c = decay[:, cs:ce]  # [B, chunk_len, H, d]
+            w_c = decay[:, cs:ce]  # [B, C, H, d]
+
+            # ── Log-space decay computation in fp32 for numerical stability ──
+            log_w = torch.log(w_c.float().clamp(min=1e-8))  # [B, C, H, d] fp32
+            cum_log_w = torch.cumsum(log_w, dim=1)            # [B, C, H, d] fp32
 
             # ── Inter-chunk contribution: readout from accumulated state ──
-            # state: [B, H, d, d], r_c: [B, chunk_len, H, d]
-            # For each position in chunk, we read from state decayed appropriately
-            # Cumulative decay from chunk start: cum_decay[t] = prod(w_c[0:t+1])
-            # We use log-space for numerical stability
-            log_w = torch.log(w_c.clamp(min=1e-6))  # [B, chunk_len, H, d]
-            cum_log_w = torch.cumsum(log_w, dim=1)   # [B, chunk_len, H, d]
-            cum_decay = torch.exp(cum_log_w)          # [B, chunk_len, H, d]
+            # Instead of materializing [B, C, H, d, d] (memory explosion), compute
+            # per-position as batched matmul: inter[t] = state_decayed_to_t @ r[t]
+            # where state_decayed_to_t = state * cum_decay[t] (per-dim decay on rows).
+            #
+            # Formulation: inter[b,t,h,:] = sum_dk state[b,h,dk,:] * cum_decay[b,t,h,dk] * r[b,t,h,dk]
+            #            = (state^T @ diag(cum_decay[t] * r[t]))  summed = state^T @ (cum_decay[t] * r[t])
+            # Equivalently: inter = einsum('bhde, bthd -> bthe', state, r_c * cum_decay)
+            # This is a [B,H,d,d] x [B,C,H,d] contraction — O(B*C*H*d*d) but NO 5D tensor.
+            cum_decay = torch.exp(cum_log_w).to(dtype=r_c.dtype)  # [B, C, H, d]
+            r_weighted = r_c * cum_decay  # [B, C, H, d] — r scaled by cumulative decay
 
-            # Inter contribution: state decayed to each position, then dotted with r
-            # state: [B, H, d, d], cum_decay: [B, chunk_len, H, d]
-            # Reshape for broadcast: state [B, 1, H, d, d] * cum_decay [B, chunk_len, H, d, 1]
-            # -> decayed_state [B, chunk_len, H, d, d]
-            # Then sum with r: (decayed_state * r[..., None]).sum(dim=-2)
-            decayed_state = state.unsqueeze(1) * cum_decay.unsqueeze(-1)  # [B, chunk_len, H, d, d]
-            inter = (decayed_state * r_c.unsqueeze(-1)).sum(dim=-2)  # [B, chunk_len, H, d]
+            # Reshape for batched matmul: state [B*H, d, d], r_weighted [B*H, C, d]
+            state_bh = state.reshape(B * H, d, d).to(dtype=r_c.dtype)  # [BH, d, d]
+            rw_bh = r_weighted.permute(0, 2, 1, 3).reshape(B * H, C, d)  # [BH, C, d]
+            # inter = rw_bh @ state_bh^T  but we need sum over dk (first d dim of state)
+            # state is [BH, dk, dv], rw is [BH, C, dk]
+            # inter[BH, C, dv] = rw[BH, C, dk] @ state[BH, dk, dv]
+            inter_bh = torch.bmm(rw_bh, state_bh)  # [BH, C, d]
+            inter = inter_bh.reshape(B, H, C, d).permute(0, 2, 1, 3)  # [B, C, H, d]
 
             # ── Intra-chunk contribution: causal attention-like within chunk ──
-            # For positions i, j within chunk (j <= i):
-            # contribution[i] += r[i] . (k[j] outer v[j]) * prod(decay[j+1:i+1])
-            # = sum_j (r[i] . k[j]) * v[j] * prod(decay[j+1:i+1])
-            # This is like attention: scores[i,j] = r[i].k[j] * decay_mask[i,j]
+            # Per-head scalar decay (geometric mean across dims) — same as RWKV-4/5 intra-chunk.
+            mean_log_w = log_w.mean(dim=-1)  # [B, C, H] fp32
+            cum_mean_log_w = torch.cumsum(mean_log_w, dim=1)  # [B, C, H] fp32
 
-            # Build causal decay mask within chunk
-            # decay_mask[i, j] = prod(w_c[j+1:i+1]) for j < i, 1.0 for j == i
-            # In log space: sum(log_w[j+1:i+1])
-            # cum_log_w[i] - cum_log_w[j] gives log(prod(w[j+1:i+1]))
-            # But we need to be careful: cum_log_w[i] = sum(log_w[0:i+1])
-            # decay_mask[i,j] = exp(cum_log_w[i] - cum_log_w[j])  for j < i
-            # For j == i: decay_mask = 1.0 (no decay applied)
+            # Causal decay mask: mask[i,j] = exp(cum[i] - cum[j]) for j <= i, else 0
+            cum_i = cum_mean_log_w.unsqueeze(2)  # [B, C, 1, H]
+            cum_j = cum_mean_log_w.unsqueeze(1)  # [B, 1, C, H]
+            log_mask = cum_i - cum_j               # [B, C, C, H]
+            decay_mask = torch.exp(log_mask) * causal_mask.unsqueeze(0).unsqueeze(-1)  # [B, C, C, H]
 
-            # Actually for the outer product formulation:
-            # At position i, the contribution from position j is:
-            # k[j] outer v[j] decayed by prod(w[j+1..i])
-            # Then readout: r[i] . (decayed k[j] outer v[j]) = (r[i].k[j]) * v[j] * decay_factor
-            # where decay_factor = prod(w[m] for m in j+1..i) per dimension
+            # r_c: [B, C, H, d] -> [B, H, C, d] for matmul
+            r_t = r_c.permute(0, 2, 1, 3)  # [B, H, C, d]
+            k_t = k_c.permute(0, 2, 1, 3)  # [B, H, C, d]
+            v_t = v_c.permute(0, 2, 1, 3)  # [B, H, C, d]
 
-            # For efficiency, we compute this per-head-dimension
-            # qk_scores[i,j] = sum_d(r[i,d] * k[j,d] * decay_mask[i,j,d])
-            # But decay_mask is per-dimension, making this a 4D tensor — too expensive.
-            # Instead, absorb decay into k: k_decayed[j,d] = k[j,d] * exp(cum_log_w[j] from end)
-            # Then use "reverse cumulative" approach.
+            # qk: [B, H, C, C] = r_t @ k_t^T
+            qk = torch.matmul(r_t, k_t.transpose(-1, -2))  # [B, H, C, C]
 
-            # Simpler approach: compute per-head scalar decay (average across dims)
-            # This is an approximation but much more efficient and compile-friendly.
-            # Actually let's do the exact thing but in a compile-friendly way.
-
-            # Exact approach using the "receptance-weighted key-value" formulation:
-            # Absorb sqrt(decay) into both r and k for symmetric treatment:
-            # r_adj[i] = r[i] * exp(cum_log_w[i] / 2)
-            # k_adj[j] = k[j] * exp(-cum_log_w[j] / 2)  [note: negative for correct ratio]
-            # No, that doesn't work simply for the outer product formulation.
-
-            # Let's use the direct per-head approach. For small chunks this is tractable.
-            # Compute: for each head h and each dim pair (dk, dv):
-            #   out[i, h, dv] += sum_j r[i, h, dk] * k[j, h, dk] * v[j, h, dv] * decay_mask[i,j,h,dk]
-            # This factors as:
-            #   out[i, h, dv] = sum_dk r[i, h, dk] * (sum_j k[j,h,dk] * v[j,h,dv] * decay_mask[i,j,h,dk])
-            # The inner sum is still O(C^2) per (dk, dv) pair — O(C^2 * d^2) total. Too expensive.
-
-            # Practical approach: use per-head SCALAR decay (geometric mean across dims).
-            # This is what RWKV-4/5 effectively does for the intra-chunk attention.
-            # decay_scalar[t, h] = exp(mean(log_w[t, h, :]))
-            mean_log_w = log_w.mean(dim=-1)  # [B, chunk_len, H]
-            cum_mean_log_w = torch.cumsum(mean_log_w, dim=1)  # [B, chunk_len, H]
-
-            # Causal decay mask: mask[i,j] = exp(cum_mean_log_w[i] - cum_mean_log_w[j]) for j <= i
-            # Shape: [B, chunk_len, chunk_len, H]
-            # mask[i, j] = exp(cum[i] - cum[j]) if j <= i, else 0
-            cum_i = cum_mean_log_w.unsqueeze(2)  # [B, chunk_len, 1, H]
-            cum_j = cum_mean_log_w.unsqueeze(1)  # [B, 1, chunk_len, H]
-            log_mask = cum_i - cum_j  # [B, chunk_len, chunk_len, H]
-
-            # Causal mask: zero out j > i
-            causal = torch.tril(torch.ones(chunk_len, chunk_len, device=x.device, dtype=x.dtype))
-            # [chunk_len, chunk_len]
-
-            decay_mask = torch.exp(log_mask) * causal.unsqueeze(0).unsqueeze(-1)  # [B, CL, CL, H]
-
-            # Attention-like scores: qk[b, i, j, h] = sum_d(r[b,i,h,d] * k[b,j,h,d])
-            # r_c: [B, CL, H, d], k_c: [B, CL, H, d]
-            # Transpose to [B, H, CL, d] for matmul
-            r_t = r_c.permute(0, 2, 1, 3)  # [B, H, CL, d]
-            k_t = k_c.permute(0, 2, 1, 3)  # [B, H, CL, d]
-            v_t = v_c.permute(0, 2, 1, 3)  # [B, H, CL, d]
-
-            # qk: [B, H, CL, CL] = r_t @ k_t^T
-            qk = torch.matmul(r_t, k_t.transpose(-1, -2))  # [B, H, CL, CL]
-
-            # Apply decay mask: need [B, CL, CL, H] -> [B, H, CL, CL]
-            decay_mask_t = decay_mask.permute(0, 3, 1, 2)  # [B, H, CL, CL]
+            # Apply decay mask: [B, C, C, H] -> [B, H, C, C]
+            decay_mask_t = decay_mask.permute(0, 3, 1, 2).to(dtype=qk.dtype)  # [B, H, C, C]
             qk = qk * decay_mask_t
 
-            # Intra-chunk output: qk @ v => [B, H, CL, d]
-            intra = torch.matmul(qk, v_t)  # [B, H, CL, d]
-            intra = intra.permute(0, 2, 1, 3)  # [B, CL, H, d]
+            # Intra-chunk output: qk @ v => [B, H, C, d]
+            intra = torch.matmul(qk, v_t).permute(0, 2, 1, 3)  # [B, C, H, d]
 
             # Combine inter + intra
-            out[:, cs:ce] = intra + inter
+            out_chunks.append(intra + inter)
 
-            # ── Update state for next chunk ──
-            # state_new = state * total_chunk_decay + sum_j(k[j] outer v[j] * decay_from_j_to_end)
-            # total_chunk_decay = prod(w_c[0:chunk_len]) per dim = exp(cum_log_w[-1])
-            total_decay = torch.exp(cum_log_w[:, -1:])  # [B, 1, H, d]
+            # ── Update state for next chunk (fp32 accumulation) ──
+            total_decay = torch.exp(cum_log_w[:, -1:])  # [B, 1, H, d] fp32
             # Decay state: [B, H, d, d] * [B, H, d, 1] (broadcast across last d)
-            state = state * total_decay.squeeze(1).unsqueeze(-1)  # [B, H, d, d]
+            state = state * total_decay.squeeze(1).unsqueeze(-1)  # [B, H, d, d] fp32
 
             # Add contributions from this chunk's k-v pairs, each decayed to end of chunk
-            # For position j in chunk: decay_to_end = exp(cum_log_w[-1] - cum_log_w[j])
-            # decay_from_j: [B, chunk_len, H, d]
-            decay_from_j = torch.exp(cum_log_w[:, -1:] - cum_log_w)  # [B, chunk_len, H, d]
-
-            # k_decayed: [B, chunk_len, H, d] * [B, chunk_len, H, d]
-            k_decayed = k_c * decay_from_j  # [B, chunk_len, H, d]
+            decay_from_j = torch.exp(cum_log_w[:, -1:] - cum_log_w)  # [B, C, H, d] fp32
+            k_decayed = k_c.float() * decay_from_j  # [B, C, H, d] fp32
 
             # Accumulate: state += sum_j (k_decayed[j] outer v[j])
-            # k_decayed: [B, CL, H, d] -> [B, H, CL, d]
-            # v_c: [B, CL, H, d] -> [B, H, CL, d]
-            k_dec_t = k_decayed.permute(0, 2, 1, 3)  # [B, H, CL, d]
-            v_c_t = v_c.permute(0, 2, 1, 3)  # [B, H, CL, d]
+            k_dec_t = k_decayed.permute(0, 2, 1, 3).reshape(B * H, C, d)  # [BH, C, d]
+            v_c_t = v_c.permute(0, 2, 1, 3).reshape(B * H, C, d).float()  # [BH, C, d]
 
-            # outer product sum: [B, H, d, CL] @ [B, H, CL, d] = [B, H, d, d]
-            state = state + torch.matmul(k_dec_t.transpose(-1, -2), v_c_t)
+            # outer product sum: [BH, d, C] @ [BH, C, d] = [BH, d, d]
+            state = state + torch.bmm(k_dec_t.transpose(-1, -2), v_c_t).reshape(B, H, d, d)
+
+        # Concatenate chunks and trim padding
+        out = torch.cat(out_chunks, dim=1)[:, :T]  # [B, T, H, d]
 
         # Apply output norm and projection
         out = self.out_norm(out)  # [B, T, H, d]

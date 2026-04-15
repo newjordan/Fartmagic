@@ -150,6 +150,7 @@ class Hyperparameters:
     lite_crawler_heads = int(os.environ.get("LITE_CRAWLER_HEADS", "4"))
     lite_crawler_loops = int(os.environ.get("LITE_CRAWLER_LOOPS", "3"))
     lite_crawler_chunk_size = int(os.environ.get("LITE_CRAWLER_CHUNK_SIZE", "128"))
+    lite_crawler_trunk_chunk_size = int(os.environ.get("LITE_CRAWLER_TRUNK_CHUNK_SIZE", "0"))
     lite_crawler_mlp_mult = float(os.environ.get("LITE_CRAWLER_MLP_MULT", "2.0"))
     lite_crawler_use_moe = bool(int(os.environ.get("LITE_CRAWLER_USE_MOE", "0")))
     lite_crawler_num_experts = int(os.environ.get("LITE_CRAWLER_NUM_EXPERTS", "4"))
@@ -1357,6 +1358,7 @@ class LiteCrawlerGPT(nn.Module):
         lite_crawler_heads: int,
         lite_crawler_loops: int,
         lite_crawler_chunk_size: int,
+        lite_crawler_trunk_chunk_size: int,
         lite_crawler_mlp_mult: float,
         lite_crawler_use_moe: bool = False,
         lite_crawler_num_experts: int = 4,
@@ -1382,6 +1384,7 @@ class LiteCrawlerGPT(nn.Module):
         self.lite_crawler_slots = lite_crawler_slots
         self.lite_crawler_dim = lite_crawler_dim
         self.lite_crawler_use_moe = lite_crawler_use_moe
+        self.trunk_chunk_size = max(0, lite_crawler_trunk_chunk_size)
         self.register_buffer("crawler_forward_scale", torch.tensor(1.0, dtype=torch.float32), persistent=False)
         self._crawler_forward_force_skip = False
         self._crawler_active_loops = lite_crawler_loops
@@ -1482,7 +1485,7 @@ class LiteCrawlerGPT(nn.Module):
     def _run_encoder(self, x: Tensor, x0: Tensor) -> tuple[Tensor, list[Tensor]]:
         skips: list[Tensor] = []
         for i in range(self.flat_encoder_layers):
-            x = self.flat_blocks[i](x, x0)
+            x = self._apply_block_chunked(self.flat_blocks[i], x, x0)
             skips.append(x)
         return x, skips
 
@@ -1491,8 +1494,30 @@ class LiteCrawlerGPT(nn.Module):
             bi = self.flat_encoder_layers + i
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.flat_blocks[bi](x, x0)
+            x = self._apply_block_chunked(self.flat_blocks[bi], x, x0)
         return x
+
+    def _chunk_bounds(self, seqlen: int) -> list[tuple[int, int]]:
+        chunk = self.trunk_chunk_size
+        if chunk <= 0 or chunk >= seqlen:
+            return [(0, seqlen)]
+        return [(start, min(start + chunk, seqlen)) for start in range(0, seqlen, chunk)]
+
+    def _apply_chunked_smear(self, x: Tensor) -> Tensor:
+        if self.trunk_chunk_size <= 0 or self.trunk_chunk_size >= x.size(1):
+            return self.smear(x)
+        parts = []
+        for start, end in self._chunk_bounds(x.size(1)):
+            parts.append(self.smear(x[:, start:end]))
+        return torch.cat(parts, dim=1)
+
+    def _apply_block_chunked(self, block: Block, x: Tensor, x0: Tensor) -> Tensor:
+        if self.trunk_chunk_size <= 0 or self.trunk_chunk_size >= x.size(1):
+            return block(x, x0)
+        parts = []
+        for start, end in self._chunk_bounds(x.size(1)):
+            parts.append(block(x[:, start:end], x0[:, start:end]))
+        return torch.cat(parts, dim=1)
 
     def _run_lite_crawler(self, x: Tensor) -> Tensor:
         if self._crawler_forward_force_skip:
@@ -1523,7 +1548,7 @@ class LiteCrawlerGPT(nn.Module):
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
-        x = self.smear(x)
+        x = self._apply_chunked_smear(x)
         x0 = x
         x, skips = self._run_encoder(x, x0)
         x = self._run_lite_crawler(x)
@@ -1539,7 +1564,7 @@ class LiteCrawlerGPT(nn.Module):
         if self.bigram is not None:
             x = x + self.bigram(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
-        x = self.smear(x)
+        x = self._apply_chunked_smear(x)
         x0 = x
         x, skips = self._run_encoder(x, x0)
         x = self._run_lite_crawler(x)
@@ -2065,6 +2090,7 @@ def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
             lite_crawler_heads=args.lite_crawler_heads,
             lite_crawler_loops=args.lite_crawler_loops,
             lite_crawler_chunk_size=args.lite_crawler_chunk_size,
+            lite_crawler_trunk_chunk_size=args.lite_crawler_trunk_chunk_size,
             lite_crawler_mlp_mult=args.lite_crawler_mlp_mult,
             lite_crawler_use_moe=args.lite_crawler_use_moe,
             lite_crawler_num_experts=args.lite_crawler_num_experts,
@@ -2951,7 +2977,7 @@ def main() -> None:
             f"lite_crawler_rhythm:{args.num_flat_layers}F+LCx{args.lite_crawler_loops} "
             f"effective_depth:{effective_depth} ton_e_rhythm:{int(args.ton_e_rhythm)} "
             f"slots:{args.lite_crawler_slots} slot_dim:{args.lite_crawler_dim} "
-            f"chunk:{args.lite_crawler_chunk_size}"
+            f"chunk:{args.lite_crawler_chunk_size} trunk_chunk:{args.lite_crawler_trunk_chunk_size or '-'}"
         )
         log0(
             f"lite_crawler_moe:{int(args.lite_crawler_use_moe)} "

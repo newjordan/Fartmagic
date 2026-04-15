@@ -4,28 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
-# 8k tokenizer/data defaults. Caller can override DATA_PATH/TOKENIZER_PATH/VOCAB_SIZE explicitly.
-if [[ -z "${DATA_PATH:-}" ]]; then
-  if [[ -d "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192" ]]; then
-    export DATA_PATH="/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"
-  elif [[ -d "../../data/datasets/fineweb10B_sp8192" ]]; then
-    export DATA_PATH="../../data/datasets/fineweb10B_sp8192"
-  else
-    echo "ERROR: 8k dataset path not found. Set DATA_PATH to your fineweb10B_sp8192 directory."
-    exit 1
-  fi
-fi
-
-if [[ -z "${TOKENIZER_PATH:-}" ]]; then
-  if [[ -f "/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model" ]]; then
-    export TOKENIZER_PATH="/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model"
-  elif [[ -f "../../data/tokenizers/fineweb_8192_bpe.model" ]]; then
-    export TOKENIZER_PATH="../../data/tokenizers/fineweb_8192_bpe.model"
-  else
-    echo "ERROR: 8k tokenizer not found. Set TOKENIZER_PATH to fineweb_8192_bpe.model."
-    exit 1
-  fi
-fi
+# DATA_PATH/TOKENIZER_PATH auto-detected by run_competition*.sh
 
 # Nightcrawler Cubed topology + staged crawler ramp.
 export SEED="${SEED:-4}"

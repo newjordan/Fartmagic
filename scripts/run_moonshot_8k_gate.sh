@@ -7,28 +7,7 @@ cd "${SCRIPT_DIR}"
 # RWKV Moonshot gate test: 8k vocab, linear recurrence crawler, 600s wallclock.
 # 7F+3C with 3 loops — but crawler attention is RWKV-style linear recurrence.
 
-# 8k tokenizer/data defaults.
-if [[ -z "${DATA_PATH:-}" ]]; then
-  if [[ -d "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192" ]]; then
-    export DATA_PATH="/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"
-  elif [[ -d "../../data/datasets/fineweb10B_sp8192" ]]; then
-    export DATA_PATH="../../data/datasets/fineweb10B_sp8192"
-  else
-    echo "ERROR: 8k dataset path not found. Set DATA_PATH."
-    exit 1
-  fi
-fi
-
-if [[ -z "${TOKENIZER_PATH:-}" ]]; then
-  if [[ -f "/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model" ]]; then
-    export TOKENIZER_PATH="/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model"
-  elif [[ -f "../../data/tokenizers/fineweb_8192_bpe.model" ]]; then
-    export TOKENIZER_PATH="../../data/tokenizers/fineweb_8192_bpe.model"
-  else
-    echo "ERROR: 8k tokenizer not found. Set TOKENIZER_PATH."
-    exit 1
-  fi
-fi
+# DATA_PATH/TOKENIZER_PATH auto-detected by run_competition*.sh
 
 export SEED="${SEED:-4}"
 export RUN_ID="${RUN_ID:-tone_moonshot_v8k_gate_s${SEED}}"

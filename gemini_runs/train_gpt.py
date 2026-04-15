@@ -75,12 +75,13 @@ if os.environ.get("TORCHDYNAMO_SUPPRESS_ERRORS", "0") == "1":
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True
 class Hyperparameters:
-    data_path = "./data/datasets/fineweb10B_sp8192"
-    train_files = "./data/datasets/fineweb10B_sp8192/fineweb_train_*.bin"
-    val_files = "./data/datasets/fineweb10B_sp8192/fineweb_val_*.bin"
-    tokenizer_path = "./data/tokenizers/fineweb_8192_bpe.model"
-    run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
-    seed = int(os.environ.get("SEED", 1337))
+    # HARDCODED ABSOLUTE PATHS TO PREVENT POD ENV OVERRIDES
+    data_path = "/root/Fartmagic/data/datasets/fineweb10B_sp8192"
+    train_files = "/root/Fartmagic/data/datasets/fineweb10B_sp8192/fineweb_train_*.bin"
+    val_files = "/root/Fartmagic/data/datasets/fineweb10B_sp8192/fineweb_val_*.bin"
+    tokenizer_path = "/root/Fartmagic/data/tokenizers/fineweb_8192_bpe.model"
+    run_id = str(uuid.uuid4())
+    seed = 1337
     val_batch_size = 524_288
     val_loss_every = 4000
     train_log_every = 500

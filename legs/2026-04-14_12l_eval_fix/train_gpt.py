@@ -2496,7 +2496,8 @@ def main() -> None:
             m.float()
     restore_low_dim_params_to_fp32(eval_model)
     eval_model.load_state_dict(deq_state, strict=True)
-    eval_model.looping_active = base_model.looping_active
+    if hasattr(base_model, "looping_active"):
+        eval_model.looping_active = base_model.looping_active
     torch.cuda.synchronize()
     t_qeval = time.perf_counter()
     q_val_loss, q_val_bpb = eval_val(

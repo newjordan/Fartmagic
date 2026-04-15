@@ -140,10 +140,20 @@ class Hyperparameters:
     distill_kl_clip = float(os.environ.get("DISTILL_KL_CLIP", 10.0))
     # F-Wing: Frugendorff crawler architecture (USE_CRAWLER=1 to activate)
     use_crawler = bool(int(os.environ.get("USE_CRAWLER", "0")))
+    use_lite_crawler = bool(int(os.environ.get("USE_LITE_CRAWLER", "0")))
     num_flat_layers = int(os.environ.get("NUM_FLAT_LAYERS", 4))    # unique blocks, run once
     num_crawler_layers = int(os.environ.get("NUM_CRAWLER_LAYERS", 1))  # shared blocks, looped
     crawler_loops = int(os.environ.get("CRAWLER_LOOPS", 2))        # how many times shared blocks fire
     crawler_mlp_mult = float(os.environ.get("CRAWLER_MLP_MULT", 4.0))  # MLP width multiplier for crawler
+    lite_crawler_slots = int(os.environ.get("LITE_CRAWLER_SLOTS", "64"))
+    lite_crawler_dim = int(os.environ.get("LITE_CRAWLER_DIM", "128"))
+    lite_crawler_heads = int(os.environ.get("LITE_CRAWLER_HEADS", "4"))
+    lite_crawler_loops = int(os.environ.get("LITE_CRAWLER_LOOPS", "3"))
+    lite_crawler_chunk_size = int(os.environ.get("LITE_CRAWLER_CHUNK_SIZE", "128"))
+    lite_crawler_mlp_mult = float(os.environ.get("LITE_CRAWLER_MLP_MULT", "2.0"))
+    lite_crawler_use_moe = bool(int(os.environ.get("LITE_CRAWLER_USE_MOE", "0")))
+    lite_crawler_num_experts = int(os.environ.get("LITE_CRAWLER_NUM_EXPERTS", "4"))
+    lite_crawler_expert_mult = float(os.environ.get("LITE_CRAWLER_EXPERT_MULT", "2.0"))
     inst_dim = int(os.environ.get("INST_DIM", "32"))          # instruction bottleneck dim per loop (0=disabled, use legacy loop_pos)
     crawler_quant_int8 = bool(int(os.environ.get("CRAWLER_QUANT_INT8", "0")))  # use int8 for shared crawler block (multi-context quant resilience)
     # Graduated crawler schedule: scale crawler gradients from START_FRAC -> 1.0.
@@ -227,7 +237,7 @@ def apply_ton_e_rhythm_profile(args: Hyperparameters) -> None:
                 local_sp8192_tok if local_sp8192_tok.exists() else Path("./data/tokenizers/fineweb_8192_bpe.model")
             )
         args.tokenizer_path = tone_tokenizer_path
-    if "USE_CRAWLER" not in os.environ:
+    if "USE_CRAWLER" not in os.environ and "USE_LITE_CRAWLER" not in os.environ:
         args.use_crawler = True
     if "NUM_FLAT_LAYERS" not in os.environ:
         args.num_flat_layers = int(os.environ.get("TON_E_NUM_FLAT_LAYERS", "4"))
@@ -1163,6 +1173,385 @@ class GPT(nn.Module):
         return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
 
 
+class LiteCrawlerMoE(nn.Module):
+    """Small slot-space expert bank. Top-1 routing keeps the path sparse-ready."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_experts: int,
+        expert_mult: float,
+        mlp_act: str = "relu_sq",
+        mlp_leaky_slope: float = 0.5,
+    ):
+        super().__init__()
+        self.router = CastedLinear(dim, num_experts, bias=False)
+        self.experts = nn.ModuleList(
+            [MLP(dim, expert_mult, mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope) for _ in range(num_experts)]
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        router_logits = self.router(x.float())
+        router_probs = F.softmax(router_logits, dim=-1)
+        top_idx = router_probs.argmax(dim=-1, keepdim=True)
+        top_prob = router_probs.gather(-1, top_idx).to(dtype=x.dtype)
+        expert_outs = torch.stack([expert(x) for expert in self.experts], dim=2)
+        gather_idx = top_idx.unsqueeze(-1).expand(-1, -1, 1, x.shape[-1])
+        selected = expert_outs.gather(2, gather_idx).squeeze(2)
+        return top_prob * selected
+
+
+class LiteCrawlerSlotAttention(nn.Module):
+    def __init__(self, dim: int, num_heads: int):
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError(f"lite crawler dim {dim} must be divisible by heads {num_heads}")
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.q_proj = CastedLinear(dim, dim, bias=False)
+        self.k_proj = CastedLinear(dim, dim, bias=False)
+        self.v_proj = CastedLinear(dim, dim, bias=False)
+        self.proj = CastedLinear(dim, dim, bias=False)
+        self.proj._zero_init = True
+
+    def forward(self, x: Tensor) -> Tensor:
+        bsz, slots, dim = x.shape
+        q = self.q_proj(x).reshape(bsz, slots, self.num_heads, self.head_dim)
+        k = self.k_proj(x).reshape(bsz, slots, self.num_heads, self.head_dim)
+        v = self.v_proj(x).reshape(bsz, slots, self.num_heads, self.head_dim)
+        out = flash_attn_3_func(q, k, v, causal=False)
+        return self.proj(out.reshape(bsz, slots, dim))
+
+
+class LiteCrawlerSlotBlock(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        mlp_mult: float,
+        use_moe: bool = False,
+        num_experts: int = 4,
+        expert_mult: float = 2.0,
+        mlp_act: str = "relu_sq",
+        mlp_leaky_slope: float = 0.5,
+    ):
+        super().__init__()
+        self.attn_norm = RMSNorm()
+        self.ffn_norm = RMSNorm()
+        self.attn = LiteCrawlerSlotAttention(dim, num_heads)
+        self.ffn = (
+            LiteCrawlerMoE(
+                dim,
+                num_experts=num_experts,
+                expert_mult=expert_mult,
+                mlp_act=mlp_act,
+                mlp_leaky_slope=mlp_leaky_slope,
+            )
+            if use_moe
+            else MLP(dim, mlp_mult, mlp_act=mlp_act, mlp_leaky_slope=mlp_leaky_slope)
+        )
+        self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+        self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * self.attn(self.attn_norm(x))
+        x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.ffn(self.ffn_norm(x))
+        return x
+
+
+class LiteCrawlerCore(nn.Module):
+    """Causal latent-slot crawler: prefix writes, small-slot thinking, token readback."""
+
+    def __init__(
+        self,
+        model_dim: int,
+        slot_count: int,
+        slot_dim: int,
+        slot_heads: int,
+        loops: int,
+        chunk_size: int,
+        mlp_mult: float,
+        use_moe: bool = False,
+        num_experts: int = 4,
+        expert_mult: float = 2.0,
+        mlp_act: str = "relu_sq",
+        mlp_leaky_slope: float = 0.5,
+    ):
+        super().__init__()
+        self.slot_count = slot_count
+        self.slot_dim = slot_dim
+        self.loops = loops
+        self.chunk_size = max(1, chunk_size)
+        self.write_norm = RMSNorm()
+        self.read_norm = RMSNorm()
+        self.write_router = CastedLinear(model_dim, slot_count, bias=False)
+        self.write_value = CastedLinear(model_dim, slot_dim, bias=False)
+        self.read_query = CastedLinear(model_dim, slot_dim, bias=False)
+        self.read_key = CastedLinear(slot_dim, slot_dim, bias=False)
+        self.read_value = CastedLinear(slot_dim, slot_dim, bias=False)
+        self.read_out = CastedLinear(slot_dim, model_dim, bias=False)
+        self.read_out._zero_init = True
+        self.slot_seed = nn.Parameter(torch.zeros(slot_count, slot_dim, dtype=torch.float32))
+        nn.init.normal_(self.slot_seed, std=0.02)
+        self.slot_block = LiteCrawlerSlotBlock(
+            slot_dim,
+            num_heads=slot_heads,
+            mlp_mult=mlp_mult,
+            use_moe=use_moe,
+            num_experts=num_experts,
+            expert_mult=expert_mult,
+            mlp_act=mlp_act,
+            mlp_leaky_slope=mlp_leaky_slope,
+        )
+        self.read_scale = nn.Parameter(torch.ones(model_dim, dtype=torch.float32))
+        self._inv_slot_scale = 1.0 / math.sqrt(slot_dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        bsz, seqlen, _ = x.shape
+        carry_num = x.new_zeros(bsz, self.slot_count, self.slot_dim)
+        carry_den = x.new_zeros(bsz, self.slot_count, 1)
+        updates: list[Tensor] = []
+        slot_seed = self.slot_seed.to(dtype=x.dtype)[None, None, :, :]
+        for start in range(0, seqlen, self.chunk_size):
+            end = min(start + self.chunk_size, seqlen)
+            x_chunk = x[:, start:end]
+            write_in = self.write_norm(x_chunk)
+            write_gate = F.softplus(self.write_router(write_in)) + 1e-4
+            write_val = self.write_value(write_in)
+            chunk_num = torch.cumsum(write_gate.unsqueeze(-1) * write_val.unsqueeze(-2), dim=1)
+            chunk_den = torch.cumsum(write_gate, dim=1).unsqueeze(-1)
+            slot_states = (carry_num.unsqueeze(1) + chunk_num) / (carry_den.unsqueeze(1) + chunk_den).clamp_min(1e-4)
+            slot_states = slot_states + slot_seed
+            slot_flat = slot_states.reshape(-1, self.slot_count, self.slot_dim)
+            for _ in range(self.loops):
+                slot_flat = self.slot_block(slot_flat)
+            slot_states = slot_flat.reshape(bsz, end - start, self.slot_count, self.slot_dim)
+            read_in = self.read_norm(x_chunk)
+            read_q = self.read_query(read_in)
+            read_k = self.read_key(slot_states)
+            read_v = self.read_value(slot_states)
+            read_scores = torch.einsum("btd,btkd->btk", read_q, read_k) * self._inv_slot_scale
+            read_attn = F.softmax(read_scores, dim=-1).to(dtype=x.dtype)
+            read_state = torch.sum(read_attn.unsqueeze(-1) * read_v, dim=-2)
+            updates.append(self.read_out(read_state))
+            carry_num = carry_num + chunk_num[:, -1]
+            carry_den = carry_den + chunk_den[:, -1]
+        update = torch.cat(updates, dim=1)
+        return x + self.read_scale.to(dtype=x.dtype)[None, None, :] * update
+
+
+class LiteCrawlerGPT(nn.Module):
+    """Flat U-Net trunk plus causal latent-slot crawler at the bottleneck."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        num_flat_layers: int,
+        model_dim: int,
+        num_heads: int,
+        num_kv_heads: int,
+        mlp_mult: float,
+        tie_embeddings: bool,
+        tied_embed_init_std: float,
+        logit_softcap: float,
+        rope_base: float,
+        qk_gain_init: float,
+        lite_crawler_slots: int,
+        lite_crawler_dim: int,
+        lite_crawler_heads: int,
+        lite_crawler_loops: int,
+        lite_crawler_chunk_size: int,
+        lite_crawler_mlp_mult: float,
+        lite_crawler_use_moe: bool = False,
+        lite_crawler_num_experts: int = 4,
+        lite_crawler_expert_mult: float = 2.0,
+        bigram_vocab_size: int = 0,
+        bigram_dim: int = 128,
+        xsa_last_n: int = 0,
+        rope_dims: int = 0,
+        ln_scale: bool = False,
+        mlp_act: str = "relu_sq",
+        mlp_leaky_slope: float = 0.5,
+    ):
+        super().__init__()
+        self._ve_target_dim = num_kv_heads * (model_dim // num_heads)
+        if logit_softcap <= 0.0:
+            raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
+        self.tie_embeddings = tie_embeddings
+        self.tied_embed_init_std = tied_embed_init_std
+        self.logit_softcap = logit_softcap
+        self.num_flat_layers = num_flat_layers
+        self.crawler_loops = lite_crawler_loops
+        self.num_crawler_layers = 1
+        self.lite_crawler_slots = lite_crawler_slots
+        self.lite_crawler_dim = lite_crawler_dim
+        self.lite_crawler_use_moe = lite_crawler_use_moe
+        self.register_buffer("crawler_forward_scale", torch.tensor(1.0, dtype=torch.float32), persistent=False)
+        self._crawler_forward_force_skip = False
+        self._crawler_active_loops = lite_crawler_loops
+        self._crawler_active_layers = 1
+        self.mtp_num_heads = 0
+        self.mtp_loss_weight = 0.0
+        self.mtp_heads = nn.ModuleList()
+        self.f1_corr_in = None
+        self.f1_corr_out = None
+        self.f1_corr_scale = None
+        self.tok_emb = nn.Embedding(vocab_size, model_dim)
+        self.bigram = BigramHashEmbedding(bigram_vocab_size, bigram_dim, model_dim) if bigram_vocab_size > 0 else None
+        self.smear = SmearGate(model_dim)
+        self.flat_encoder_layers = num_flat_layers // 2
+        self.flat_decoder_layers = num_flat_layers - self.flat_encoder_layers
+        self.num_flat_skips = min(self.flat_encoder_layers, self.flat_decoder_layers)
+        self.skip_weights = nn.Parameter(torch.ones(self.num_flat_skips, model_dim, dtype=torch.float32))
+        self.flat_blocks = nn.ModuleList(
+            [
+                Block(
+                    model_dim,
+                    num_heads,
+                    num_kv_heads,
+                    mlp_mult,
+                    rope_base,
+                    qk_gain_init,
+                    layer_idx=i,
+                    ln_scale=ln_scale,
+                    dtg=False,
+                    mlp_act=mlp_act,
+                    mlp_leaky_slope=mlp_leaky_slope,
+                )
+                for i in range(num_flat_layers)
+            ]
+        )
+        if rope_dims > 0:
+            head_dim = model_dim // num_heads
+            for block in self.flat_blocks:
+                block.attn.rope_dims = rope_dims
+                block.attn.rotary = Rotary(head_dim, base=rope_base, train_seq_len=1024, rope_dims=rope_dims)
+        self.ve_layer_indices = []
+        self.ve_shared = None
+        self.ve_layer_scales = nn.ParameterList()
+        self.value_embeds = nn.ModuleList()
+        self.lite_crawler = LiteCrawlerCore(
+            model_dim=model_dim,
+            slot_count=lite_crawler_slots,
+            slot_dim=lite_crawler_dim,
+            slot_heads=lite_crawler_heads,
+            loops=lite_crawler_loops,
+            chunk_size=lite_crawler_chunk_size,
+            mlp_mult=lite_crawler_mlp_mult,
+            use_moe=lite_crawler_use_moe,
+            num_experts=lite_crawler_num_experts,
+            expert_mult=lite_crawler_expert_mult,
+            mlp_act=mlp_act,
+            mlp_leaky_slope=mlp_leaky_slope,
+        )
+        if xsa_last_n > 0:
+            for block in self.flat_blocks[max(0, len(self.flat_blocks) - xsa_last_n):]:
+                block.attn.use_xsa = True
+        self.final_norm = RMSNorm()
+        self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
+        if self.lm_head is not None:
+            self.lm_head._zero_init = True
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        if self.tie_embeddings:
+            nn.init.normal_(self.tok_emb.weight, mean=0.0, std=self.tied_embed_init_std)
+        total_layers = self.num_flat_layers + self.crawler_loops
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Linear):
+                if getattr(module, "_zero_init", False):
+                    nn.init.zeros_(module.weight)
+                elif module.weight.ndim == 2 and module.weight.shape[0] >= 64 and module.weight.shape[1] >= 64:
+                    nn.init.orthogonal_(module.weight, gain=1.0)
+                    if ".proj." in name or name.endswith(".proj"):
+                        with torch.no_grad():
+                            module.weight.mul_(1.0 / math.sqrt(2 * total_layers))
+
+    def set_crawler_forward_scale(self, scale: float) -> None:
+        clamped = float(max(0.0, min(1.0, scale)))
+        self.crawler_forward_scale.fill_(clamped)
+        self._crawler_forward_force_skip = clamped <= 0.0
+        self._crawler_active_loops = self.crawler_loops if clamped > 0.0 else 0
+        self._crawler_active_layers = 1 if clamped > 0.0 else 0
+
+    def get_crawler_forward_scale(self) -> float:
+        return float(self.crawler_forward_scale.item())
+
+    def get_crawler_active_loops(self) -> int:
+        return int(self._crawler_active_loops)
+
+    def get_crawler_active_layers(self) -> int:
+        return int(self._crawler_active_layers)
+
+    def _run_encoder(self, x: Tensor, x0: Tensor) -> tuple[Tensor, list[Tensor]]:
+        skips: list[Tensor] = []
+        for i in range(self.flat_encoder_layers):
+            x = self.flat_blocks[i](x, x0)
+            skips.append(x)
+        return x, skips
+
+    def _run_decoder(self, x: Tensor, x0: Tensor, skips: list[Tensor]) -> Tensor:
+        for i in range(self.flat_decoder_layers):
+            bi = self.flat_encoder_layers + i
+            if skips:
+                x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
+            x = self.flat_blocks[bi](x, x0)
+        return x
+
+    def _run_lite_crawler(self, x: Tensor) -> Tensor:
+        if self._crawler_forward_force_skip:
+            return x
+        crawler_scale_tensor = self.crawler_forward_scale.to(dtype=x.dtype)
+        x_pre = x
+        x = self.lite_crawler(x)
+        try:
+            is_compiling = bool(torch.compiler.is_compiling())
+        except Exception:
+            is_compiling = False
+        if is_compiling:
+            return x_pre + (x - x_pre) * crawler_scale_tensor
+        crawler_scale = float(crawler_scale_tensor.item())
+        if crawler_scale < 0.999999:
+            return x_pre + (x - x_pre) * crawler_scale
+        return x
+
+    def _compute_logits(self, x: Tensor) -> Tensor:
+        if self.tie_embeddings:
+            logits_proj = F.linear(x, self.tok_emb.weight)
+        else:
+            logits_proj = self.lm_head(x)
+        return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
+
+    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
+        x = self.tok_emb(input_ids)
+        if self.bigram is not None:
+            x = x + self.bigram(input_ids)
+        x = F.rms_norm(x, (x.size(-1),))
+        x = self.smear(x)
+        x0 = x
+        x, skips = self._run_encoder(x, x0)
+        x = self._run_lite_crawler(x)
+        x = self._run_decoder(x, x0, skips)
+        x = self.final_norm(x)
+        x_flat = x.reshape(-1, x.size(-1))
+        targets = target_ids.reshape(-1)
+        logits = self._compute_logits(x_flat)
+        return F.cross_entropy(logits.float(), targets, reduction="mean")
+
+    def forward_logits(self, input_ids: Tensor) -> Tensor:
+        x = self.tok_emb(input_ids)
+        if self.bigram is not None:
+            x = x + self.bigram(input_ids)
+        x = F.rms_norm(x, (x.size(-1),))
+        x = self.smear(x)
+        x0 = x
+        x, skips = self._run_encoder(x, x0)
+        x = self._run_lite_crawler(x)
+        x = self._run_decoder(x, x0, skips)
+        x = self.final_norm(x)
+        return self._compute_logits(x)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # F-Wing: Frugendorff Crawler GPT
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1632,6 +2021,7 @@ class CrawlerGPT(nn.Module):
 
 CRAWLER_GRAD_PARAM_PREFIXES = (
     "crawler_blocks.",
+    "lite_crawler.",
     "loop_inst_proj.",
     "loop_inst_up.",
     "loop_pos.",
@@ -1651,14 +2041,47 @@ def _is_crawler_grad_param_name(name: str) -> bool:
 
 def _get_block_named_params(model: nn.Module) -> list:
     """Return named parameters from all transformer blocks, compatible with both GPT and CrawlerGPT."""
+    if isinstance(model, LiteCrawlerGPT):
+        return list(model.flat_blocks.named_parameters()) + list(model.lite_crawler.named_parameters())
     if isinstance(model, CrawlerGPT):
         return list(model.flat_blocks.named_parameters()) + list(model.crawler_blocks.named_parameters())
     return list(model.blocks.named_parameters())
 
 
 def build_model(args: Hyperparameters, device: torch.device) -> nn.Module:
-    """Instantiate GPT or CrawlerGPT based on USE_CRAWLER env var."""
-    if args.use_crawler:
+    """Instantiate GPT, LiteCrawlerGPT, or CrawlerGPT based on the selected path."""
+    if args.use_lite_crawler:
+        args.use_crawler = False
+        model = LiteCrawlerGPT(
+            vocab_size=args.vocab_size,
+            num_flat_layers=args.num_flat_layers,
+            model_dim=args.model_dim,
+            num_heads=args.num_heads,
+            num_kv_heads=args.num_kv_heads,
+            mlp_mult=args.mlp_mult,
+            tie_embeddings=args.tie_embeddings,
+            tied_embed_init_std=args.tied_embed_init_std,
+            logit_softcap=args.logit_softcap,
+            rope_base=args.rope_base,
+            qk_gain_init=args.qk_gain_init,
+            lite_crawler_slots=args.lite_crawler_slots,
+            lite_crawler_dim=args.lite_crawler_dim,
+            lite_crawler_heads=args.lite_crawler_heads,
+            lite_crawler_loops=args.lite_crawler_loops,
+            lite_crawler_chunk_size=args.lite_crawler_chunk_size,
+            lite_crawler_mlp_mult=args.lite_crawler_mlp_mult,
+            lite_crawler_use_moe=args.lite_crawler_use_moe,
+            lite_crawler_num_experts=args.lite_crawler_num_experts,
+            lite_crawler_expert_mult=args.lite_crawler_expert_mult,
+            bigram_vocab_size=args.bigram_vocab_size,
+            bigram_dim=args.bigram_dim,
+            xsa_last_n=args.xsa_last_n,
+            rope_dims=args.rope_dims,
+            ln_scale=args.ln_scale,
+            mlp_act=args.mlp_act,
+            mlp_leaky_slope=args.mlp_leaky_slope,
+        )
+    elif args.use_crawler:
         model = CrawlerGPT(
             vocab_size=args.vocab_size,
             num_flat_layers=args.num_flat_layers,
@@ -1839,7 +2262,7 @@ def _classify_param(name: str) -> str:
         return "embed"
     if "f1_corr_in" in name or "f1_corr_out" in name:
         return "aux"
-    if ".mlp." in name:
+    if ".mlp." in name or ".ffn." in name or ".experts." in name:
         return "mlp"
     if ".attn." in name or (".proj." in name and ".mlp." not in name):
         return "attn"
@@ -1992,7 +2415,7 @@ def gptq_calibrate_loop_aware(model: nn.Module, train_pattern: str, device: torc
              Crawler now sees realistic quantized-flat activations → better compensation.
     Merge: flat layers keep Phase 1 Hessians; crawler layers get Phase 2 Hessians.
     """
-    CRAWLER_PREFIXES = ("crawler_blocks.", "delta_net.", "loop_inst")
+    CRAWLER_PREFIXES = ("crawler_blocks.", "delta_net.", "loop_inst", "lite_crawler.")
     print("gptq_loop_aware:phase1 collecting all-layer Hessians...", flush=True)
     hessians_p1 = gptq_calibrate(model, train_pattern, device, n_samples, seq_len)
     originals: dict[str, Tensor] = {}
@@ -2072,7 +2495,7 @@ def mixed_quantize_int6_gptq(state_dict: dict[str, Tensor], int6_cats: set[str],
             result[name] = t.float()
             meta[name] = "passthrough_ctrl"
             continue
-        if crawler_int8 and name.startswith("crawler_blocks.") and t.is_floating_point() and t.numel() > 65536:
+        if crawler_int8 and name.startswith(("crawler_blocks.", "lite_crawler.")) and t.is_floating_point() and t.numel() > 65536:
             q, s = quantize_float_tensor(t)
             result[name + ".q"] = q
             result[name + ".scale"] = s
@@ -2526,7 +2949,20 @@ def main() -> None:
         f"iterations:{args.iterations} warmup_steps:{args.warmup_steps} "
         f"max_wallclock_seconds:{args.max_wallclock_seconds:.3f}"
     )
-    if args.use_crawler:
+    if args.use_lite_crawler:
+        effective_depth = args.num_flat_layers + args.lite_crawler_loops
+        log0(
+            f"lite_crawler_rhythm:{args.num_flat_layers}F+LCx{args.lite_crawler_loops} "
+            f"effective_depth:{effective_depth} ton_e_rhythm:{int(args.ton_e_rhythm)} "
+            f"slots:{args.lite_crawler_slots} slot_dim:{args.lite_crawler_dim} "
+            f"chunk:{args.lite_crawler_chunk_size}"
+        )
+        log0(
+            f"lite_crawler_moe:{int(args.lite_crawler_use_moe)} "
+            f"experts:{args.lite_crawler_num_experts} expert_mult:{args.lite_crawler_expert_mult:.2f} "
+            f"slot_heads:{args.lite_crawler_heads} slot_mlp_mult:{args.lite_crawler_mlp_mult:.2f}"
+        )
+    elif args.use_crawler:
         effective_depth = args.num_flat_layers + (args.num_crawler_layers * args.crawler_loops)
         log0(
             f"crawler_rhythm:{args.num_flat_layers}F+{args.num_crawler_layers}Cx{args.crawler_loops} "

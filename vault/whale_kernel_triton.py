@@ -32,13 +32,20 @@ LN2 = tl.constexpr(0.6931471805599453)
 
 
 def _env_force(name):
-    """If WHALE_<name>_CONFIG is set as 'BM,BN,warps,stages', return a single-config list."""
+    """If WHALE_<name>_CONFIG is set as 'BM,BN,warps,stages', return a single-config list.
+    Optionally honours WHALE_<name>_MAXNREG to set `maxnreg=<int>` on the config."""
     spec = os.environ.get(f"WHALE_{name}_CONFIG")
     if not spec:
         return None
     parts = [int(x) for x in spec.split(",")]
     bm, bn, w, s = parts
-    return [triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s)]
+    maxnreg_env = os.environ.get(f"WHALE_{name}_MAXNREG")
+    kwargs = {}
+    if maxnreg_env:
+        mr = int(maxnreg_env)
+        if mr > 0:
+            kwargs["maxnreg"] = mr
+    return [triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s, **kwargs)]
 
 
 def _fwd_configs():
@@ -62,6 +69,24 @@ def _bwd_kv_configs():
         for w in (4, 8):
             for s in (2, 3, 4, 5):
                 configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
+    return configs
+
+
+def _bwd_kv_inline_configs():
+    """Config list for _attn_bwd_dkdv_inline_delta_kernel. The ablation sweep
+    in legs/2026-04-16_whale_bwd_ablations picked (64,64,4,3,no maxnreg) at
+    the headline shape (B=4,T=2048,H=8,KV=4,D=64); listing fewer/closer
+    candidates shortens autotune time without losing the winner."""
+    forced = _env_force("BWD_KV")
+    if forced:
+        return forced
+    configs = []
+    for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
+        for w in (4, 8):
+            for s in (3, 4):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
+    # A single broader candidate in case memory-boundness shifts at large T.
+    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2))
     return configs
 
 
@@ -298,6 +323,105 @@ def _attn_bwd_dkdv_kernel(
     tl.store(dv_ptrs, dv.to(V.dtype.element_ty), mask=store_mask)
 
 
+# ---------------------------------------------------------------------------
+# Backward dK / dV kernel with inline Δ (fused-delta variant, H1 ablation)
+# Computes Δᵢ = <oᵢ, doᵢ> locally from O and DO loads instead of reading it
+# from a preprocessed tensor, allowing the preprocess kernel to be dropped.
+# Trade-off: adds an O[BLOCK_M,D] load per (outer N block × Q-head-in-group ×
+# inner M block). In GQA this amplifies O reads by H/KV; if that HBM cost is
+# small relative to the preprocess-kernel launch + Δ HBM roundtrip this wins.
+# ---------------------------------------------------------------------------
+
+
+@triton.autotune(configs=_bwd_kv_inline_configs(), key=["D", "IS_CAUSAL", "NUM_HEADS", "NUM_KV_HEADS", "T_MAX"])
+@triton.jit
+def _attn_bwd_dkdv_inline_delta_kernel(
+    Q, K, V, O, DO, DK, DV, LSE,
+    stride_qb, stride_qt, stride_qh, stride_qd,
+    stride_kb, stride_kt, stride_kh, stride_kd,
+    stride_vb, stride_vt, stride_vh, stride_vd,
+    stride_ob, stride_ot, stride_oh, stride_od,
+    stride_dob, stride_dot, stride_doh, stride_dod,
+    stride_dkb, stride_dkt, stride_dkh, stride_dkd,
+    stride_dvb, stride_dvt, stride_dvh, stride_dvd,
+    stride_lb, stride_lh, stride_lt,
+    T_MAX: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    SCALE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    D: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+):
+    pid_n = tl.program_id(0)
+    bkv = tl.program_id(1)
+    b = bkv // NUM_KV_HEADS
+    kv_h = bkv % NUM_KV_HEADS
+    group = NUM_HEADS // NUM_KV_HEADS
+
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_m = tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    k_mask = (offs_n[:, None] < T_MAX) & (offs_d[None, :] < D)
+    k_ptrs = K + b * stride_kb + kv_h * stride_kh + offs_n[:, None] * stride_kt + offs_d[None, :] * stride_kd
+    v_ptrs = V + b * stride_vb + kv_h * stride_vh + offs_n[:, None] * stride_vt + offs_d[None, :] * stride_vd
+    k = tl.load(k_ptrs, mask=k_mask, other=0.0)
+    v = tl.load(v_ptrs, mask=k_mask, other=0.0)
+
+    dk = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
+
+    qk_scale_log2 = SCALE * LOG2E
+
+    if IS_CAUSAL:
+        m_start_block = (pid_n * BLOCK_N) // BLOCK_M
+    else:
+        m_start_block = 0
+    m_end_block = tl.cdiv(T_MAX, BLOCK_M)
+
+    for hg in range(group):
+        h = kv_h * group + hg
+        for m_block in range(m_start_block, m_end_block):
+            start_m = m_block * BLOCK_M
+            offs_m_cur = start_m + offs_m
+            row_mask = offs_m_cur < T_MAX
+            q_mask = row_mask[:, None] & (offs_d[None, :] < D)
+
+            q_ptrs = Q + b * stride_qb + h * stride_qh + offs_m_cur[:, None] * stride_qt + offs_d[None, :] * stride_qd
+            do_ptrs = DO + b * stride_dob + h * stride_doh + offs_m_cur[:, None] * stride_dot + offs_d[None, :] * stride_dod
+            o_ptrs = O + b * stride_ob + h * stride_oh + offs_m_cur[:, None] * stride_ot + offs_d[None, :] * stride_od
+            q = tl.load(q_ptrs, mask=q_mask, other=0.0)
+            do = tl.load(do_ptrs, mask=q_mask, other=0.0)
+            o_tile = tl.load(o_ptrs, mask=q_mask, other=0.0)
+            delta = tl.sum(o_tile.to(tl.float32) * do.to(tl.float32), axis=1)
+
+            lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m_cur * stride_lt
+            lse = tl.load(lse_ptrs, mask=row_mask, other=0.0)
+
+            s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+            p = tl.exp2(s - lse[:, None] * LOG2E)
+
+            if IS_CAUSAL:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX) & (offs_m_cur[:, None] >= offs_n[None, :])
+            else:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX)
+            p = tl.where(p_mask, p, 0.0)
+
+            dv = tl.dot(tl.trans(p).to(q.dtype), do, acc=dv, out_dtype=tl.float32)
+            dp = tl.dot(do, tl.trans(v), out_dtype=tl.float32)
+            ds = p * (dp - delta[:, None])
+            dk = tl.dot(tl.trans(ds).to(q.dtype), q, acc=dk, out_dtype=tl.float32)
+
+    dk = dk * SCALE
+    dk_ptrs = DK + b * stride_dkb + kv_h * stride_dkh + offs_n[:, None] * stride_dkt + offs_d[None, :] * stride_dkd
+    dv_ptrs = DV + b * stride_dvb + kv_h * stride_dvh + offs_n[:, None] * stride_dvt + offs_d[None, :] * stride_dvd
+    store_mask = (offs_n[:, None] < T_MAX) & (offs_d[None, :] < D)
+    tl.store(dk_ptrs, dk.to(K.dtype.element_ty), mask=store_mask)
+    tl.store(dv_ptrs, dv.to(V.dtype.element_ty), mask=store_mask)
+
 
 # ---------------------------------------------------------------------------
 # Backward dK / dV kernel, split over Q heads (split-H)
@@ -489,6 +613,93 @@ def _attn_bwd_dq_kernel(
     tl.store(dq_ptrs, dq.to(Q.dtype.element_ty), mask=store_mask)
 
 
+# ---------------------------------------------------------------------------
+# Backward dQ kernel with inline Δ (fused-delta variant, H1 ablation)
+# Computes Δᵢ = <oᵢ, doᵢ> locally instead of reading it from a preprocessed
+# [B, H, T] tensor. Saves 1 kernel launch + 1 HBM roundtrip on Δ.
+# ---------------------------------------------------------------------------
+
+
+@triton.autotune(configs=_bwd_q_configs(), key=["D", "IS_CAUSAL", "NUM_HEADS", "NUM_KV_HEADS", "T_MAX"])
+@triton.jit
+def _attn_bwd_dq_inline_delta_kernel(
+    Q, K, V, O, DO, DQ, LSE,
+    stride_qb, stride_qt, stride_qh, stride_qd,
+    stride_kb, stride_kt, stride_kh, stride_kd,
+    stride_vb, stride_vt, stride_vh, stride_vd,
+    stride_ob, stride_ot, stride_oh, stride_od,
+    stride_dob, stride_dot, stride_doh, stride_dod,
+    stride_dqb, stride_dqt, stride_dqh, stride_dqd,
+    stride_lb, stride_lh, stride_lt,
+    T_MAX: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    SCALE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    D: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // NUM_HEADS
+    h = bh % NUM_HEADS
+    kv_h = h // (NUM_HEADS // NUM_KV_HEADS)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    row_mask = offs_m < T_MAX
+    q_mask = row_mask[:, None] & (offs_d[None, :] < D)
+
+    q_ptrs = Q + b * stride_qb + h * stride_qh + offs_m[:, None] * stride_qt + offs_d[None, :] * stride_qd
+    do_ptrs = DO + b * stride_dob + h * stride_doh + offs_m[:, None] * stride_dot + offs_d[None, :] * stride_dod
+    o_ptrs = O + b * stride_ob + h * stride_oh + offs_m[:, None] * stride_ot + offs_d[None, :] * stride_od
+    q = tl.load(q_ptrs, mask=q_mask, other=0.0)
+    do = tl.load(do_ptrs, mask=q_mask, other=0.0)
+    o_tile = tl.load(o_ptrs, mask=q_mask, other=0.0)
+    # Δᵢ = <oᵢ, doᵢ> in fp32, then release o_tile.
+    delta = tl.sum(o_tile.to(tl.float32) * do.to(tl.float32), axis=1)
+
+    lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m * stride_lt
+    lse = tl.load(lse_ptrs, mask=row_mask, other=0.0)
+
+    dq = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
+    qk_scale_log2 = SCALE * LOG2E
+
+    if IS_CAUSAL:
+        hi = tl.minimum((pid_m + 1) * BLOCK_M, T_MAX)
+    else:
+        hi = T_MAX
+
+    for start_n in range(0, hi, BLOCK_N):
+        offs_n_cur = start_n + offs_n
+        k_mask = (offs_n_cur[:, None] < T_MAX) & (offs_d[None, :] < D)
+        k_ptrs = K + b * stride_kb + kv_h * stride_kh + offs_n_cur[:, None] * stride_kt + offs_d[None, :] * stride_kd
+        v_ptrs = V + b * stride_vb + kv_h * stride_vh + offs_n_cur[:, None] * stride_vt + offs_d[None, :] * stride_vd
+        k = tl.load(k_ptrs, mask=k_mask, other=0.0)
+        v = tl.load(v_ptrs, mask=k_mask, other=0.0)
+
+        s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+        p = tl.exp2(s - lse[:, None] * LOG2E)
+
+        if IS_CAUSAL:
+            p_mask = row_mask[:, None] & (offs_n_cur[None, :] < T_MAX) & (offs_m[:, None] >= offs_n_cur[None, :])
+        else:
+            p_mask = row_mask[:, None] & (offs_n_cur[None, :] < T_MAX)
+        p = tl.where(p_mask, p, 0.0)
+
+        dp = tl.dot(do, tl.trans(v), out_dtype=tl.float32)
+        ds = p * (dp - delta[:, None])
+        dq = tl.dot(ds.to(q.dtype), k, acc=dq, out_dtype=tl.float32)
+
+    dq = dq * SCALE
+    dq_ptrs = DQ + b * stride_dqb + h * stride_dqh + offs_m[:, None] * stride_dqt + offs_d[None, :] * stride_dqd
+    store_mask = row_mask[:, None] & (offs_d[None, :] < D)
+    tl.store(dq_ptrs, dq.to(Q.dtype.element_ty), mask=store_mask)
+
 
 # ---------------------------------------------------------------------------
 # Python wrappers
@@ -535,24 +746,69 @@ def _whale_attn_bwd_impl(q, k, v, o, do, lse, causal
     dq = torch.empty_like(q)
     dk = torch.empty_like(k)
     dv = torch.empty_like(v)
-    delta = torch.empty(B, H, T, device=q.device, dtype=torch.float32)
 
     block_d = triton.next_power_of_2(D)
     scale = 1.0 / math.sqrt(D)
 
-    # Preprocessor: compute delta_i = <o_i, do_i> into [B, H, T].
-    pre_block_m = 128
-    pre_grid = (triton.cdiv(T, pre_block_m), B * H)
-    _attn_bwd_preprocess_kernel[pre_grid](
-        o, do_c, delta,
-        o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-        do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
-        delta.stride(0), delta.stride(1), delta.stride(2),
-        T_MAX=T, NUM_HEADS=H,
-        BLOCK_M=pre_block_m, BLOCK_D=block_d, D=D,
-        num_warps=4, num_stages=2,
-    )
+    # Dispatch:
+    #   auto          — fused_delta for short T, baseline for long T (default).
+    #   baseline      — preprocess + separate dkdv/dq.
+    #   fused_delta   — force inline-Δ in dkdv+dq; skips preprocess entirely.
+    variant = os.environ.get("WHALE_BWD_VARIANT", "auto")
+    fused_delta_t_max = int(os.environ.get("WHALE_FUSED_DELTA_T_MAX", "3072"))
+    if variant == "auto":
+        use_fused_delta = T <= fused_delta_t_max
+    else:
+        use_fused_delta = variant == "fused_delta"
     use_split_h = os.environ.get("WHALE_BWD_SPLIT_H", "0") == "1"
+
+    # Only the baseline path needs the Δ tensor + preprocess kernel.
+    if not use_fused_delta:
+        delta = torch.empty(B, H, T, device=q.device, dtype=torch.float32)
+        pre_block_m = 128
+        pre_grid = (triton.cdiv(T, pre_block_m), B * H)
+        _attn_bwd_preprocess_kernel[pre_grid](
+            o, do_c, delta,
+            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+            do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
+            delta.stride(0), delta.stride(1), delta.stride(2),
+            T_MAX=T, NUM_HEADS=H,
+            BLOCK_M=pre_block_m, BLOCK_D=block_d, D=D,
+            num_warps=4, num_stages=2,
+        )
+
+    if use_fused_delta:
+        grid_kv = lambda META: (triton.cdiv(T, META["BLOCK_N"]), B * KV)
+        _attn_bwd_dkdv_inline_delta_kernel[grid_kv](
+            q, k, v, o, do_c, dk, dv, lse,
+            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+            do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
+            dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
+            dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
+            lse.stride(0), lse.stride(1), lse.stride(2),
+            T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
+            BLOCK_D=block_d, D=D,
+            IS_CAUSAL=causal,
+        )
+        grid_q = lambda META: (triton.cdiv(T, META["BLOCK_M"]), B * H)
+        _attn_bwd_dq_inline_delta_kernel[grid_q](
+            q, k, v, o, do_c, dq, lse,
+            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+            do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
+            dq.stride(0), dq.stride(1), dq.stride(2), dq.stride(3),
+            lse.stride(0), lse.stride(1), lse.stride(2),
+            T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
+            BLOCK_D=block_d, D=D,
+            IS_CAUSAL=causal,
+        )
+        return dq, dk, dv
+
     if use_split_h:
         group = H // KV
         # Per-Q-head partial workspace laid out as [B, T, H, D] to match q strides.

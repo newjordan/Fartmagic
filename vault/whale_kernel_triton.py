@@ -76,6 +76,20 @@ def _fwd_configs():
     return configs
 
 
+def _fwd_tma_configs():
+    """Config list for the TMA forward variant. TMA forces BLOCK_D == D so the
+    config search is narrower than the non-TMA grid."""
+    forced = _env_force("FWD_TMA")
+    if forced:
+        return forced
+    configs = []
+    for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
+        for w in (4, 8):
+            for s in (2, 3, 4):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
+    return configs
+
+
 def _bwd_kv_configs():
     forced = _env_force("BWD_KV")
     if forced:
@@ -223,6 +237,99 @@ def _attn_fwd_kernel(
     lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m * stride_lt
     tl.store(lse_ptrs, lse, mask=offs_m < T_MAX)
 
+
+# ---------------------------------------------------------------------------
+# Forward kernel (TMA variant, opt-in via WHALE_FWD_VARIANT=tma)
+#
+# Uses on-device tensor descriptors (tl.make_tensor_descriptor) for Q/K/V/O
+# loads/stores. Requires BLOCK_D == D (no partial-D masking inside TMA). Falls
+# back to the non-TMA kernel when D is not a supported power-of-2 tile width.
+# ---------------------------------------------------------------------------
+
+
+@triton.autotune(configs=_fwd_tma_configs(), key=["D", "IS_CAUSAL", "NUM_HEADS", "NUM_KV_HEADS", "T_MAX"])
+@triton.jit
+def _attn_fwd_tma_kernel(
+    Q, K, V, O, LSE,
+    stride_qb, stride_qt, stride_qh,
+    stride_kb, stride_kt, stride_kh,
+    stride_vb, stride_vt, stride_vh,
+    stride_ob, stride_ot, stride_oh,
+    stride_lb, stride_lh, stride_lt,
+    T_MAX: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    SCALE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    D: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // NUM_HEADS
+    h = bh % NUM_HEADS
+    kv_h = h // (NUM_HEADS // NUM_KV_HEADS)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+
+    Q_desc = tl.make_tensor_descriptor(
+        Q + b * stride_qb + h * stride_qh,
+        shape=[T_MAX, D], strides=[stride_qt, 1], block_shape=[BLOCK_M, D],
+    )
+    K_desc = tl.make_tensor_descriptor(
+        K + b * stride_kb + kv_h * stride_kh,
+        shape=[T_MAX, D], strides=[stride_kt, 1], block_shape=[BLOCK_N, D],
+    )
+    V_desc = tl.make_tensor_descriptor(
+        V + b * stride_vb + kv_h * stride_vh,
+        shape=[T_MAX, D], strides=[stride_vt, 1], block_shape=[BLOCK_N, D],
+    )
+    O_desc = tl.make_tensor_descriptor(
+        O + b * stride_ob + h * stride_oh,
+        shape=[T_MAX, D], strides=[stride_ot, 1], block_shape=[BLOCK_M, D],
+    )
+
+    q = Q_desc.load([pid_m * BLOCK_M, 0])
+
+    m_i = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, D], dtype=tl.float32)
+
+    qk_scale_log2 = SCALE * LOG2E
+
+    if IS_CAUSAL:
+        hi = tl.minimum((pid_m + 1) * BLOCK_M, T_MAX)
+    else:
+        hi = T_MAX
+
+    for start_n in range(0, hi, BLOCK_N):
+        offs_n_cur = start_n + offs_n
+        k = K_desc.load([start_n, 0])
+        v = V_desc.load([start_n, 0])
+
+        s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+        if IS_CAUSAL:
+            valid = (offs_n_cur[None, :] < T_MAX) & (offs_m[:, None] >= offs_n_cur[None, :])
+        else:
+            valid = offs_n_cur[None, :] < T_MAX
+        s = tl.where(valid, s, float("-inf"))
+
+        m_new = tl.maximum(m_i, tl.max(s, axis=1))
+        alpha = tl.where(m_new > float("-inf"), tl.exp2(m_i - m_new), 1.0)
+        p = tl.exp2(s - m_new[:, None])
+        l_i = l_i * alpha + tl.sum(p, axis=1)
+        acc = tl.dot(p.to(q.dtype), v, acc=acc * alpha[:, None], out_dtype=tl.float32)
+        m_i = m_new
+
+    l_safe = tl.where(l_i > 0, l_i, 1.0)
+    out = acc / l_safe[:, None]
+    O_desc.store([pid_m * BLOCK_M, 0], out.to(O.dtype.element_ty))
+
+    lse = tl.where(l_i > 0, m_i * LN2 + tl.log(l_safe), 0.0)
+    lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m * stride_lt
+    tl.store(lse_ptrs, lse, mask=offs_m < T_MAX)
 
 
 # ---------------------------------------------------------------------------
@@ -868,18 +975,33 @@ def _whale_attn_fwd_impl(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, caus
     block_d = triton.next_power_of_2(D)
     scale = 1.0 / math.sqrt(D)
 
-    grid = lambda META: (triton.cdiv(T, META["BLOCK_M"]), B * H)
-    _attn_fwd_kernel[grid](
-        q, k, v, o, lse,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-        o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-        lse.stride(0), lse.stride(1), lse.stride(2),
-        T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
-        BLOCK_D=block_d, D=D,
-        IS_CAUSAL=causal,
-    )
+    use_tma_fwd = os.environ.get("WHALE_FWD_VARIANT", "default") == "tma" and block_d == D
+    if use_tma_fwd:
+        _ensure_tma_allocator()
+        grid = lambda META: (triton.cdiv(T, META["BLOCK_M"]), B * H)
+        _attn_fwd_tma_kernel[grid](
+            q, k, v, o, lse,
+            q.stride(0), q.stride(1), q.stride(2),
+            k.stride(0), k.stride(1), k.stride(2),
+            v.stride(0), v.stride(1), v.stride(2),
+            o.stride(0), o.stride(1), o.stride(2),
+            lse.stride(0), lse.stride(1), lse.stride(2),
+            T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
+            D=D, IS_CAUSAL=causal,
+        )
+    else:
+        grid = lambda META: (triton.cdiv(T, META["BLOCK_M"]), B * H)
+        _attn_fwd_kernel[grid](
+            q, k, v, o, lse,
+            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+            lse.stride(0), lse.stride(1), lse.stride(2),
+            T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
+            BLOCK_D=block_d, D=D,
+            IS_CAUSAL=causal,
+        )
     return o, lse
 
 

@@ -31,6 +31,22 @@ LOG2E = tl.constexpr(1.4426950408889634)
 LN2 = tl.constexpr(0.6931471805599453)
 
 
+_TMA_ALLOCATOR_SET = False
+
+
+def _ensure_tma_allocator():
+    """One-shot install of a Triton allocator backing on-device TMA
+    descriptors. Triton calls this callback when a kernel using
+    tl.make_tensor_descriptor needs a workspace region."""
+    global _TMA_ALLOCATOR_SET
+    if _TMA_ALLOCATOR_SET:
+        return
+    def _alloc(size: int, align: int, stream):
+        return torch.empty(size, dtype=torch.int8, device="cuda")
+    triton.set_allocator(_alloc)
+    _TMA_ALLOCATOR_SET = True
+
+
 def _env_force(name):
     """If WHALE_<name>_CONFIG is set as 'BM,BN,warps,stages', return a single-config list.
     Optionally honours WHALE_<name>_MAXNREG to set `maxnreg=<int>` on the config."""
@@ -86,6 +102,21 @@ def _bwd_kv_inline_configs():
             for s in (3, 4):
                 configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
     # A single broader candidate in case memory-boundness shifts at large T.
+    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2))
+    return configs
+
+
+def _bwd_kv_inline_tma_configs():
+    """Config list for _attn_bwd_dkdv_inline_delta_tma_kernel. TMA forces
+    BLOCK_D == D so we keep the same shape-winner spread as the non-TMA list."""
+    forced = _env_force("BWD_KV_TMA")
+    if forced:
+        return forced
+    configs = []
+    for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
+        for w in (4, 8):
+            for s in (3, 4):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
     configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2))
     return configs
 
@@ -424,6 +455,122 @@ def _attn_bwd_dkdv_inline_delta_kernel(
 
 
 # ---------------------------------------------------------------------------
+# Backward dK / dV with inline Δ and on-device TMA on Q/K/V/O/DO/DK/DV.
+#
+# Same math as _attn_bwd_dkdv_inline_delta_kernel. The bf16 HBM loads and
+# stores go through tl.make_tensor_descriptor so Triton emits Hopper TMA
+# bulk copies + swizzled SMEM layouts. Requires BLOCK_D == D.
+# ---------------------------------------------------------------------------
+
+
+@triton.autotune(configs=_bwd_kv_inline_tma_configs(), key=["D", "IS_CAUSAL", "NUM_HEADS", "NUM_KV_HEADS", "T_MAX"])
+@triton.jit
+def _attn_bwd_dkdv_inline_delta_tma_kernel(
+    Q, K, V, O, DO, DK, DV, LSE,
+    stride_qb, stride_qt, stride_qh,
+    stride_kb, stride_kt, stride_kh,
+    stride_vb, stride_vt, stride_vh,
+    stride_ob, stride_ot, stride_oh,
+    stride_dob, stride_dot, stride_doh,
+    stride_dkb, stride_dkt, stride_dkh,
+    stride_dvb, stride_dvt, stride_dvh,
+    stride_lb, stride_lh, stride_lt,
+    T_MAX: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    SCALE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    D: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+):
+    pid_n = tl.program_id(0)
+    bkv = tl.program_id(1)
+    b = bkv // NUM_KV_HEADS
+    kv_h = bkv % NUM_KV_HEADS
+    group = NUM_HEADS // NUM_KV_HEADS
+
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_m = tl.arange(0, BLOCK_M)
+
+    K_desc = tl.make_tensor_descriptor(
+        K + b * stride_kb + kv_h * stride_kh,
+        shape=[T_MAX, D], strides=[stride_kt, 1], block_shape=[BLOCK_N, D],
+    )
+    V_desc = tl.make_tensor_descriptor(
+        V + b * stride_vb + kv_h * stride_vh,
+        shape=[T_MAX, D], strides=[stride_vt, 1], block_shape=[BLOCK_N, D],
+    )
+    DK_desc = tl.make_tensor_descriptor(
+        DK + b * stride_dkb + kv_h * stride_dkh,
+        shape=[T_MAX, D], strides=[stride_dkt, 1], block_shape=[BLOCK_N, D],
+    )
+    DV_desc = tl.make_tensor_descriptor(
+        DV + b * stride_dvb + kv_h * stride_dvh,
+        shape=[T_MAX, D], strides=[stride_dvt, 1], block_shape=[BLOCK_N, D],
+    )
+
+    k = K_desc.load([pid_n * BLOCK_N, 0])
+    v = V_desc.load([pid_n * BLOCK_N, 0])
+
+    dk = tl.zeros([BLOCK_N, D], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, D], dtype=tl.float32)
+
+    qk_scale_log2 = SCALE * LOG2E
+
+    if IS_CAUSAL:
+        m_start_block = (pid_n * BLOCK_N) // BLOCK_M
+    else:
+        m_start_block = 0
+    m_end_block = tl.cdiv(T_MAX, BLOCK_M)
+
+    for hg in range(group):
+        h = kv_h * group + hg
+        Q_desc = tl.make_tensor_descriptor(
+            Q + b * stride_qb + h * stride_qh,
+            shape=[T_MAX, D], strides=[stride_qt, 1], block_shape=[BLOCK_M, D],
+        )
+        O_desc = tl.make_tensor_descriptor(
+            O + b * stride_ob + h * stride_oh,
+            shape=[T_MAX, D], strides=[stride_ot, 1], block_shape=[BLOCK_M, D],
+        )
+        DO_desc = tl.make_tensor_descriptor(
+            DO + b * stride_dob + h * stride_doh,
+            shape=[T_MAX, D], strides=[stride_dot, 1], block_shape=[BLOCK_M, D],
+        )
+        for m_block in range(m_start_block, m_end_block):
+            start_m = m_block * BLOCK_M
+            offs_m_cur = start_m + offs_m
+            row_mask = offs_m_cur < T_MAX
+
+            q = Q_desc.load([start_m, 0])
+            do = DO_desc.load([start_m, 0])
+            o_tile = O_desc.load([start_m, 0])
+            delta = tl.sum(o_tile.to(tl.float32) * do.to(tl.float32), axis=1)
+
+            lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m_cur * stride_lt
+            lse = tl.load(lse_ptrs, mask=row_mask, other=0.0)
+
+            s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+            p = tl.exp2(s - lse[:, None] * LOG2E)
+
+            if IS_CAUSAL:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX) & (offs_m_cur[:, None] >= offs_n[None, :])
+            else:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX)
+            p = tl.where(p_mask, p, 0.0)
+
+            dv = tl.dot(tl.trans(p).to(q.dtype), do, acc=dv, out_dtype=tl.float32)
+            dp = tl.dot(do, tl.trans(v), out_dtype=tl.float32)
+            ds = p * (dp - delta[:, None])
+            dk = tl.dot(tl.trans(ds).to(q.dtype), q, acc=dk, out_dtype=tl.float32)
+
+    dk = dk * SCALE
+    DK_desc.store([pid_n * BLOCK_N, 0], dk.to(K.dtype.element_ty))
+    DV_desc.store([pid_n * BLOCK_N, 0], dv.to(V.dtype.element_ty))
+
+
+# ---------------------------------------------------------------------------
 # Backward dK / dV kernel, split over Q heads (split-H)
 #
 # Grid: (T/BN, B*NUM_HEADS). Each program handles a single Q head and a single
@@ -751,16 +898,29 @@ def _whale_attn_bwd_impl(q, k, v, o, do, lse, causal
     scale = 1.0 / math.sqrt(D)
 
     # Dispatch:
-    #   auto          — fused_delta for short T, baseline for long T (default).
-    #   baseline      — preprocess + separate dkdv/dq.
-    #   fused_delta   — force inline-Δ in dkdv+dq; skips preprocess entirely.
+    #   auto             — fused_delta for short T, baseline for long T (default).
+    #   baseline         — preprocess + separate dkdv/dq.
+    #   fused_delta      — force inline-Δ in dkdv+dq; skips preprocess entirely.
+    #   fused_delta_tma  — same as fused_delta but dkdv uses on-device TMA
+    #                      (requires BLOCK_D == D; dq_inline stays as-is).
     variant = os.environ.get("WHALE_BWD_VARIANT", "auto")
     fused_delta_t_max = int(os.environ.get("WHALE_FUSED_DELTA_T_MAX", "3072"))
     if variant == "auto":
         use_fused_delta = T <= fused_delta_t_max
+        use_tma_dkdv = False
+    elif variant == "fused_delta_tma":
+        use_fused_delta = True
+        use_tma_dkdv = True
     else:
         use_fused_delta = variant == "fused_delta"
+        use_tma_dkdv = False
+    # TMA requires BLOCK_D == D, which holds iff D is a power of 2.
+    if use_tma_dkdv and block_d != D:
+        use_tma_dkdv = False
     use_split_h = os.environ.get("WHALE_BWD_SPLIT_H", "0") == "1"
+
+    if use_tma_dkdv:
+        _ensure_tma_allocator()
 
     # Only the baseline path needs the Δ tensor + preprocess kernel.
     if not use_fused_delta:
@@ -779,20 +939,36 @@ def _whale_attn_bwd_impl(q, k, v, o, do, lse, causal
 
     if use_fused_delta:
         grid_kv = lambda META: (triton.cdiv(T, META["BLOCK_N"]), B * KV)
-        _attn_bwd_dkdv_inline_delta_kernel[grid_kv](
-            q, k, v, o, do_c, dk, dv, lse,
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
-            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
-            do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
-            dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
-            dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
-            lse.stride(0), lse.stride(1), lse.stride(2),
-            T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
-            BLOCK_D=block_d, D=D,
-            IS_CAUSAL=causal,
-        )
+        if use_tma_dkdv:
+            _attn_bwd_dkdv_inline_delta_tma_kernel[grid_kv](
+                q, k, v, o, do_c, dk, dv, lse,
+                q.stride(0), q.stride(1), q.stride(2),
+                k.stride(0), k.stride(1), k.stride(2),
+                v.stride(0), v.stride(1), v.stride(2),
+                o.stride(0), o.stride(1), o.stride(2),
+                do_c.stride(0), do_c.stride(1), do_c.stride(2),
+                dk.stride(0), dk.stride(1), dk.stride(2),
+                dv.stride(0), dv.stride(1), dv.stride(2),
+                lse.stride(0), lse.stride(1), lse.stride(2),
+                T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
+                D=D,
+                IS_CAUSAL=causal,
+            )
+        else:
+            _attn_bwd_dkdv_inline_delta_kernel[grid_kv](
+                q, k, v, o, do_c, dk, dv, lse,
+                q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+                k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+                v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+                o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+                do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
+                dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
+                dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
+                lse.stride(0), lse.stride(1), lse.stride(2),
+                T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
+                BLOCK_D=block_d, D=D,
+                IS_CAUSAL=causal,
+            )
         grid_q = lambda META: (triton.cdiv(T, META["BLOCK_M"]), B * H)
         _attn_bwd_dq_inline_delta_kernel[grid_q](
             q, k, v, o, do_c, dq, lse,

@@ -1,0 +1,4 @@
+
+== dkdv_128_128_4_2  shape=(2, 2048, 8, 4, 64)
+    whale_fast  fwd=0.077+-0.002ms   fwd+bwd=0.431+-0.003ms
+           fa3  fwd=0.092+-0.002ms   fwd+bwd=0.372+-0.008ms

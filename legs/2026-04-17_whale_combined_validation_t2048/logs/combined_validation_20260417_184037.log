@@ -1,0 +1,11 @@
+[20260417_184037] combined validation start
+bench=/workspace/SOTA_FINAL/legs/2026-04-16_whale_bwd_ablations/bench_stable.py
+shape=2,2048,8,4,64 backends=whale_fast,fa3 rounds=10 iters=200
+dkdv=128,128,8,3
+dq_tile=128,64,8,5
+dq_maxnreg=224
+
+== whale_combined_validation_t2048  shape=(2, 2048, 8, 4, 64)
+    whale_fast  fwd=0.068+-0.001ms   fwd+bwd=0.316+-0.008ms
+           fa3  fwd=0.079+-0.003ms   fwd+bwd=0.319+-0.004ms
+[20260417_184037] combined validation done

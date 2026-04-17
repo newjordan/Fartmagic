@@ -1,0 +1,46 @@
+Traceback (most recent call last):
+  File "/workspace/SOTA_FINAL/legs/2026-04-16_whale_bwd_ablations/bench_stable.py", line 171, in <module>
+    main()
+  File "/workspace/SOTA_FINAL/legs/2026-04-16_whale_bwd_ablations/bench_stable.py", line 152, in main
+    r = measure(shape, backends, rounds=args.rounds, iters=args.iters)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/SOTA_FINAL/legs/2026-04-16_whale_bwd_ablations/bench_stable.py", line 109, in measure
+    thorough_warmup(list(fb_calls.values()), iters=50)
+  File "/workspace/SOTA_FINAL/legs/2026-04-16_whale_bwd_ablations/bench_stable.py", line 84, in thorough_warmup
+    f()
+  File "/workspace/SOTA_FINAL/legs/2026-04-16_whale_bwd_ablations/bench_stable.py", line 104, in <lambda>
+    fb_calls = {b: (lambda b=b: fb_call(b)) for b in backends}
+                                ^^^^^^^^^^
+  File "/workspace/SOTA_FINAL/legs/2026-04-16_whale_bwd_ablations/bench_stable.py", line 103, in fb_call
+    out.backward(gout)
+  File "/venv/main/lib/python3.12/site-packages/torch/_tensor.py", line 631, in backward
+    torch.autograd.backward(
+  File "/venv/main/lib/python3.12/site-packages/torch/autograd/__init__.py", line 381, in backward
+    _engine_run_backward(
+  File "/venv/main/lib/python3.12/site-packages/torch/autograd/graph.py", line 869, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/main/lib/python3.12/site-packages/torch/autograd/function.py", line 317, in apply
+    return user_fn(self, *args)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/SOTA_FINAL/vault/whale_kernel_triton.py", line 1845, in backward
+    dq, dk, dv = _whale_attn_bwd_impl(q, k, v, o, grad_o, lse, ctx.causal)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/SOTA_FINAL/vault/whale_kernel_triton.py", line 1672, in _whale_attn_bwd_impl
+    _attn_bwd_dkdv_inline_delta_tma_kernel[grid_kv](
+  File "/venv/main/lib/python3.12/site-packages/triton/runtime/jit.py", line 370, in <lambda>
+    return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/main/lib/python3.12/site-packages/triton/runtime/autotuner.py", line 252, in run
+    ret = self.fn.run(
+          ^^^^^^^^^^^^
+  File "/venv/main/lib/python3.12/site-packages/triton/runtime/jit.py", line 743, in run
+    launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/venv/main/lib/python3.12/site-packages/triton/compiler/compiler.py", line 482, in launch_metadata
+    self._init_handles()
+  File "/venv/main/lib/python3.12/site-packages/triton/compiler/compiler.py", line 456, in _init_handles
+    raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
+  File "/venv/main/lib/python3.12/site-packages/triton/compiler/compiler.py", line 448, in raise_
+    raise err
+triton.runtime.errors.OutOfResources: out of resource: shared memory, Required: 280640, Hardware limit: 232448. Reducing block sizes or `num_stages` may help.

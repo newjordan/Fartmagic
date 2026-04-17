@@ -65,20 +65,26 @@ def _env_force(name):
 
 
 def _fwd_configs():
+    """maxnreg=160 saved ~3us on the headline fwd (legs/2026-04-16_whale_fwd_warpspec_tma).
+    BM=192 added 2026-04-17 to match FA3 fwd tile at D=64 (FA3 hopper/tile_size.h:23-26).
+    Autotune key includes T_MAX so per-shape winner is chosen separately."""
     forced = _env_force("FWD")
     if forced:
         return forced
     configs = []
-    for bm, bn in [(64, 64), (128, 64), (128, 128), (64, 128), (256, 64), (128, 256)]:
+    for bm, bn in [(64, 64), (128, 64), (128, 128), (64, 128), (256, 64), (128, 256),
+                   (192, 64), (192, 128)]:
         for w in (4, 8):
             for s in (2, 3, 4, 5):
-                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, maxnreg=160))
     return configs
 
 
 def _fwd_tma_configs():
     """Config list for the TMA forward variant. TMA forces BLOCK_D == D so the
-    config search is narrower than the non-TMA grid."""
+    config search is narrower than the non-TMA grid. maxnreg=160 matches the
+    non-TMA fwd winner."""
     forced = _env_force("FWD_TMA")
     if forced:
         return forced
@@ -86,7 +92,8 @@ def _fwd_tma_configs():
     for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
         for w in (4, 8):
             for s in (2, 3, 4):
-                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, maxnreg=160))
     return configs
 
 
@@ -99,14 +106,25 @@ def _bwd_kv_configs():
         for w in (4, 8):
             for s in (2, 3, 4, 5):
                 configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
+    for bm, bn, w, s in [
+        ( 64, 128,  4, 6),
+        ( 64, 128,  4, 7),
+        (128, 128,  8, 6),
+        ( 64, 256,  8, 3),
+        ( 64, 256,  8, 4),
+        (128, 256, 16, 3),
+        (128, 256, 16, 4),
+        ( 32, 512,  8, 2),
+    ]:
+        configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
     return configs
 
 
 def _bwd_kv_inline_configs():
     """Config list for _attn_bwd_dkdv_inline_delta_kernel. The ablation sweep
-    in legs/2026-04-16_whale_bwd_ablations picked (64,64,4,3,no maxnreg) at
-    the headline shape (B=4,T=2048,H=8,KV=4,D=64); listing fewer/closer
-    candidates shortens autotune time without losing the winner."""
+    in legs/2026-04-16_whale_bwd_ablations picked (64,64,4,3) at the headline
+    shape (B=4,T=2048,H=8,KV=4,D=64). maxnreg=224 from legs/2026-04-16_whale_fwd_warpspec_tma
+    shaves ~5us by keeping register-heavy dkdv out of spill territory."""
     forced = _env_force("BWD_KV")
     if forced:
         return forced
@@ -114,15 +132,17 @@ def _bwd_kv_inline_configs():
     for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
         for w in (4, 8):
             for s in (3, 4):
-                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
-    # A single broader candidate in case memory-boundness shifts at large T.
-    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2))
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, maxnreg=224))
+    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64},
+                                 num_warps=4, num_stages=2, maxnreg=224))
     return configs
 
 
 def _bwd_kv_inline_tma_configs():
     """Config list for _attn_bwd_dkdv_inline_delta_tma_kernel. TMA forces
-    BLOCK_D == D so we keep the same shape-winner spread as the non-TMA list."""
+    BLOCK_D == D so we keep the same shape-winner spread as the non-TMA list.
+    maxnreg=224 applied for the same reason as the non-TMA variant."""
     forced = _env_force("BWD_KV_TMA")
     if forced:
         return forced
@@ -130,16 +150,27 @@ def _bwd_kv_inline_tma_configs():
     for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
         for w in (4, 8):
             for s in (3, 4):
-                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
-    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2))
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, maxnreg=224))
+    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64},
+                                 num_warps=4, num_stages=2, maxnreg=224))
     return configs
 
 
 def _bwd_q_configs():
+    """Same tile search as the fwd kernel, but maxnreg=224 since the bwd dq
+    path has heavier register pressure (see maxnreg sweep in
+    legs/2026-04-16_whale_fwd_warpspec_tma)."""
     forced = _env_force("BWD_Q")
     if forced:
         return forced
-    return _fwd_configs()
+    configs = []
+    for bm, bn in [(64, 64), (128, 64), (128, 128), (64, 128), (256, 64), (128, 256)]:
+        for w in (4, 8):
+            for s in (2, 3, 4, 5):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, maxnreg=224))
+    return configs
 
 
 def _bwd_kv_split_h_configs():
@@ -151,6 +182,69 @@ def _bwd_kv_split_h_configs():
         for w in (4, 8):
             for s in (2, 3, 4):
                 configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps=w, num_stages=s))
+    return configs
+
+
+def _bwd_fused_configs():
+    """Config list for _attn_bwd_fused_kernel (persistent dkdv+dq with fp32
+    atomic_add on dQ). Kept separate from _bwd_kv_inline_configs because
+    maxnreg=224 breaks atomic_add correctness on this Triton 3.6 stack:
+    `tl.atomic_add` of a 2-D fp32 tile amplified values ~19005x when
+    maxnreg=224 was forced (row*1 + col*1000 probe, observed on H100 SXM,
+    see legs/2026-04-16_whale_bwd_persistent_atomic/hypothesis.md).
+
+    Default: no maxnreg. Override per-sweep via WHALE_BWD_FUSED_MAXNREG or
+    WHALE_BWD_FUSED_CONFIG."""
+    forced = _env_force("BWD_FUSED")
+    if forced:
+        return forced
+    maxnreg_env = os.environ.get("WHALE_BWD_FUSED_MAXNREG", "").strip()
+    extra = {}
+    if maxnreg_env:
+        mr = int(maxnreg_env)
+        if mr > 0:
+            if mr >= 224:
+                raise ValueError(
+                    f"WHALE_BWD_FUSED_MAXNREG={mr} is at/above the 224 threshold"
+                    " that corrupts tl.atomic_add on this stack. Refusing."
+                )
+            extra["maxnreg"] = mr
+    configs = []
+    for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
+        for w in (4, 8):
+            for s in (3, 4):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, **extra))
+    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64},
+                                 num_warps=4, num_stages=2, **extra))
+    return configs
+
+
+def _bwd_fused_tma_dq_configs():
+    forced = _env_force("BWD_FUSED_TMA_DQ")
+    if forced:
+        return forced
+    maxnreg_env = os.environ.get("WHALE_BWD_FUSED_MAXNREG", "").strip()
+    extra = {}
+    if maxnreg_env:
+        mr = int(maxnreg_env)
+        if mr > 0:
+            if mr > 192:
+                raise ValueError(
+                    f"WHALE_BWD_FUSED_MAXNREG={mr} exceeds the 192 cap on the"
+                    " TMA-dq fused bwd until safety is verified. Refusing."
+                )
+            extra["maxnreg"] = mr
+    else:
+        extra["maxnreg"] = 192
+    configs = []
+    for bm, bn in [(64, 64), (64, 128), (128, 64), (128, 128)]:
+        for w in (4, 8):
+            for s in (3, 4):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, **extra))
+    configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 64},
+                                 num_warps=4, num_stages=2, **extra))
     return configs
 
 
@@ -414,15 +508,49 @@ def _attn_bwd_dkdv_kernel(
     qk_scale_log2 = SCALE * LOG2E
 
     if IS_CAUSAL:
-        # Only Q rows with index >= pid_n * BLOCK_N can attend to this KV block.
         m_start_block = (pid_n * BLOCK_N) // BLOCK_M
+        m_masking_max = tl.cdiv((pid_n + 1) * BLOCK_N, BLOCK_M)
     else:
         m_start_block = 0
+        m_masking_max = 0
     m_end_block = tl.cdiv(T_MAX, BLOCK_M)
 
     for hg in range(group):
         h = kv_h * group + hg
-        for m_block in range(m_start_block, m_end_block):
+
+        if IS_CAUSAL:
+            m_mask_end = tl.minimum(m_masking_max, m_end_block)
+            for m_block in range(m_start_block, m_mask_end):
+                start_m = m_block * BLOCK_M
+                offs_m_cur = start_m + offs_m
+                row_mask = offs_m_cur < T_MAX
+                q_mask = row_mask[:, None] & (offs_d[None, :] < D)
+
+                q_ptrs = Q + b * stride_qb + h * stride_qh + offs_m_cur[:, None] * stride_qt + offs_d[None, :] * stride_qd
+                do_ptrs = DO + b * stride_dob + h * stride_doh + offs_m_cur[:, None] * stride_dot + offs_d[None, :] * stride_dod
+                q = tl.load(q_ptrs, mask=q_mask, other=0.0)
+                do = tl.load(do_ptrs, mask=q_mask, other=0.0)
+
+                lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m_cur * stride_lt
+                delta_ptrs = DELTA + b * stride_db + h * stride_dh + offs_m_cur * stride_dt
+                lse = tl.load(lse_ptrs, mask=row_mask, other=0.0)
+                delta = tl.load(delta_ptrs, mask=row_mask, other=0.0)
+
+                s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+                p = tl.exp2(s - lse[:, None] * LOG2E)
+
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX) & (offs_m_cur[:, None] >= offs_n[None, :])
+                p = tl.where(p_mask, p, 0.0)
+
+                dv = tl.dot(tl.trans(p).to(q.dtype), do, acc=dv, out_dtype=tl.float32)
+                dp = tl.dot(do, tl.trans(v), out_dtype=tl.float32)
+                ds = p * (dp - delta[:, None])
+                dk = tl.dot(tl.trans(ds).to(q.dtype), q, acc=dk, out_dtype=tl.float32)
+            unmasked_start = m_mask_end
+        else:
+            unmasked_start = m_start_block
+
+        for m_block in range(unmasked_start, m_end_block):
             start_m = m_block * BLOCK_M
             offs_m_cur = start_m + offs_m
             row_mask = offs_m_cur < T_MAX
@@ -441,10 +569,7 @@ def _attn_bwd_dkdv_kernel(
             s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
             p = tl.exp2(s - lse[:, None] * LOG2E)
 
-            if IS_CAUSAL:
-                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX) & (offs_m_cur[:, None] >= offs_n[None, :])
-            else:
-                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX)
+            p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX)
             p = tl.where(p_mask, p, 0.0)
 
             dv = tl.dot(tl.trans(p).to(q.dtype), do, acc=dv, out_dtype=tl.float32)
@@ -675,6 +800,253 @@ def _attn_bwd_dkdv_inline_delta_tma_kernel(
     dk = dk * SCALE
     DK_desc.store([pid_n * BLOCK_N, 0], dk.to(K.dtype.element_ty))
     DV_desc.store([pid_n * BLOCK_N, 0], dv.to(V.dtype.element_ty))
+
+
+# ---------------------------------------------------------------------------
+# Fused backward kernel: computes dK, dV locally and atomically accumulates
+# dQ into an fp32 scratch tensor. A postprocess kernel converts the fp32
+# scratch to bf16 dQ. Goal: fold the _attn_bwd_dq_inline_delta_kernel work
+# into the dkdv pass to eliminate the 2nd kernel launch + K/V reload traffic.
+#
+# Grid: (T/BN, B*NUM_KV_HEADS). Each program loads K/V once, then per Q-head
+# in the group iterates M blocks: recomputes P, accumulates dK/dV in regs,
+# computes ds @ K into dq_local and atomic-adds to DQ_F32. dq_local is in
+# bf16 (matmul output), cast to fp32 for the atomic_add.
+# ---------------------------------------------------------------------------
+
+
+@triton.autotune(
+    configs=_bwd_fused_configs(),
+    key=["D", "IS_CAUSAL", "NUM_HEADS", "NUM_KV_HEADS", "T_MAX"],
+    reset_to_zero=["DQ_F32"],
+)
+@triton.jit
+def _attn_bwd_fused_kernel(
+    Q, K, V, O, DO, DK, DV, DQ_F32, LSE,
+    stride_qb, stride_qt, stride_qh, stride_qd,
+    stride_kb, stride_kt, stride_kh, stride_kd,
+    stride_vb, stride_vt, stride_vh, stride_vd,
+    stride_ob, stride_ot, stride_oh, stride_od,
+    stride_dob, stride_dot, stride_doh, stride_dod,
+    stride_dkb, stride_dkt, stride_dkh, stride_dkd,
+    stride_dvb, stride_dvt, stride_dvh, stride_dvd,
+    stride_dqfb, stride_dqft, stride_dqfh, stride_dqfd,
+    stride_lb, stride_lh, stride_lt,
+    T_MAX: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    SCALE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    D: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+):
+    pid_n = tl.program_id(0)
+    bkv = tl.program_id(1)
+    b = bkv // NUM_KV_HEADS
+    kv_h = bkv % NUM_KV_HEADS
+    group = NUM_HEADS // NUM_KV_HEADS
+
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_m = tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    k_mask = (offs_n[:, None] < T_MAX) & (offs_d[None, :] < D)
+    k_ptrs = K + b * stride_kb + kv_h * stride_kh + offs_n[:, None] * stride_kt + offs_d[None, :] * stride_kd
+    v_ptrs = V + b * stride_vb + kv_h * stride_vh + offs_n[:, None] * stride_vt + offs_d[None, :] * stride_vd
+    k = tl.load(k_ptrs, mask=k_mask, other=0.0)
+    v = tl.load(v_ptrs, mask=k_mask, other=0.0)
+
+    dk = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
+
+    qk_scale_log2 = SCALE * LOG2E
+
+    if IS_CAUSAL:
+        m_start_block = (pid_n * BLOCK_N) // BLOCK_M
+    else:
+        m_start_block = 0
+    m_end_block = tl.cdiv(T_MAX, BLOCK_M)
+
+    for hg in range(group):
+        h = kv_h * group + hg
+        for m_block in range(m_start_block, m_end_block):
+            start_m = m_block * BLOCK_M
+            offs_m_cur = start_m + offs_m
+            row_mask = offs_m_cur < T_MAX
+            q_mask = row_mask[:, None] & (offs_d[None, :] < D)
+
+            q_ptrs = Q + b * stride_qb + h * stride_qh + offs_m_cur[:, None] * stride_qt + offs_d[None, :] * stride_qd
+            do_ptrs = DO + b * stride_dob + h * stride_doh + offs_m_cur[:, None] * stride_dot + offs_d[None, :] * stride_dod
+            o_ptrs = O + b * stride_ob + h * stride_oh + offs_m_cur[:, None] * stride_ot + offs_d[None, :] * stride_od
+            q = tl.load(q_ptrs, mask=q_mask, other=0.0)
+            do = tl.load(do_ptrs, mask=q_mask, other=0.0)
+            o_tile = tl.load(o_ptrs, mask=q_mask, other=0.0)
+            delta = tl.sum(o_tile.to(tl.float32) * do.to(tl.float32), axis=1)
+
+            lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m_cur * stride_lt
+            lse = tl.load(lse_ptrs, mask=row_mask, other=0.0)
+
+            s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+            p = tl.exp2(s - lse[:, None] * LOG2E)
+
+            if IS_CAUSAL:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX) & (offs_m_cur[:, None] >= offs_n[None, :])
+            else:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX)
+            p = tl.where(p_mask, p, 0.0)
+
+            dv = tl.dot(tl.trans(p).to(q.dtype), do, acc=dv, out_dtype=tl.float32)
+            dp = tl.dot(do, tl.trans(v), out_dtype=tl.float32)
+            ds = p * (dp - delta[:, None])
+            dk = tl.dot(tl.trans(ds).to(q.dtype), q, acc=dk, out_dtype=tl.float32)
+
+            # dq contribution from this KV block: ds @ K * SCALE -> BLOCK_M x BLOCK_D,
+            # atomic-added into the fp32 scratch. The final SCALE is applied here so
+            # each per-block contribution is already in the output's scale; the cast
+            # kernel only downshifts fp32 -> bf16.
+            dq_local = tl.dot(ds.to(q.dtype), k, out_dtype=tl.float32) * SCALE
+            dq_ptrs = (DQ_F32 + b * stride_dqfb + h * stride_dqfh
+                       + offs_m_cur[:, None] * stride_dqft + offs_d[None, :] * stride_dqfd)
+            tl.atomic_add(dq_ptrs, dq_local, mask=q_mask)
+
+    dk = dk * SCALE
+    dk_ptrs = DK + b * stride_dkb + kv_h * stride_dkh + offs_n[:, None] * stride_dkt + offs_d[None, :] * stride_dkd
+    dv_ptrs = DV + b * stride_dvb + kv_h * stride_dvh + offs_n[:, None] * stride_dvt + offs_d[None, :] * stride_dvd
+    store_mask = (offs_n[:, None] < T_MAX) & (offs_d[None, :] < D)
+    tl.store(dk_ptrs, dk.to(K.dtype.element_ty), mask=store_mask)
+    tl.store(dv_ptrs, dv.to(V.dtype.element_ty), mask=store_mask)
+
+
+@triton.autotune(
+    configs=_bwd_fused_tma_dq_configs(),
+    key=["D", "IS_CAUSAL", "NUM_HEADS", "NUM_KV_HEADS", "T_MAX"],
+    reset_to_zero=["DQ_F32"],
+)
+@triton.jit
+def _attn_bwd_fused_tma_dq_kernel(
+    Q, K, V, O, DO, DK, DV, DQ_F32, LSE,
+    stride_qb, stride_qt, stride_qh, stride_qd,
+    stride_kb, stride_kt, stride_kh, stride_kd,
+    stride_vb, stride_vt, stride_vh, stride_vd,
+    stride_ob, stride_ot, stride_oh, stride_od,
+    stride_dob, stride_dot, stride_doh, stride_dod,
+    stride_dkb, stride_dkt, stride_dkh, stride_dkd,
+    stride_dvb, stride_dvt, stride_dvh, stride_dvd,
+    stride_dqfb, stride_dqft, stride_dqfh, stride_dqfd,
+    stride_lb, stride_lh, stride_lt,
+    T_MAX: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    NUM_KV_HEADS: tl.constexpr,
+    SCALE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    D: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+):
+    tl.static_assert(BLOCK_D == D, "TMA-dq fused bwd requires BLOCK_D == D")
+    pid_n = tl.program_id(0)
+    bkv = tl.program_id(1)
+    b = bkv // NUM_KV_HEADS
+    kv_h = bkv % NUM_KV_HEADS
+    group = NUM_HEADS // NUM_KV_HEADS
+
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_m = tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    k_mask = (offs_n[:, None] < T_MAX) & (offs_d[None, :] < D)
+    k_ptrs = K + b * stride_kb + kv_h * stride_kh + offs_n[:, None] * stride_kt + offs_d[None, :] * stride_kd
+    v_ptrs = V + b * stride_vb + kv_h * stride_vh + offs_n[:, None] * stride_vt + offs_d[None, :] * stride_vd
+    k = tl.load(k_ptrs, mask=k_mask, other=0.0)
+    v = tl.load(v_ptrs, mask=k_mask, other=0.0)
+
+    dk = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
+    dv = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
+
+    qk_scale_log2 = SCALE * LOG2E
+
+    if IS_CAUSAL:
+        m_start_block = (pid_n * BLOCK_N) // BLOCK_M
+    else:
+        m_start_block = 0
+    m_end_block = tl.cdiv(T_MAX, BLOCK_M)
+
+    for hg in range(group):
+        h = kv_h * group + hg
+        DQ_desc = tl.make_tensor_descriptor(
+            DQ_F32 + b * stride_dqfb + h * stride_dqfh,
+            shape=[T_MAX, D],
+            strides=[stride_dqft, 1],
+            block_shape=[BLOCK_M, D],
+        )
+        for m_block in range(m_start_block, m_end_block):
+            start_m = m_block * BLOCK_M
+            offs_m_cur = start_m + offs_m
+            row_mask = offs_m_cur < T_MAX
+            q_mask = row_mask[:, None] & (offs_d[None, :] < D)
+
+            q_ptrs = Q + b * stride_qb + h * stride_qh + offs_m_cur[:, None] * stride_qt + offs_d[None, :] * stride_qd
+            do_ptrs = DO + b * stride_dob + h * stride_doh + offs_m_cur[:, None] * stride_dot + offs_d[None, :] * stride_dod
+            o_ptrs = O + b * stride_ob + h * stride_oh + offs_m_cur[:, None] * stride_ot + offs_d[None, :] * stride_od
+            q = tl.load(q_ptrs, mask=q_mask, other=0.0)
+            do = tl.load(do_ptrs, mask=q_mask, other=0.0)
+            o_tile = tl.load(o_ptrs, mask=q_mask, other=0.0)
+            delta = tl.sum(o_tile.to(tl.float32) * do.to(tl.float32), axis=1)
+
+            lse_ptrs = LSE + b * stride_lb + h * stride_lh + offs_m_cur * stride_lt
+            lse = tl.load(lse_ptrs, mask=row_mask, other=0.0)
+
+            s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+            p = tl.exp2(s - lse[:, None] * LOG2E)
+
+            if IS_CAUSAL:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX) & (offs_m_cur[:, None] >= offs_n[None, :])
+            else:
+                p_mask = row_mask[:, None] & (offs_n[None, :] < T_MAX)
+            p = tl.where(p_mask, p, 0.0)
+
+            dv = tl.dot(tl.trans(p).to(q.dtype), do, acc=dv, out_dtype=tl.float32)
+            dp = tl.dot(do, tl.trans(v), out_dtype=tl.float32)
+            ds = p * (dp - delta[:, None])
+            dk = tl.dot(tl.trans(ds).to(q.dtype), q, acc=dk, out_dtype=tl.float32)
+
+            dq_local = tl.dot(ds.to(q.dtype), k, out_dtype=tl.float32) * SCALE
+            dq_local = tl.where(q_mask, dq_local, 0.0)
+            DQ_desc.atomic_add([start_m, 0], dq_local)
+
+    dk = dk * SCALE
+    dk_ptrs = DK + b * stride_dkb + kv_h * stride_dkh + offs_n[:, None] * stride_dkt + offs_d[None, :] * stride_dkd
+    dv_ptrs = DV + b * stride_dvb + kv_h * stride_dvh + offs_n[:, None] * stride_dvt + offs_d[None, :] * stride_dvd
+    store_mask = (offs_n[:, None] < T_MAX) & (offs_d[None, :] < D)
+    tl.store(dk_ptrs, dk.to(K.dtype.element_ty), mask=store_mask)
+    tl.store(dv_ptrs, dv.to(V.dtype.element_ty), mask=store_mask)
+
+
+@triton.jit
+def _attn_bwd_dq_cast_kernel(
+    DQ_F32, DQ,
+    stride_fb, stride_ft, stride_fh, stride_fd,
+    stride_qb, stride_qt, stride_qh, stride_qd,
+    T_MAX: tl.constexpr,
+    NUM_HEADS: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+    D: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    bh = tl.program_id(1)
+    b = bh // NUM_HEADS
+    h = bh % NUM_HEADS
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+    mask = (offs_m[:, None] < T_MAX) & (offs_d[None, :] < D)
+    f_ptrs = DQ_F32 + b * stride_fb + h * stride_fh + offs_m[:, None] * stride_ft + offs_d[None, :] * stride_fd
+    q_ptrs = DQ + b * stride_qb + h * stride_qh + offs_m[:, None] * stride_qt + offs_d[None, :] * stride_qd
+    val = tl.load(f_ptrs, mask=mask, other=0.0)
+    tl.store(q_ptrs, val.to(DQ.dtype.element_ty), mask=mask)
 
 
 # ---------------------------------------------------------------------------
@@ -1025,24 +1397,78 @@ def _whale_attn_bwd_impl(q, k, v, o, do, lse, causal
     #   fused_delta      — force inline-Δ in dkdv+dq; skips preprocess entirely.
     #   fused_delta_tma  — same as fused_delta but dkdv uses on-device TMA
     #                      (requires BLOCK_D == D; dq_inline stays as-is).
+    #   fused_bwd        — monolithic dkdv+dq in one kernel; dq via fp32
+    #                      atomic-add + bf16 cast kernel.
     variant = os.environ.get("WHALE_BWD_VARIANT", "auto")
     fused_delta_t_max = int(os.environ.get("WHALE_FUSED_DELTA_T_MAX", "3072"))
     if variant == "auto":
         use_fused_delta = T <= fused_delta_t_max
         use_tma_dkdv = False
+        use_fused_bwd = False
+        use_fused_bwd_tma_dq = False
     elif variant == "fused_delta_tma":
         use_fused_delta = True
         use_tma_dkdv = True
+        use_fused_bwd = False
+        use_fused_bwd_tma_dq = False
+    elif variant == "fused_bwd":
+        use_fused_delta = False
+        use_tma_dkdv = False
+        use_fused_bwd = True
+        use_fused_bwd_tma_dq = False
+    elif variant == "fused_bwd_tma_dq":
+        use_fused_delta = False
+        use_tma_dkdv = False
+        use_fused_bwd = True
+        use_fused_bwd_tma_dq = True
     else:
         use_fused_delta = variant == "fused_delta"
         use_tma_dkdv = False
+        use_fused_bwd = False
+        use_fused_bwd_tma_dq = False
     # TMA requires BLOCK_D == D, which holds iff D is a power of 2.
     if use_tma_dkdv and block_d != D:
         use_tma_dkdv = False
+    if use_fused_bwd_tma_dq and block_d != D:
+        use_fused_bwd_tma_dq = False
     use_split_h = os.environ.get("WHALE_BWD_SPLIT_H", "0") == "1"
 
     if use_tma_dkdv:
         _ensure_tma_allocator()
+
+    if use_fused_bwd:
+        if use_fused_bwd_tma_dq:
+            _ensure_tma_allocator()
+            fused_kernel = _attn_bwd_fused_tma_dq_kernel
+        else:
+            fused_kernel = _attn_bwd_fused_kernel
+        dq_f32 = torch.zeros(B, T, H, D, device=q.device, dtype=torch.float32)
+        grid_kv = lambda META: (triton.cdiv(T, META["BLOCK_N"]), B * KV)
+        fused_kernel[grid_kv](
+            q, k, v, o, do_c, dk, dv, dq_f32, lse,
+            q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+            k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+            v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+            o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+            do_c.stride(0), do_c.stride(1), do_c.stride(2), do_c.stride(3),
+            dk.stride(0), dk.stride(1), dk.stride(2), dk.stride(3),
+            dv.stride(0), dv.stride(1), dv.stride(2), dv.stride(3),
+            dq_f32.stride(0), dq_f32.stride(1), dq_f32.stride(2), dq_f32.stride(3),
+            lse.stride(0), lse.stride(1), lse.stride(2),
+            T_MAX=T, NUM_HEADS=H, NUM_KV_HEADS=KV, SCALE=scale,
+            BLOCK_D=block_d, D=D, IS_CAUSAL=causal,
+        )
+        cast_block_m = 128
+        cast_grid = (triton.cdiv(T, cast_block_m), B * H)
+        _attn_bwd_dq_cast_kernel[cast_grid](
+            dq_f32, dq,
+            dq_f32.stride(0), dq_f32.stride(1), dq_f32.stride(2), dq_f32.stride(3),
+            dq.stride(0), dq.stride(1), dq.stride(2), dq.stride(3),
+            T_MAX=T, NUM_HEADS=H,
+            BLOCK_M=cast_block_m, BLOCK_D=block_d, D=D,
+            num_warps=4, num_stages=2,
+        )
+        return dq, dk, dv
 
     # Only the baseline path needs the Δ tensor + preprocess kernel.
     if not use_fused_delta:

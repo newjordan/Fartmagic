@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${REPO_ROOT}"
+
+export PATH="/venv/main/bin:${PATH}"
+# whale_fwd_fa3_bwd lives under vault/. Make sure repo root is on PYTHONPATH
+# so `from vault.whale_kernel_triton import whale_fwd_fa3_bwd` resolves.
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/launch_guard.sh"
+
+LEG_DIR="${REPO_ROOT}/legs/2026-04-16_whale_hybrid_train_t2048"
+TRAIN_SCRIPT="${LEG_DIR}/train_gpt.py"
+TRACKED_ENV="${LEG_DIR}/tracked_env.sh"
+LOG_DIR="${LEG_DIR}/logs"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/full_seed${SEED:-444}_$(date +%Y%m%d_%H%M%S).log"
+
+NPROC="${NPROC_PER_NODE:-8}"
+SEED="${SEED:-444}"
+
+die() {
+  echo "FATAL: $*" >&2
+  exit 1
+}
+
+reject_adhoc_env() {
+  local vars=(
+    MAX_WALLCLOCK_SECONDS SKIP_GPTQ
+    COMPRESSOR NUM_LAYERS QUANT_ATTN_BITS QUANT_MLP_BITS QUANT_AUX_BITS
+    QUANT_EMBED_BITS QUANT_OTHER_BITS LOADER_MODE COPRIME_MAX_LOADED_SHARDS
+    COPRIME_SHARDS_PER_BATCH COPRIME_SHARD_HOLD_STEPS COMPLEMENT_ALPHA
+    XSA_LAST_N BIGRAM_VOCAB_SIZE ROPE_DIMS SWA_EVERY MTP_NUM_HEADS
+    TRIGRAM NGRAM_EVAL_ORDER CUBRIC_CADENCE NGRAM_ENTROPY_SHIFT
+    VOCAB_SIZE DATA_PATH TOKENIZER_PATH VE_ENABLED NUM_LOOPS
+    QK_GAIN_INIT MATRIX_LR MUON_WD
+    GPTQ_ONLINE_ENABLED GPTQ_ONLINE_START_FRAC GPTQ_ONLINE_LR_MUL_MAX
+    GPTQ_ONLINE_EVERY GPTQ_ONLINE_FIRST_MICRO_ONLY
+  )
+  local name=""
+  for name in "${vars[@]}"; do
+    if [[ -n "${!name+x}" ]]; then
+      die "refusing ad-hoc env override: ${name} is already set in the shell. Edit ${TRACKED_ENV} instead."
+    fi
+  done
+}
+
+reject_adhoc_env
+# shellcheck disable=SC1090
+source "${TRACKED_ENV}"
+
+lg_preflight_and_lock "${REPO_ROOT}" "${TRAIN_SCRIPT}" "${TRACKED_ENV}" "${NPROC}" "$0"
+
+SEED="${SEED}" \
+NPROC_PER_NODE="${NPROC}" \
+MAX_WALLCLOCK_SECONDS=600 \
+SKIP_GPTQ=0 \
+torchrun --standalone --nproc_per_node="${NPROC}" "${TRAIN_SCRIPT}" \
+2>&1 | tee "${LOG_FILE}"
+
+echo "LOG: ${LOG_FILE}"

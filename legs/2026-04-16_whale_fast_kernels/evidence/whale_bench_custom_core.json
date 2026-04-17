@@ -1,0 +1,67 @@
+{
+  "config": {
+    "batch_size": 8,
+    "compile": false,
+    "compile_mode": "reduce-overhead",
+    "dtype": "bfloat16",
+    "model_dims": [
+      512
+    ],
+    "num_heads": 8,
+    "num_kv_heads": 4,
+    "qk_gain_init": 5.25,
+    "rope_base": 10000.0,
+    "rope_dims": 16,
+    "seq_len": 2048,
+    "suite": "core",
+    "timed_iters": 20,
+    "warmup_iters": 5
+  },
+  "results": [
+    {
+      "backend": "custom",
+      "batch_size": 8,
+      "cold_ms": 4736.404256997048,
+      "head_dim": 64,
+      "mode": "eager",
+      "model_dim": 512,
+      "num_heads": 8,
+      "num_kv_heads": 4,
+      "rope_dims": 16,
+      "seq_len": 2048,
+      "stage": "core",
+      "timed": {
+        "max_ms": 0.5045309953857213,
+        "mean_ms": 0.492195750848623,
+        "median_ms": 0.4929950009682216,
+        "min_ms": 0.4832190024899319,
+        "p95_ms": 0.49861099978443235,
+        "stdev_ms": 0.004999418546187145
+      },
+      "tok_per_s": 33287568.963672284,
+      "total_tokens": 16384,
+      "warmup": {
+        "max_ms": 0.608179994742386,
+        "mean_ms": 0.516054398030974,
+        "median_ms": 0.4924669920001179,
+        "min_ms": 0.4873309953836724,
+        "p95_ms": 0.608179994742386,
+        "stdev_ms": 0.04645573054908852
+      }
+    }
+  ],
+  "runtime": {
+    "backend": "custom",
+    "backend_meta": {
+      "custom_callable": "vault.whale_kernel_triton:custom_whale_attn_fwd",
+      "custom_spec": "vault.whale_kernel_triton:custom_whale_attn_fwd",
+      "fa3_available": false
+    },
+    "cuda": "13.0",
+    "device": "cuda",
+    "device_name": "NVIDIA GB10",
+    "fa3_available": false,
+    "python": "3.13.12",
+    "torch": "2.11.0+cu130"
+  }
+}

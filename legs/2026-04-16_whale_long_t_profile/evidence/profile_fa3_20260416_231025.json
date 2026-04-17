@@ -1,0 +1,24 @@
+{
+  "backend": "fa3",
+  "variant": "auto",
+  "shape": [
+    2,
+    8192,
+    8,
+    4,
+    64
+  ],
+  "steps": 30,
+  "rows": [
+    {
+      "name": "void cutlass::device_kernel",
+      "us_per_iter": 924.2589666666693,
+      "calls_per_iter": 6.0
+    },
+    {
+      "name": "void at::native::vectorized_elementwise_kernel",
+      "us_per_iter": 11.648900000000546,
+      "calls_per_iter": 3.0
+    }
+  ]
+}

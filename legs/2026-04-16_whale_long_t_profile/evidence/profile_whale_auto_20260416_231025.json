@@ -1,0 +1,34 @@
+{
+  "backend": "whale",
+  "variant": "auto",
+  "shape": [
+    2,
+    8192,
+    8,
+    4,
+    64
+  ],
+  "steps": 30,
+  "rows": [
+    {
+      "name": "_attn_bwd_dkdv_kernel",
+      "us_per_iter": 747.2282666666672,
+      "calls_per_iter": 1.0
+    },
+    {
+      "name": "_attn_fwd_kernel",
+      "us_per_iter": 461.8468000000001,
+      "calls_per_iter": 1.0
+    },
+    {
+      "name": "_attn_bwd_dq_kernel",
+      "us_per_iter": 448.272633333334,
+      "calls_per_iter": 1.0
+    },
+    {
+      "name": "_attn_bwd_preprocess_kernel",
+      "us_per_iter": 12.482833333333263,
+      "calls_per_iter": 1.0
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "label": "split_2_4096_8_4_64",
+  "device": "NVIDIA H100 80GB HBM3",
+  "torch": "2.11.0+cu130",
+  "cuda": "13.0",
+  "env_fwd": null,
+  "env_bkv": null,
+  "env_bq": null,
+  "rounds": 30,
+  "iters_per_round": 600,
+  "results": [
+    {
+      "shape": [
+        2,
+        4096,
+        8,
+        4,
+        64
+      ],
+      "backends": {
+        "whale_fast": {
+          "fwd_mean_ms": 0.11575907732132408,
+          "fwd_std_ms": 0.00037980940333334203,
+          "fb_mean_ms": 0.503342416178849,
+          "fb_std_ms": 0.0010578545024113228
+        },
+        "fa3": {
+          "fwd_mean_ms": 0.09127361240113775,
+          "fwd_std_ms": 0.002088581247988621,
+          "fb_mean_ms": 0.37090055120653576,
+          "fb_std_ms": 0.02346859845672723
+        }
+      }
+    }
+  ]
+}

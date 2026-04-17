@@ -66,18 +66,35 @@ def _env_force(name):
 
 def _fwd_configs():
     """maxnreg=160 saved ~3us on the headline fwd (legs/2026-04-16_whale_fwd_warpspec_tma).
-    BM=192 added 2026-04-17 to match FA3 fwd tile at D=64 (FA3 hopper/tile_size.h:23-26).
-    Autotune key includes T_MAX so per-shape winner is chosen separately."""
+    BM=192 attempted 2026-04-17 but Triton 3.6 requires tl.arange(0, BLOCK_M) pow-2;
+    reverted. Expansion strategy: maxnreg ablation on small tiles + num_stages=6
+    on big tiles. Autotune key includes T_MAX for per-shape winner selection."""
     forced = _env_force("FWD")
     if forced:
         return forced
     configs = []
-    for bm, bn in [(64, 64), (128, 64), (128, 128), (64, 128), (256, 64), (128, 256),
-                   (192, 64), (192, 128)]:
+    for bm, bn in [(64, 64), (128, 64), (128, 128), (64, 128), (256, 64), (128, 256)]:
         for w in (4, 8):
             for s in (2, 3, 4, 5):
                 configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
                                              num_warps=w, num_stages=s, maxnreg=160))
+    # maxnreg=128 ablation on small tiles (higher SM occupancy)
+    for bm, bn in [(64, 64), (64, 128)]:
+        for w in (4, 8):
+            for s in (3, 4):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, maxnreg=128))
+    # maxnreg=224 ablation on big tiles (less register spill)
+    for bm, bn in [(128, 128), (128, 256), (256, 64)]:
+        for w in (4, 8):
+            for s in (3, 4):
+                configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                             num_warps=w, num_stages=s, maxnreg=224))
+    # num_stages=6 on big tiles (deeper async pipeline)
+    for bm, bn in [(128, 64), (128, 128), (256, 64)]:
+        for w in (4, 8):
+            configs.append(triton.Config({"BLOCK_M": bm, "BLOCK_N": bn},
+                                         num_warps=w, num_stages=6, maxnreg=160))
     return configs
 
 
@@ -294,10 +311,34 @@ def _attn_fwd_kernel(
 
     if IS_CAUSAL:
         hi = tl.minimum((pid_m + 1) * BLOCK_M, T_MAX)
+        # Fully-unmasked upper bound: tile at start_n..start_n+BLOCK_N-1 is
+        # strictly below diagonal iff start_n + BLOCK_N <= pid_m * BLOCK_M,
+        # and within T_MAX since pid_m*BLOCK_M <= T_MAX when valid.
+        lo_end = (pid_m * BLOCK_M // BLOCK_N) * BLOCK_N
     else:
         hi = T_MAX
+        lo_end = hi
 
-    for start_n in range(0, hi, BLOCK_N):
+    # Phase 1: fully-unmasked tiles. Skip tl.where + KV row mask; keep only D-dim mask.
+    for start_n in range(0, lo_end, BLOCK_N):
+        offs_n_cur = start_n + offs_n
+        k_mask = offs_d[None, :] < D
+        k_ptrs = K + b * stride_kb + kv_h * stride_kh + offs_n_cur[:, None] * stride_kt + offs_d[None, :] * stride_kd
+        v_ptrs = V + b * stride_vb + kv_h * stride_vh + offs_n_cur[:, None] * stride_vt + offs_d[None, :] * stride_vd
+        k = tl.load(k_ptrs, mask=k_mask, other=0.0)
+        v = tl.load(v_ptrs, mask=k_mask, other=0.0)
+
+        s = tl.dot(q, tl.trans(k), out_dtype=tl.float32) * qk_scale_log2
+        m_new = tl.maximum(m_i, tl.max(s, axis=1))
+        # Guard first update where m_i = -inf; invalid q rows keep m_i at 0 after iter 1, fine.
+        alpha = tl.where(m_new > float("-inf"), tl.exp2(m_i - m_new), 1.0)
+        p = tl.exp2(s - m_new[:, None])
+        l_i = l_i * alpha + tl.sum(p, axis=1)
+        acc = tl.dot(p.to(q.dtype), v, acc=acc * alpha[:, None], out_dtype=tl.float32)
+        m_i = m_new
+
+    # Phase 2: boundary + causal tiles.
+    for start_n in range(lo_end, hi, BLOCK_N):
         offs_n_cur = start_n + offs_n
         k_mask = (offs_n_cur[:, None] < T_MAX) & (offs_d[None, :] < D)
         k_ptrs = K + b * stride_kb + kv_h * stride_kh + offs_n_cur[:, None] * stride_kt + offs_d[None, :] * stride_kd
@@ -313,7 +354,6 @@ def _attn_fwd_kernel(
         s = tl.where(valid, s, float("-inf"))
 
         m_new = tl.maximum(m_i, tl.max(s, axis=1))
-        # Guard the very first update where both m_i and m_new can be -inf.
         alpha = tl.where(m_new > float("-inf"), tl.exp2(m_i - m_new), 1.0)
         p = tl.exp2(s - m_new[:, None])
         l_i = l_i * alpha + tl.sum(p, axis=1)

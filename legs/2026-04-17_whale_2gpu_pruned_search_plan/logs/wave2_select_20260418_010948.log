@@ -1,0 +1,7 @@
+selected_file=worker0_dqtile_128_64_8_2_dqmr_160_dkdvmr_256_20260418_010329.json
+selected_dq_tile=128,64,8,2
+selected_dq_maxnreg=160
+selected_whale_fb_ms=0.29804377633333207
+selected_fa3_fb_ms=0.3122028158903122
+validate_pid=5055
+dkdv_followup_pid=5058

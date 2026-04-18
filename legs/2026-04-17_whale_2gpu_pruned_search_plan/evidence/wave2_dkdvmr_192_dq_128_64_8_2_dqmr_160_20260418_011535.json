@@ -1,0 +1,41 @@
+{
+  "label": "wave2_dkdvmr_192_dq_128,64,8,2_dqmr_160",
+  "device": "NVIDIA H100 80GB HBM3",
+  "torch": "2.11.0+cu130",
+  "cuda": "13.0",
+  "kernel_path": "/workspace/SOTA_FINAL/legs/2026-04-17_whale_2gpu_pruned_search_runtime/runtime/wave2_dkdvmr_192_dq_128_64_8_2_dqmr_160_20260418_011535/frozen_vault/whale_kernel_triton.py",
+  "kernel_sha256": "e15a6980e1dd0d7095a0d0c995bafd71ab99c192479923a4ed8233ae87dfaf69",
+  "env_fwd": null,
+  "env_bwd_variant": "fused_delta_tma",
+  "env_bkv_tma": "128,128,8,3",
+  "env_bkv_tma_maxnreg": "192",
+  "env_bq": "128,64,8,2",
+  "env_bq_maxnreg": "160",
+  "rounds": 5,
+  "iters_per_round": 100,
+  "results": [
+    {
+      "shape": [
+        2,
+        2048,
+        8,
+        4,
+        64
+      ],
+      "backends": {
+        "whale_fast": {
+          "fwd_mean_ms": 0.07443161595612764,
+          "fwd_std_ms": 0.00504690984213142,
+          "fb_mean_ms": 0.5072771856188774,
+          "fb_std_ms": 0.0014671003450542476
+        },
+        "fa3": {
+          "fwd_mean_ms": 0.088514176055789,
+          "fwd_std_ms": 0.00446880852007023,
+          "fb_mean_ms": 0.33666470378637314,
+          "fb_std_ms": 0.026068841608849834
+        }
+      }
+    }
+  ]
+}

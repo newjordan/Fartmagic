@@ -1,5 +1,5 @@
 {
-  "status": "provisional",
+  "status": "single_gpu_blessed",
   "family_id": "hybrid_b",
   "dq_tile": "128,64,8,5",
   "dkdv_tile": "128,128,8,3",
@@ -10,9 +10,13 @@
     "whale_fb_mean_ms": 0.2856340484172106,
     "fa3_fb_mean_ms": 0.2983246239423752
   },
+  "blessing_evidence": [
+    "/workspace/SOTA_FINAL/legs/2026-04-17_whale_2gpu_pruned_search_runtime/evidence/p390_hybridB_final_bless_a_g0_dq128_64_8_5_dkdv128_128_8_3_qmr1664_20260420_214432.json",
+    "/workspace/SOTA_FINAL/legs/2026-04-17_whale_2gpu_pruned_search_runtime/evidence/p393_hybridB_winner_lock_b_g0_dq128_64_8_5_dkdv128_128_8_3_qmr1664_20260420_223008.json"
+  ],
   "downstream_ready": {
-    "multi_gpu": false,
+    "multi_gpu": true,
     "whale_donor": false
   },
-  "updated_at": "2026-04-19"
+  "updated_at": "2026-04-20"
 }

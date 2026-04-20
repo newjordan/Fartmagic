@@ -1,4 +1,4 @@
-# Whale T2048 Research Focus — 2026-04-19
+# Whale T2048 Research Focus — 2026-04-20
 
 This document captures the current research doctrine for the whale kernel at the competition shape `(2,2048,8,4,64)`.
 
@@ -10,37 +10,47 @@ This document captures the current research doctrine for the whale kernel at the
 
 ## Current frontier
 
-- **Frontier / Hybrid B:** `DQ=128,64,8,5` + `DKDV=128,128,8,3` + `DKDV_MAXNREG=256`
-  - Current best known point: `QMR=1664`, whale `0.285634048417`, FA3 `0.298324623942`
-  - Current measured basin: `304` heavy cases, `298/304` green, with a broad green floor spanning roughly `1664..2304`
-- **Primary challenger:** `DQ=128,64,8,5` + `DKDV=128,64,8,3` + `DKDV_MAXNREG=256`
-  - Still strong and still useful as a challenger family, but no longer the lead frontier
-- **Fallback challenger:** `DQ=128,64,8,2` + `DKDV=128,128,8,3` + `DKDV_MAXNREG=256`
-  - Still a real family and still a useful truth source for playoff checks
-- **Hybrid A challenger:** `DQ=128,64,8,2` + `DKDV=128,64,8,3` + `DKDV_MAXNREG=256`
-  - Still worth direct comparison against fallback and Hybrid B
+- **Blessed single-GPU carry-forward / Hybrid B:** `DQ=128,64,8,5` + `DKDV=128,128,8,3` + `DKDV_MAXNREG=256`
+  - Carry-forward `QMR=1664`
+  - Best known exact-shape heavy point: whale `0.285634048417`, FA3 `0.298324623942`
+  - Winner-lock rechecks kept `1664` low and green at `0.287139` and `0.290260`
+  - Interpretation: `1664` is the cleanest practical anchor even though nearby `1952/2192/2240` also showed strong upside
+- **Nearest same-family challengers:** `QMR=1952`, `QMR=2192`, `QMR=2240`
+  - These remain the highest-value same-family challengers for `2x` confirmation because they posted low absolute whale times but more wobble than `1664`
+- **Primary challenger family:** `DQ=128,64,8,5` + `DKDV=128,64,8,3` + `DKDV_MAXNREG=256`
+  - Still a valid challenger family, but no longer the promoted carry-forward line
+- **Fallback challenger family:** `DQ=128,64,8,2` + `DKDV=128,128,8,3` + `DKDV_MAXNREG=256`
+  - Still a useful truth source and backup family, but it is no longer the promoted line
+- **Hybrid A challenger family:** `DQ=128,64,8,2` + `DKDV=128,64,8,3` + `DKDV_MAXNREG=256`
+  - Still useful for compact downstream comparison only
 - **Secondary quarantine:** `DQ=128,64,8,5` + `DKDV=256,128,8,2` + `DKDV_MAXNREG=256`
-  - Keep only sparse sentinels unless it materially improves absolute whale time
+  - Keep out of the frontier unless a downstream contradiction reopens it
 
 ## Current search policy
 
-- GPU 0 exploits the best known Hybrid B basin floor.
-- GPU 1 explores adjacent horizons and orthogonal interaction planes on the same family.
-- Controlled exploration is now part of correctness, not optional garnish:
-  - lower horizon below `1664`
-  - upper horizon above `2304`
-  - `DKDV_MR` interaction checks at strong Hybrid B points
+- Single-GPU frontier expansion is no longer the lead job.
+- The current outcome of single-GPU work is:
+  - broad Hybrid B basin found
+  - no deeper minimum found outside the mid-band
+  - `DKDV_MR=256` confirmed as the correct carry-forward setting
+- Downstream work should now treat Hybrid B `QMR=1664` as the promoted anchor and use `1952/2192/2240` as compact challengers.
 
 ## Stopping rule
 
-- Kernel work continues until the peaks are mapped on all active calibrations.
-- Apparent winners must be tested around their local neighborhood to rule out false peaks.
-- Do not push past a bad peak; use local perturbation and replicate-heavy checks to confirm the crest.
-- Do not call the surface mapped while a frontier family still has an open lower edge, upper edge, or unresolved orthogonal interaction plane.
+- For the exact-shape single-GPU kernel bench, the surface is now mapped tightly enough to promote a winner.
+- Reopen single-GPU kernel search only if:
+  - `2x` signal disagrees with the promoted anchor
+  - the donor integration exposes a contradiction
+  - a challenger family materially outruns the blessed anchor under downstream pressure
 
 ## Downstream readiness
 
-- Keep the downstream path fresh and ready for:
-  1. multi-GPU signal measurement
+- The next gates are now active, not hypothetical:
+  1. `2x` / multi-GPU signal measurement
   2. whale-donor integration
-- Those steps remain downstream until the exact-shape single-GPU frontier is bracketed tightly enough to choose the carry-forward kernel family with confidence.
+- Carry-forward anchor:
+  - family: Hybrid B
+  - `DQ=128,64,8,5`
+  - `DKDV=128,128,8,3`
+  - `DKDV_MAXNREG=256`
+  - `QMR=1664`

@@ -1,58 +1,59 @@
-# Whale T2048 Next Gates — 2026-04-19
+# Whale T2048 Next Gates — 2026-04-20
 
-This note keeps the downstream path fresh while single-GPU kernel work remains primary.
+This note keeps the downstream path fresh now that the single-GPU kernel winner is blessed.
 
-## Current single-GPU frontier
+## Current single-GPU winner
 
-- Lead family: `DQ=128,64,8,5 / DKDV=128,128,8,3 / DKDV_MAXNREG=256`
-- Best known exact-shape point so far:
+- Blessed carry-forward family: `DQ=128,64,8,5 / DKDV=128,128,8,3 / DKDV_MAXNREG=256`
+- Blessed carry-forward point:
   - `QMR=1664`
-  - whale `0.2856340484172106`
-  - FA3 `0.2983246239423752`
+  - best known exact-shape heavy point: whale `0.2856340484172106`, FA3 `0.2983246239423752`
+  - winner-lock rechecks kept `1664` low and green at `0.287139` and `0.290260`
+- Same-family `2x` challengers to keep ready:
+  - `QMR=1952`
+  - `QMR=2192`
+  - `QMR=2240`
 
-## What still needs to be closed on single GPU
+## Single-GPU closeout status
 
-- Lower edge below `1664`
-- Upper edge above `2304`
-- `DKDV_MR` interaction on the winning family
-- Direct challenger pressure from:
-  - primary `DQ=128,64,8,5 / DKDV=128,64,8,3`
-  - fallback `DQ=128,64,8,2 / DKDV=128,128,8,3`
-  - hybrid A `DQ=128,64,8,2 / DKDV=128,64,8,3`
+- Broad basin established.
+- No deeper minimum was found outside the mid-band.
+- `DKDV_MR=256` won the interaction plane cleanly enough to carry forward.
+- Additional single-GPU work should now be treated as reopen-only, not default work.
 
 ## Downstream path to keep ready
 
 Readiness mechanism:
 - Keep one machine-readable winner anchor for the current carry-forward family.
 - Downstream scripts should read that anchor instead of hardcoding the current winner in multiple places.
-- The anchor can remain provisional until single-GPU bracketing is complete.
+- The anchor is now promoted beyond provisional status for downstream use.
 
 ### 1. Multi-GPU signal
 
 Purpose:
-- verify whether the single-GPU ordering survives distributed / end-to-end pressure
+- verify whether the blessed single-GPU ordering survives `2x` / distributed pressure
 
 What should be ready:
-- the current winning family
-- one strong challenger family
-- a clean per-rank baseline against FA3
-
-Do not promote to this step until:
-- the single-GPU winning family is bracketed tightly enough that the carry-forward choice is not arbitrary
+- anchor: Hybrid B `QMR=1664`
+- same-family challengers: `1952`, `2192`, `2240`
+- one clean per-rank FA3 baseline
+- optional family challengers:
+  - primary `DQ=128,64,8,5 / DKDV=128,64,8,3`
+  - fallback `DQ=128,64,8,2 / DKDV=128,128,8,3`
 
 ### 2. Whale-donor integration
 
 Purpose:
-- carry the strongest single-GPU kernel family into the donor path once the family choice is stable
+- carry the blessed Hybrid B anchor into the donor path once `2x` signal does not contradict it
 
 What should be ready:
 - winner family spec
-- challenger spec
+- same-family challenger specs
 - exact-shape evidence references
-- a short rationale for why the chosen family outranks the others on absolute whale time
+- short rationale for why `1664` beat the alternatives as the carry-forward anchor
 
 ## Current readiness stance
 
-- Keep both downstream gates ready to execute within hours once single-GPU bracketing is tight enough.
-- Do not start either gate early just because the current family is green.
-- The single-GPU frontier is already winning; the remaining work is about choosing the right winner to carry forward, not about proving whale can ever beat FA3.
+- Single-GPU choice is now tight enough to move downstream.
+- Multi-GPU signal is the next immediate gate.
+- Donor integration should use the same anchor file and the same blessed family spec, rather than reopening single-GPU tuning by default.

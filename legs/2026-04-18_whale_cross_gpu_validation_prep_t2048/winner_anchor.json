@@ -1,0 +1,18 @@
+{
+  "status": "provisional",
+  "family_id": "hybrid_b",
+  "dq_tile": "128,64,8,5",
+  "dkdv_tile": "128,128,8,3",
+  "dkdv_maxnreg": 256,
+  "qmr": 1664,
+  "source_evidence": "/workspace/SOTA_FINAL/legs/2026-04-17_whale_2gpu_pruned_search_runtime/evidence/p250_morning_hybridA_vs_hybridB_10_g1_dq128_64_8_5_dkdv128_128_8_3_qmr1664_20260419_195209.json",
+  "source_metrics": {
+    "whale_fb_mean_ms": 0.2856340484172106,
+    "fa3_fb_mean_ms": 0.2983246239423752
+  },
+  "downstream_ready": {
+    "multi_gpu": false,
+    "whale_donor": false
+  },
+  "updated_at": "2026-04-19"
+}

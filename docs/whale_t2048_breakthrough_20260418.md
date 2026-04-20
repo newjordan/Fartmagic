@@ -1,8 +1,8 @@
-# Whale T2048 Breakthrough — 2026-04-18
+# Whale T2048 Breakthrough — 2026-04-19
 
-Whale is now under FA3 on heavy validation at the competition kernel-bench shape `(2,2048,8,4,64)`.
+Whale is under FA3 on heavy validation at the competition kernel-bench shape `(2,2048,8,4,64)`.
 
-## Current best committed point
+## Historical committed point
 
 - `DQ_TILE=128,64,8,2`
 - `Q_MAXNREG=256`
@@ -11,17 +11,21 @@ Whale is now under FA3 on heavy validation at the competition kernel-bench shape
 - `evidence/manual_validate_dq_128_64_8_2_dqmr_256_dkdvmr_256_20260418_012119.json: results[0].backends.whale_fast.fb_mean_ms = 0.2985622241050005`
 - `evidence/manual_validate_dq_128_64_8_2_dqmr_256_dkdvmr_256_20260418_012119.json: results[0].backends.fa3.fb_mean_ms = 0.31829385602474214`
 
-## Why this counts as a breakthrough
+## Current frontier beyond the original breakthrough
 
-- The crossover is no longer a single light-pass tease; heavy `10x200` validations stayed green at `Q_MAXNREG in {160,192,224,256}` on the `128,64,8,2` family.
-- `DKDV_MAXNREG=256` survived the follow-up ridge sweep while `160`, `192`, and `224` all lost, so the backward register-cap problem has a clear local answer.
-- A second DQ family, `128,64,8,5@224`, also stayed green, so the win is not confined to a single brittle point.
+- The original committed point is still a valid whale `<` FA3 crossover and still matters as historical proof.
+- It is no longer the lead frontier.
+- The current lead family is now Hybrid B:
+  - `DQ=128,64,8,5`
+  - `DKDV=128,128,8,3`
+  - `DKDV_MAXNREG=256`
+- Current best known exact-shape heavy point on that family:
+  - `QMR=1664`
+  - whale `0.2856340484172106`
+  - FA3 `0.2983246239423752`
 
-## Caution
+## Interpretation
 
-- Replicate spread is still material. The committed evidence establishes whale `<` FA3 at T=2048 on this stack, but the exact ranking between `Q_MAXNREG=224` and `256` still deserves repeatability work.
-
-## Immediate next move
-
-- Treat `128,64,8,2 / 256 / 128,128,8,3 / 256` as the new anchor.
-- Spend future search budget only on `Q_MAXNREG > 256` and on repeatability checks of `224` vs `256`.
+- The committed point proved the whale `<` FA3 crossover was real.
+- The current work is now beyond “find any crossover.”
+- The active job is to finish mapping the best single-GPU frontier, rule out false peaks, and only then carry the strongest family downstream.

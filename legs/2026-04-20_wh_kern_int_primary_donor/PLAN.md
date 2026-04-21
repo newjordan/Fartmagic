@@ -3,6 +3,8 @@
 ## Goal
 Integrate the best whale donor with the blessed 2x whale kernel carry-forward.
 
+Reference planning doc: `docs/wh_kern_int_integration_plan_20260420.md`
+
 ## Current anchor
 - donor: `whale_l12_dim576_matrixbits5`
 - kernel: `primary @ 1984`

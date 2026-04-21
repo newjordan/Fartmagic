@@ -29,7 +29,8 @@ anchor_qmr=${CROSS_GPU_WINNER_QMR}
 anchor_source=${CROSS_GPU_WINNER_SOURCE_EVIDENCE}
 anchor_multi_gpu_ready=${CROSS_GPU_WINNER_MULTI_GPU_READY}
 anchor_whale_donor_ready=${CROSS_GPU_WINNER_DONOR_READY}
-anchor_qmrs=${CROSS_GPU_ANCHOR_QMRS}
+ridge_sweep_qmrs=${CROSS_GPU_RIDGE_SWEEP_QMRS}
+valley_qmrs=${CROSS_GPU_VALLEY_QMRS}
 challenger_rows=$(printf '%q' "${CROSS_GPU_CHALLENGER_ROWS}")
 EOF_MANIFEST
 
@@ -37,7 +38,11 @@ append_task() {
   printf '%s\n' "$1" >> "${TASKS_FILE}"
 }
 
-for qmr in ${CROSS_GPU_ANCHOR_QMRS}; do
+for qmr in ${CROSS_GPU_RIDGE_SWEEP_QMRS}; do
+  append_task "${CROSS_GPU_WINNER_FAMILY_ID}|ridge|${CROSS_GPU_WINNER_DQ_TILE}|${CROSS_GPU_WINNER_DKDV_TILE}|${CROSS_GPU_WINNER_DKDV_MAXNREG}|${qmr}"
+done
+
+for qmr in ${CROSS_GPU_VALLEY_QMRS}; do
   append_task "${CROSS_GPU_WINNER_FAMILY_ID}|probe|${CROSS_GPU_WINNER_DQ_TILE}|${CROSS_GPU_WINNER_DKDV_TILE}|${CROSS_GPU_WINNER_DKDV_MAXNREG}|${qmr}"
 done
 

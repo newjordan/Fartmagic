@@ -32,8 +32,9 @@ export CROSS_GPU_WINNER_SOURCE_EVIDENCE="$(anchor_json '.source_evidence')"
 export CROSS_GPU_WINNER_MULTI_GPU_READY="$(anchor_json '.downstream_ready.multi_gpu')"
 export CROSS_GPU_WINNER_DONOR_READY="$(anchor_json '.downstream_ready.whale_donor')"
 
-export CROSS_GPU_ANCHOR_QMRS="1664 1760 1952 2032 2192 2240"
-export CROSS_GPU_CHALLENGER_ROWS=$'primary|128,64,8,5|128,64,8,3|256|1984 2048 2144
-fallback|128,64,8,2|128,128,8,3|256|928 1664 2048
-hybrid_a|128,64,8,2|128,64,8,3|256|1664 2048'
+export CROSS_GPU_RIDGE_SWEEP_QMRS="1984"
+export CROSS_GPU_VALLEY_QMRS="1984"
+export CROSS_GPU_CHALLENGER_ROWS=$'fallback|128,64,8,2|128,128,8,3|256|928
+hybrid_a|128,64,8,2|128,64,8,3|256|2048
+hybrid_b|128,64,8,5|128,128,8,3|256|1952 2192'
 export CROSS_GPU_BENCH_SCRIPT="/workspace/SOTA_FINAL/legs/2026-04-17_whale_2gpu_pruned_search_runtime/bench_stable_scratch.py"

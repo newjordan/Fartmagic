@@ -25,7 +25,7 @@ mkdir -p "${LOG_DIR}" "${EVID_DIR}" "${WORK_CACHE}/triton" "${WORK_CACHE}/induct
 source "${LEG_DIR}/tracked_env.sh"
 
 case "${PHASE}" in
-  probe)
+  ridge|probe)
     ROUNDS="${BENCH_PROBE_ROUNDS}"
     ITERS="${BENCH_PROBE_ITERS}"
     ;;

@@ -94,6 +94,8 @@ Implemented scaffold:
 - `legs/2026-04-20_wh_kern_int_primary_donor/PLAN.md`
 - `legs/2026-04-20_wh_kern_int_primary_donor/hypothesis.md`
 
+Benchmark/fallback contract: `docs/wh_kern_int_benchmark_contract_20260420.md`
+
 ## Success Condition
 
 The branch succeeds when:

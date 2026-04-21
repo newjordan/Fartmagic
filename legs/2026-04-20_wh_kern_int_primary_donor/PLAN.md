@@ -4,6 +4,7 @@
 Integrate the best whale donor with the blessed 2x whale kernel carry-forward.
 
 Reference planning doc: `docs/wh_kern_int_integration_plan_20260420.md`
+Benchmark/fallback contract: `docs/wh_kern_int_benchmark_contract_20260420.md`
 
 ## Current anchor
 - donor: `whale_l12_dim576_matrixbits5`

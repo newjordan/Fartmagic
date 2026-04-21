@@ -1,0 +1,18 @@
+{
+  "status": "multi_gpu_blessed",
+  "family_id": "primary",
+  "dq_tile": "128,64,8,5",
+  "dkdv_tile": "128,64,8,3",
+  "dkdv_maxnreg": 256,
+  "qmr": 1984,
+  "source_evidence": "/workspace/SOTA_FINAL/legs/2026-04-18_whale_cross_gpu_validation_prep_t2048/evidence/cross_primary_validate_dq_128_64_8_5_dkdv_128_64_8_3_mr_256_qmr_1984_20260421_000841.json",
+  "source_metrics": {
+    "whale_fb_mean_ms": 0.28776974408328534,
+    "fa3_fb_mean_ms": 0.3073434559851885
+  },
+  "blessing_evidence": [
+    "/workspace/SOTA_FINAL/legs/2026-04-18_whale_cross_gpu_validation_prep_t2048/evidence/cross_primary_validate_dq_128_64_8_5_dkdv_128_64_8_3_mr_256_qmr_1984_20260421_014059.json",
+    "/workspace/SOTA_FINAL/legs/2026-04-18_whale_cross_gpu_validation_prep_t2048/evidence/cross_primary_validate_dq_128_64_8_5_dkdv_128_64_8_3_mr_256_qmr_1984_20260421_014217.json"
+  ],
+  "updated_at": "2026-04-21"
+}

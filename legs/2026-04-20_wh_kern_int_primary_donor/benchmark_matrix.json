@@ -1,0 +1,30 @@
+{
+  "B0": {
+    "description": "contract baseline",
+    "purpose": "same-contract donor baseline on preserved FA3 path",
+    "attn_mode": "fa3",
+    "kernel_anchor": "winner_anchor",
+    "kernel_profile_id": "primary_qmr1984"
+  },
+  "B1": {
+    "description": "blessed whale integration",
+    "purpose": "carry-forward donor plus blessed 2x whale kernel",
+    "attn_mode": "whale_native",
+    "kernel_anchor": "winner_anchor",
+    "kernel_profile_id": "primary_qmr1984"
+  },
+  "B2": {
+    "description": "strongest displaced kernel fallback",
+    "purpose": "recovery lane if blessed primary does not survive donor integration",
+    "attn_mode": "whale_native",
+    "kernel_anchor": "fallback_anchor",
+    "kernel_profile_id": "fallback_qmr928"
+  },
+  "B3": {
+    "description": "hybrid diagnostic",
+    "purpose": "diagnose native whale path vs donor issues without reviving the wrong trainer",
+    "attn_mode": "hybrid",
+    "kernel_anchor": "winner_anchor",
+    "kernel_profile_id": "primary_qmr1984"
+  }
+}

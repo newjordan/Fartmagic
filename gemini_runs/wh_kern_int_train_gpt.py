@@ -13,7 +13,9 @@ from pathlib import Path
 
 from vault.whale_kernel_triton import custom_whale_attn_fwd, whale_fwd_fa3_bwd
 
-BASE_TRAINER_PATH = Path(__file__).resolve().parents[1] / "pr1493_decompressed.py"
+CONTRACT_TRAINER_NAME = "pr1493_decompressed.py"
+FORBIDDEN_TRAINER_NAME = "pr1493_train_gpt.py"
+BASE_TRAINER_PATH = Path(__file__).resolve().parents[1] / CONTRACT_TRAINER_NAME
 
 BLESSED_KERNEL_DEFAULTS = {
     "WHALE_BWD_VARIANT": "fused_delta_tma",
@@ -30,7 +32,7 @@ def _install_kernel_env_defaults() -> None:
         os.environ.setdefault(key, value)
 
 
-def _resolve_attention_mode():
+def _resolve_attention_mode() -> str:
     mode = os.environ.get("WH_KERN_ATTN_MODE", "whale_native").strip().lower()
     if mode not in {"whale_native", "fa3", "hybrid"}:
         raise ValueError(f"unsupported WH_KERN_ATTN_MODE={mode!r}")
@@ -38,9 +40,14 @@ def _resolve_attention_mode():
 
 
 def _load_base():
-    spec = importlib.util.spec_from_file_location("wh_kern_int_pr1493_base", BASE_TRAINER_PATH)
+    resolved = BASE_TRAINER_PATH.resolve()
+    if resolved.name != CONTRACT_TRAINER_NAME:
+        raise RuntimeError(f"unexpected donor trainer path: {resolved}")
+    if FORBIDDEN_TRAINER_NAME in str(resolved):
+        raise RuntimeError(f"forbidden donor trainer path resolved: {resolved}")
+    spec = importlib.util.spec_from_file_location("wh_kern_int_pr1493_base", resolved)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load donor trainer: {BASE_TRAINER_PATH}")
+        raise RuntimeError(f"cannot load donor trainer: {resolved}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -56,7 +63,11 @@ def main() -> None:
     elif attn_mode == "hybrid":
         base.flash_attn_3_func = whale_fwd_fa3_bwd
     print(
-        "wh_kern_int: donor=pr1493_decompressed"
+        "wh_kern_int:"
+        f" benchmark={os.environ.get('WH_KERN_BENCHMARK_ID', 'unknown')}"
+        f" trainer={CONTRACT_TRAINER_NAME}"
+        f" profile={os.environ.get('WH_KERN_KERNEL_PROFILE_ID', 'unknown')}"
+        f" donor=pr1493_decompressed"
         f" attn_mode={attn_mode}"
         f" dq={os.environ.get('WHALE_BWD_Q_CONFIG')}"
         f" qmr={os.environ.get('WHALE_BWD_Q_MAXNREG')}"

@@ -52,9 +52,24 @@ This branch is not for more kernel search. It is the branch where the best whale
 | Validation baseline | displaced challengers in winner docs | fallback `928`, hybrid A `2048`, historical Hybrid B `1664/1952/2192` | keep only for rollback A/B | reopening search by accident |
 | Artifact path | donor leg convention | `artifacts/wh_kern_int_primary_donor/` | export renamed final artifacts | result confusion / overwrite |
 
+## Executable Control Plane
+
+The integration branch now has an executable benchmark selector rather than only narrative docs.
+
+Control files:
+- `legs/2026-04-20_wh_kern_int_primary_donor/benchmark_matrix.json`
+- `legs/2026-04-20_wh_kern_int_primary_donor/fallback_anchor.json`
+- `legs/2026-04-20_wh_kern_int_primary_donor/tracked_env.sh`
+
+Selection rules:
+- choose benchmark by `WH_KERN_BENCHMARK_ID`
+- never choose trainer by editing a path string in shell
+- never choose kernel family by hand-editing whale env vars in shell
+- `tracked_env.sh` is the only supported resolution path for B0/B1/B2/B3
+
 ## Diff Guard Policy
 
-This branch now has two modes:
+This branch now has two modes.
 
 ### Wrapper mode
 - `gemini_runs/wh_kern_int_train_gpt.py` wraps `pr1493_decompressed.py`
@@ -78,12 +93,13 @@ Rules:
 ## Execution Order
 
 1. Keep donor env fixed.
-2. Keep kernel env fixed from the blessed `2x` anchor.
+2. Keep benchmark selection fixed through `WH_KERN_BENCHMARK_ID`.
 3. Verify wrapper imports and shell syntax.
-4. Run a short donor integration smoke.
-5. Check that logs print the blessed primary kernel settings.
-6. Confirm artifact export still works.
-7. Only then decide whether a leg-local trainer copy is necessary.
+4. Resolve B0/B1/B2/B3 through `tracked_env.sh`.
+5. Run a short donor integration smoke in benchmark order.
+6. Check that logs print benchmark ID, trainer contract, attention mode, and kernel settings.
+7. Confirm artifact export still works.
+8. Only then decide whether a leg-local trainer copy is necessary.
 
 ## Current Branch Artifacts
 
@@ -91,6 +107,8 @@ Implemented scaffold:
 - `gemini_runs/wh_kern_int_train_gpt.py`
 - `legs/2026-04-20_wh_kern_int_primary_donor/run.sh`
 - `legs/2026-04-20_wh_kern_int_primary_donor/tracked_env.sh`
+- `legs/2026-04-20_wh_kern_int_primary_donor/benchmark_matrix.json`
+- `legs/2026-04-20_wh_kern_int_primary_donor/fallback_anchor.json`
 - `legs/2026-04-20_wh_kern_int_primary_donor/PLAN.md`
 - `legs/2026-04-20_wh_kern_int_primary_donor/hypothesis.md`
 
@@ -101,5 +119,6 @@ Benchmark/fallback contract: `docs/wh_kern_int_benchmark_contract_20260420.md`
 The branch succeeds when:
 - the donor runs on the preserved PR1493-family contract
 - the blessed whale kernel is the actual default attention path
+- B0/B1/B2/B3 are selectable without ad hoc env hacks
 - artifacts export cleanly
 - the branch can be evaluated without reopening kernel search

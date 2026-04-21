@@ -1,0 +1,22 @@
+{
+  "status": "multi_gpu_fallback_candidate",
+  "family_id": "fallback",
+  "dq_tile": "128,64,8,2",
+  "dkdv_tile": "128,128,8,3",
+  "dkdv_maxnreg": 256,
+  "qmr": 928,
+  "source_evidence": "/workspace/SOTA_FINAL/legs/2026-04-18_whale_cross_gpu_validation_prep_t2048/evidence/cross_fallback_validate_dq_128_64_8_2_dkdv_128_128_8_3_mr_256_qmr_928_20260420_231655.json",
+  "source_metrics": {
+    "whale_fb_mean_ms": 0.285529936209,
+    "fa3_fb_mean_ms": 0.306176656052
+  },
+  "displaced_by": {
+    "family_id": "primary",
+    "qmr": 1984,
+    "lock_evidence": [
+      "/workspace/SOTA_FINAL/legs/2026-04-18_whale_cross_gpu_validation_prep_t2048/evidence/cross_primary_validate_dq_128_64_8_5_dkdv_128_64_8_3_mr_256_qmr_1984_20260421_014059.json",
+      "/workspace/SOTA_FINAL/legs/2026-04-18_whale_cross_gpu_validation_prep_t2048/evidence/cross_primary_validate_dq_128_64_8_5_dkdv_128_64_8_3_mr_256_qmr_1984_20260421_014217.json"
+    ]
+  },
+  "updated_at": "2026-04-21"
+}

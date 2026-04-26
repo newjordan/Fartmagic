@@ -1,0 +1,79 @@
+{
+  "kernel": {
+    "attn_mode": "hybrid_microbench",
+    "benchmark_id": "RUNPY_D72_SPLIT64_TAIL8_KERNEL_MICROBENCH",
+    "causal": 1,
+    "correctness_shape": "B=2,T=256,H=8,KV=4,D=72",
+    "hybrid_backend": "fa3_bwd",
+    "kernel_source_path": "vault/whale_kernel_triton.py",
+    "kernel_source_sha256": "9092da172e8f8feae1881d2167612213b9e524184fb9aeffe7b0199dd8dd45f1",
+    "profiles": [
+      {
+        "profile_id": "default_auto_reference",
+        "reason": "same-run reference for the current default forward path",
+        "whale_fwd_d72_config": "",
+        "whale_fwd_variant": "default"
+      },
+      {
+        "profile_id": "d72split_128_64_w4_s4",
+        "reason": "default split64+tail8 config, lower warps to control tail scalar pressure",
+        "whale_fwd_d72_config": "128,64,4,4",
+        "whale_fwd_variant": "d72_split64_tail8"
+      },
+      {
+        "profile_id": "d72split_128_64_w8_s4",
+        "reason": "same M/N tile with more warps",
+        "whale_fwd_d72_config": "128,64,8,4",
+        "whale_fwd_variant": "d72_split64_tail8"
+      },
+      {
+        "profile_id": "d72split_128_128_w4_s4",
+        "reason": "larger N tile to reduce loop iterations",
+        "whale_fwd_d72_config": "128,128,4,4",
+        "whale_fwd_variant": "d72_split64_tail8"
+      },
+      {
+        "profile_id": "d72split_64_64_w4_s4",
+        "reason": "smaller M tile to reduce register pressure from tail accumulators",
+        "whale_fwd_d72_config": "64,64,4,4",
+        "whale_fwd_variant": "d72_split64_tail8"
+      }
+    ],
+    "shape": "B=48,T=2048,H=8,KV=4,D=72",
+    "timed_iters": 8,
+    "warmup_iters": 2
+  },
+  "log_path": "/workspace/SOTA_FINAL/legs/2026-04-26_d72_split64_tail8_kernel_microbench/logs/2026-04-26_d72_split64_tail8_kernel_microbench_s444.log",
+  "microbench_path": "/workspace/SOTA_FINAL/legs/2026-04-26_d72_split64_tail8_kernel_microbench/microbench.tsv",
+  "model": {
+    "dataset_dir": "./data/datasets/fineweb10B_sp8192",
+    "donor_lineage": "whale_l12_dim576_matrixbits5_d72",
+    "dtype": "bfloat16",
+    "head_dim": 72,
+    "model_dim": 576,
+    "num_heads": 8,
+    "num_kv_heads": 4,
+    "num_layers": 12,
+    "seed": 444,
+    "tokenizer_path": "./data/tokenizers/fineweb_8192_bpe.model",
+    "train_microbatch_per_rank": 48,
+    "train_seq_len": 2048,
+    "trainer_contract": "pr1493_decompressed.py",
+    "xsa_last_n": 11
+  },
+  "repo_root": "/workspace/SOTA_FINAL",
+  "result_path": "/workspace/SOTA_FINAL/legs/2026-04-26_d72_split64_tail8_kernel_microbench/results.tsv",
+  "run_py": "/workspace/SOTA_FINAL/legs/2026-04-26_d72_split64_tail8_kernel_microbench/run.py",
+  "test": {
+    "build_seconds": 1200,
+    "date": "2026-04-26",
+    "eval_seconds": 1200,
+    "gpu_count": 4,
+    "hypothesis": "A D72-specific split64+tail8 forward kernel can remove the 128-wide padded dot tax in whale forward while keeping FA3 backward unchanged, closing the measured 1.34x gap at the real train shape.",
+    "parent_baseline": "Default real-shape whale_fa3_bwd forward path averaged 1.336649x FA3 median; persistent forward was worse at 1.571082x.",
+    "parent_benchmark_id": "2026-04-26_d72_whale_fwd_config_realshape_microbench_and_persistent_realshape_microbench",
+    "size_cap_bytes": 16000000,
+    "standard_label": "mechanics_4x_kernel_microbench_scout",
+    "test_id": "2026-04-26_d72_split64_tail8_kernel_microbench"
+  }
+}

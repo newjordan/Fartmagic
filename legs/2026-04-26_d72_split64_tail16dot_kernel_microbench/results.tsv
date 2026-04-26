@@ -1,0 +1,2 @@
+test_id	date	gpu_count	build_seconds	eval_seconds	size_cap_bytes	raw_step	raw_bpb	post_ema_bpb	quant_bpb	sliding_bpb	ttt_bpb	total_bytes	decision	log_path	run_py
+2026-04-26_d72_split64_tail16dot_kernel_microbench	2026-04-26	4	1200	1200	16000000	NA	NA	NA	NA	NA	NA	NA	kernel_microbench_complete	/workspace/SOTA_FINAL/legs/2026-04-26_d72_split64_tail16dot_kernel_microbench/logs/2026-04-26_d72_split64_tail16dot_kernel_microbench_s444.log	/workspace/SOTA_FINAL/legs/2026-04-26_d72_split64_tail16dot_kernel_microbench/run.py

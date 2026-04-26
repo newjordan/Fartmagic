@@ -1,0 +1,290 @@
+[
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0,
+      "dq_max_abs": 0.0,
+      "dv_max_abs": 0.0,
+      "out_max_abs": 0.0,
+      "out_mean_abs": 0.0
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "",
+      "WHALE_FWD_VARIANT": "default"
+    },
+    "fa3": {
+      "mean_ms": 3.2892049057409167,
+      "median_ms": 3.28667089343071,
+      "min_ms": 3.2811700366437435,
+      "p90_ms": 3.2998966053128242
+    },
+    "gpu": 0,
+    "profile_id": "default_auto_reference",
+    "ratio_vs_fa3_median": 1.2889056671566965,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 4.234462219756097,
+      "median_ms": 4.236208740621805,
+      "min_ms": 4.228884819895029,
+      "p90_ms": 4.245157819241285
+    }
+  },
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0078125,
+      "dq_max_abs": 0.00390625,
+      "dv_max_abs": 0.001953125,
+      "out_max_abs": 0.00390625,
+      "out_mean_abs": 4.029273986816406e-05
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "128,64,4,4",
+      "WHALE_FWD_VARIANT": "d72_split64_tail16dot"
+    },
+    "fa3": {
+      "mean_ms": 11.283350409939885,
+      "median_ms": 3.3571519888937473,
+      "min_ms": 3.2813912257552147,
+      "p90_ms": 66.72545382753015
+    },
+    "gpu": 1,
+    "profile_id": "tail16dot_128_64_w4_s4",
+    "ratio_vs_fa3_median": 1.135430004234732,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 3.8104034028947353,
+      "median_ms": 3.8118110969662666,
+      "min_ms": 3.799095284193754,
+      "p90_ms": 3.8305181078612804
+    }
+  },
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0078125,
+      "dq_max_abs": 0.00390625,
+      "dv_max_abs": 0.001953125,
+      "out_max_abs": 0.00390625,
+      "out_mean_abs": 4.220008850097656e-05
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "128,64,8,4",
+      "WHALE_FWD_VARIANT": "d72_split64_tail16dot"
+    },
+    "fa3": {
+      "mean_ms": 3.29695304390043,
+      "median_ms": 3.299807198345661,
+      "min_ms": 3.2821218483150005,
+      "p90_ms": 3.324096091091633
+    },
+    "gpu": 2,
+    "profile_id": "tail16dot_128_64_w8_s4",
+    "ratio_vs_fa3_median": 1.2741640820955191,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 4.204142955131829,
+      "median_ms": 4.204495809972286,
+      "min_ms": 4.189756698906422,
+      "p90_ms": 4.220549017190933
+    }
+  },
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0078125,
+      "dq_max_abs": 0.00390625,
+      "dv_max_abs": 0.00048828125,
+      "out_max_abs": 0.00390625,
+      "out_mean_abs": 4.100799560546875e-05
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "64,64,4,4",
+      "WHALE_FWD_VARIANT": "d72_split64_tail16dot"
+    },
+    "fa3": {
+      "mean_ms": 3.2814883161336184,
+      "median_ms": 3.2868520356714725,
+      "min_ms": 3.2623219303786755,
+      "p90_ms": 3.2963608391582966
+    },
+    "gpu": 3,
+    "profile_id": "tail16dot_64_64_w4_s4",
+    "ratio_vs_fa3_median": 1.2368177708993504,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 4.061993502546102,
+      "median_ms": 4.065237008035183,
+      "min_ms": 4.044767003506422,
+      "p90_ms": 4.0870606899261475
+    }
+  },
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0,
+      "dq_max_abs": 0.0,
+      "dv_max_abs": 0.0,
+      "out_max_abs": 0.0,
+      "out_mean_abs": 0.0
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "128,128,4,4",
+      "WHALE_FWD_VARIANT": "d72_split64_tail16dot"
+    },
+    "fa3": {
+      "mean_ms": 3.2880851649679244,
+      "median_ms": 3.2885149121284485,
+      "min_ms": 3.28252324834466,
+      "p90_ms": 3.2994160428643227
+    },
+    "gpu": 0,
+    "profile_id": "tail16dot_128_128_w4_s4",
+    "ratio_vs_fa3_median": 1.2054149570548534,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 3.960102389100939,
+      "median_ms": 3.9640250615775585,
+      "min_ms": 3.9482731372117996,
+      "p90_ms": 3.9770412258803844
+    }
+  },
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0,
+      "dq_max_abs": 0.0,
+      "dv_max_abs": 0.0,
+      "out_max_abs": 0.0,
+      "out_mean_abs": 0.0
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "64,128,4,4",
+      "WHALE_FWD_VARIANT": "d72_split64_tail16dot"
+    },
+    "fa3": {
+      "mean_ms": 3.28922230983153,
+      "median_ms": 3.2877232879400253,
+      "min_ms": 3.2816408202052116,
+      "p90_ms": 3.3018309623003006
+    },
+    "gpu": 1,
+    "profile_id": "tail16dot_64_128_w4_s4",
+    "ratio_vs_fa3_median": 1.295405655144829,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 4.263765760697424,
+      "median_ms": 4.258935339748859,
+      "min_ms": 4.2454879730939865,
+      "p90_ms": 4.295968916267157
+    }
+  },
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0078125,
+      "dq_max_abs": 0.00390625,
+      "dv_max_abs": 0.001953125,
+      "out_max_abs": 0.00390625,
+      "out_mean_abs": 4.220008850097656e-05
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "128,64,4,5",
+      "WHALE_FWD_VARIANT": "d72_split64_tail16dot"
+    },
+    "fa3": {
+      "mean_ms": 3.30611621029675,
+      "median_ms": 3.304366022348404,
+      "min_ms": 3.2995170913636684,
+      "p90_ms": 3.3230637200176716
+    },
+    "gpu": 2,
+    "profile_id": "tail16dot_128_64_w4_s5",
+    "ratio_vs_fa3_median": 1.1621467482291612,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 3.8399609038606286,
+      "median_ms": 3.8401582278311253,
+      "min_ms": 3.832031972706318,
+      "p90_ms": 3.8609690964221954
+    }
+  },
+  {
+    "correctness_vs_default": {
+      "dk_max_abs": 0.0078125,
+      "dq_max_abs": 0.00390625,
+      "dv_max_abs": 0.00048828125,
+      "out_max_abs": 0.00390625,
+      "out_mean_abs": 4.100799560546875e-05
+    },
+    "env": {
+      "WHALE_BWD_VARIANT": "fused_delta_tma",
+      "WHALE_FWD_D72_CONFIG": "256,64,4,4",
+      "WHALE_FWD_VARIANT": "d72_split64_tail16dot"
+    },
+    "fa3": {
+      "mean_ms": 3.285920829512179,
+      "median_ms": 3.2904488034546375,
+      "min_ms": 3.277882933616638,
+      "p90_ms": 3.2949084416031837
+    },
+    "gpu": 3,
+    "profile_id": "tail16dot_256_64_w4_s4",
+    "ratio_vs_fa3_median": 1.5478475301736367,
+    "shape": {
+      "B": 48,
+      "D": 72,
+      "H": 8,
+      "KV": 4,
+      "T": 2048
+    },
+    "whale_fa3_bwd": {
+      "mean_ms": 5.1008922746405005,
+      "median_ms": 5.093113053590059,
+      "min_ms": 5.078522954136133,
+      "p90_ms": 5.156620871275663
+    }
+  }
+]

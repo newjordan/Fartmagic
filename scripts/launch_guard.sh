@@ -120,6 +120,21 @@ lg_lock_acquire() {
   echo "[launch_guard] lock_recovered ${LG_LOCK_DIR} pid=$$"
 }
 
+lg_ensure_torchrun() {
+  if command -v torchrun >/dev/null 2>&1; then
+    echo "[launch_guard] launcher=torchrun"
+    return 0
+  fi
+  if python3 -c 'import torch.distributed.run' >/dev/null 2>&1; then
+    torchrun() {
+      python3 -m torch.distributed.run "$@"
+    }
+    echo "[launch_guard] launcher=python3 -m torch.distributed.run"
+    return 0
+  fi
+  lg_die "torchrun not found in PATH and 'python3 -m torch.distributed.run' is unavailable"
+}
+
 lg_preflight_and_lock() {
   local repo_root="$1"
   local train_script="$2"
@@ -135,7 +150,7 @@ lg_preflight_and_lock() {
   lg_require_path "${repo_root}/scripts/leg_diff_guard.py" "leg_diff_guard"
   lg_verify_pod_stack_lock "$repo_root"
 
-  command -v torchrun >/dev/null 2>&1 || lg_die "torchrun not found in PATH"
+  lg_ensure_torchrun
 
   if [[ -n "${DATA_PATH:-}" ]]; then
     lg_require_path "${DATA_PATH}" "DATA_PATH"

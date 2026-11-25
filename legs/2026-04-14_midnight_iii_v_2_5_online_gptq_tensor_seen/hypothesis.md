@@ -1,17 +1,16 @@
-# Hypothesis — 2026-04-14_midnight_iii_v_2_3_online_gptq_cpu
+# Hypothesis — 2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen
 
-Parent: legs/2026-04-13_midnight_iii_v_2_1_compile_lock/train_gpt.py
+Parent: legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu/train_gpt.py
 
 ## One Variable
-- Name: `GPTQ_CAL_MODE`
-- New value: `online_cpu`
-- Baseline value: `offline`
+- Name: `OnlineGptqAccumulator.n_seen`
+- New value: scalar float tensors updated with in-place `add_`
+- Baseline value: Python `int` counters (`self.n_seen[name] += rows`)
 
 ## Why
-- Offline GPTQ calibration consumes dedicated end-of-run wallclock and can miss late-recursion dynamics.
-- Online CPU Hessian accumulation during training should preserve effective training budget while tracking the active looping regime.
+- `tracked_env.sh` matches the parent leg, including `GPTQ_CAL_MODE=online_cpu`.
+- The trainer change stores each online-GPTQ row count as a tensor on the same device as the Hessian instead of mutating a Python int during the forward.
 
 ## Gate Pass Criteria
-- Log shows `gptq:online` collection activity during training.
-- Final section reports `gptq:calibrated` with non-zero layers.
-- Report required diagnostics and exact final metrics with submission bytes.
+- `gate.sh` launches this leg's `train_gpt.py`, not the parent leg.
+- Full-run logs, when produced, show `gptq:online mode:online_cpu` and a non-empty online calibration summary.

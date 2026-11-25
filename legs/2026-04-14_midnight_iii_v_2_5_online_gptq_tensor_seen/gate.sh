@@ -7,9 +7,10 @@ cd "${REPO_ROOT}"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/launch_guard.sh"
 
-TRAIN_SCRIPT="${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu/train_gpt.py"
-TRACKED_ENV="${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu/tracked_env.sh"
-LOG_DIR="${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu/logs"
+LEG_DIR="${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen"
+TRAIN_SCRIPT="${LEG_DIR}/train_gpt.py"
+TRACKED_ENV="${LEG_DIR}/tracked_env.sh"
+LOG_DIR="${LEG_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/gate_seed${SEED:-444}_$(date +%Y%m%d_%H%M%S).log"
 
@@ -42,14 +43,14 @@ reject_adhoc_env() {
 
 # Mandatory preflight: trainer diff must pass before the gate runs.
 # For intentional framework-level legs, pass explicit overrides, e.g.:
-# LEG_DIFF_GUARD_ARGS="--max-code-changes 80 --max-total-changed-lines 120" bash ${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu/gate.sh
-DEFAULT_LEG_DIFF_GUARD_ARGS="--max-code-changes 300 --max-total-changed-lines 400"
+# LEG_DIFF_GUARD_ARGS="--max-code-changes 80 --max-total-changed-lines 120" bash ${LEG_DIR}/gate.sh
+DEFAULT_LEG_DIFF_GUARD_ARGS="--parent ${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu/train_gpt.py --max-code-changes 300 --max-total-changed-lines 400"
 if [[ -n "${LEG_DIFF_GUARD_ARGS:-}" ]]; then
   # shellcheck disable=SC2086
-  python3 "${REPO_ROOT}/scripts/leg_diff_guard.py" "${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu" ${LEG_DIFF_GUARD_ARGS}
+  python3 "${REPO_ROOT}/scripts/leg_diff_guard.py" "${LEG_DIR}" ${LEG_DIFF_GUARD_ARGS}
 else
   # shellcheck disable=SC2086
-  python3 "${REPO_ROOT}/scripts/leg_diff_guard.py" "${REPO_ROOT}/legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu" ${DEFAULT_LEG_DIFF_GUARD_ARGS}
+  python3 "${REPO_ROOT}/scripts/leg_diff_guard.py" "${LEG_DIR}" ${DEFAULT_LEG_DIFF_GUARD_ARGS}
 fi
 
 reject_adhoc_env

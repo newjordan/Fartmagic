@@ -17,9 +17,15 @@ if ! command -v git >/dev/null 2>&1; then
   exit 0
 fi
 
-changed="$(git diff --cached --name-only -- scripts/Im_sorry_pod_setup.sh || true)"
+changed="$(git diff --cached --name-only -- \
+  scripts/Im_sorry_pod_setup.sh \
+  scripts/Im_sorry_pod_setup.sh.cu130_frozen_20260414 \
+  scripts/pod_stack_guard.sh \
+  scripts/pod_stack.lock \
+  vault \
+  || true)"
 if [[ -n "${changed}" ]]; then
-  echo "FATAL[pre-commit]: pod stack files are protected." >&2
+  echo "FATAL[pre-commit]: pod stack files and vault/ are protected." >&2
   echo "Blocked files:" >&2
   echo "${changed}" >&2
   echo "If intentional, commit with: ALLOW_POD_STACK_EDIT=1 git commit ..." >&2

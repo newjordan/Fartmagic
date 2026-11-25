@@ -4,29 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
-# Auto-detect data/tokenizer paths. Check common pod locations.
-if [[ -z "${DATA_PATH:-}" ]]; then
-  for _d in "${SCRIPT_DIR}/../data/datasets/fineweb10B_sp8192" \
-            "${SCRIPT_DIR}/../../data/datasets/fineweb10B_sp8192" \
-            "/root/Fartmagic/data/datasets/fineweb10B_sp8192" \
-            "/dev/shm/fineweb10B_sp8192" \
-            "/workspace/SOTA_FINAL/data/datasets/fineweb10B_sp8192" \
-            "/home/frosty40/parameter-golf-lab/data/datasets/fineweb10B_sp8192"; do
-    if [[ -d "$_d" ]]; then export DATA_PATH="$_d"; break; fi
-  done
-  [[ -z "${DATA_PATH:-}" ]] && { echo "FATAL: Cannot find fineweb10B_sp8192 dataset. Set DATA_PATH."; exit 1; }
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/resolve_sp8192_paths.sh"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: bash scripts/run_competition_moonshot.sh
+
+RWKV moonshot runner. Set DATA_PATH and TOKENIZER_PATH to override
+discovery. DRY_RUN=1 prints the resolved profile and does not train.
+EOF
+  exit 0
 fi
-if [[ -z "${TOKENIZER_PATH:-}" ]]; then
-  for _t in "${SCRIPT_DIR}/../data/tokenizers/fineweb_8192_bpe.model" \
-            "${SCRIPT_DIR}/../../data/tokenizers/fineweb_8192_bpe.model" \
-            "/root/Fartmagic/data/tokenizers/fineweb_8192_bpe.model" \
-            "/dev/shm/fineweb_8192_bpe.model" \
-            "/workspace/SOTA_FINAL/data/tokenizers/fineweb_8192_bpe.model" \
-            "/home/frosty40/parameter-golf-lab/data/tokenizers/fineweb_8192_bpe.model"; do
-    if [[ -f "$_t" ]]; then export TOKENIZER_PATH="$_t"; break; fi
-  done
-  [[ -z "${TOKENIZER_PATH:-}" ]] && { echo "FATAL: Cannot find fineweb_8192_bpe.model tokenizer. Set TOKENIZER_PATH."; exit 1; }
-fi
+
+fm_resolve_sp8192 "${SCRIPT_DIR}"
 
 export SEED="${SEED:-4}"
 export RUN_ID="${RUN_ID:-tone_moonshot_s${SEED}}"
@@ -66,12 +57,16 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
 cwd=${SCRIPT_DIR}
 RUN_ID=${RUN_ID}
 SEED=${SEED}
+DATA_PATH=${DATA_PATH:-<unset>}
+TOKENIZER_PATH=${TOKENIZER_PATH:-<unset>}
 CRAWLER_LINEAR_RECURRENCE=${CRAWLER_LINEAR_RECURRENCE}
 LINEAR_RECURRENCE_CHUNK_SIZE=${LINEAR_RECURRENCE_CHUNK_SIZE}
 MAX_WALLCLOCK_SECONDS=${MAX_WALLCLOCK_SECONDS}
 EOF
   exit 0
 fi
+
+fm_require_sp8192
 
 # Auto-detect venv paths so torchrun/python3 always resolve.
 for _p in /venv/main/bin /opt/conda/bin /usr/local/bin; do

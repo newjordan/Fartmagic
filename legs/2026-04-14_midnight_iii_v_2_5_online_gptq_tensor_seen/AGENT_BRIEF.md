@@ -1,8 +1,8 @@
-# Agent Brief — 2026-04-13_midnight_iii_v_2_postema_gptq
+# Agent Brief — 2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen
 
 ## Scope
 You may edit only files listed in:
-`legs/2026-04-13_midnight_iii_v_2_postema_gptq/agent_allowlist.txt`
+`legs/2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen/agent_allowlist.txt`
 
 ## Task rules
 1. Change exactly ONE variable vs baseline.
@@ -10,7 +10,7 @@ You may edit only files listed in:
 3. This leg is an isolated test silo. If you need a different test condition, create a new leg.
 4. Update `hypothesis.md` before code edits.
 5. Edit `tracked_env.sh` for env-level changes. Do not test by typing env overrides into the shell.
-6. Run `python3 scripts/leg_diff_guard.py legs/2026-04-13_midnight_iii_v_2_postema_gptq` before any gate, full run, or commit.
+6. Run `python3 scripts/leg_diff_guard.py legs/2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen` before any gate, full run, or commit.
 7. Treat diff guard FAIL as a blocker unless the user explicitly approved wider thresholds.
 8. Fill `ablation.md` and `RESULTS.md` after each run.
 9. Do not make log claims without corpus evidence (path + exact lines or exact grep/sed output).
@@ -22,9 +22,9 @@ You may edit only files listed in:
 
 ## Commands
 ```bash
-bash scripts/agent_guard.sh snapshot pre_midnight_iii_v_2_postema_gptq
-python3 scripts/leg_diff_guard.py legs/2026-04-13_midnight_iii_v_2_postema_gptq
-bash legs/2026-04-13_midnight_iii_v_2_postema_gptq/gate.sh
-bash legs/2026-04-13_midnight_iii_v_2_postema_gptq/run.sh
-bash scripts/agent_guard.sh check legs/2026-04-13_midnight_iii_v_2_postema_gptq/agent_allowlist.txt --delta-latest
+bash scripts/agent_guard.sh snapshot pre_midnight_iii_v_2_5_online_gptq_tensor_seen
+python3 scripts/leg_diff_guard.py legs/2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen
+bash legs/2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen/gate.sh
+bash legs/2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen/run.sh
+bash scripts/agent_guard.sh check legs/2026-04-14_midnight_iii_v_2_5_online_gptq_tensor_seen/agent_allowlist.txt --delta-latest
 ```

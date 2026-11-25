@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -21,8 +22,19 @@ from pathlib import Path
 
 PARENT_RE = re.compile(r"^Parent:\s*(\S+)\s*$")
 LEG_RE = re.compile(r"^Leg:\s*(\S+)\s*$")
-ENV_RE = re.compile(r'os\.environ\.get\("([A-Z0-9_]+)"')
+ENV_RE = re.compile(
+    r"""os\.environ(?:\[['\"]([A-Z0-9_]+)['\"]\]|(?:\.get|\.pop)\(\s*['\"]([A-Z0-9_]+)['\"])"""
+)
 LOCK_FILE_NAME = ".train_gpt.lock.json"
+
+
+def env_names_in_line(line: str) -> list[str]:
+    names: list[str] = []
+    for match in ENV_RE.finditer(line):
+        name = next((group for group in match.groups() if group), None)
+        if name:
+            names.append(name)
+    return names
 
 
 @dataclass
@@ -176,7 +188,7 @@ def analyze_diff(parent_path: Path, target_path: Path) -> DiffSummary:
                 if not is_nonblank_change(line):
                     continue
                 hyperparam_changed_lines += 1
-                envs = ENV_RE.findall(line)
+                envs = env_names_in_line(line)
                 if envs:
                     hyperparam_envs.update(envs)
                 else:
@@ -235,7 +247,12 @@ def write_lock(lock_path: Path, summary: DiffSummary) -> None:
 def check_lock(lock_path: Path, target_path: Path) -> tuple[bool, str]:
     if not lock_path.exists():
         return False, f"lock file missing: {relpath(lock_path)}"
-    payload = json.loads(read_text(lock_path))
+    try:
+        payload = json.loads(read_text(lock_path))
+    except json.JSONDecodeError as exc:
+        return False, f"lock file is not valid JSON: {relpath(lock_path)} (line {exc.lineno})"
+    if not isinstance(payload, dict):
+        return False, f"lock file must contain a JSON object: {relpath(lock_path)}"
     current_sha = sha256_text(read_text(target_path))
     locked_sha = payload.get("target_sha256")
     if current_sha != locked_sha:
@@ -244,18 +261,47 @@ def check_lock(lock_path: Path, target_path: Path) -> tuple[bool, str]:
             f"locked file: {payload.get('target_path')}\n"
             f"lock file: {relpath(lock_path)}"
         )
+    locked_target = payload.get("target_path")
+    current_rel = relpath(target_path)
+    if locked_target and locked_target != current_rel:
+        return False, (
+            "lock mismatch: lock target_path does not match the file being checked\n"
+            f"locked file: {locked_target}\n"
+            f"current file: {current_rel}"
+        )
+    parent_sha = payload.get("parent_sha256")
+    parent_rel = payload.get("parent_path")
+    if parent_sha and parent_rel:
+        parent_file = Path(parent_rel)
+        if not parent_file.is_absolute():
+            parent_file = repo_root() / parent_rel
+        if not parent_file.is_file():
+            return False, f"lock mismatch: parent file missing: {parent_rel}"
+        if sha256_text(read_text(parent_file)) != parent_sha:
+            return False, (
+                "lock mismatch: parent train_gpt.py hash differs from the locked version\n"
+                f"parent file: {parent_rel}"
+            )
     return True, f"lock OK: {relpath(lock_path)} matches current train_gpt.py"
 
 
+def _paint(text: str, code: str) -> str:
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
 def print_summary(summary: DiffSummary, args: argparse.Namespace) -> int:
+    print("leg-diff-guard")
     print(f"parent: {relpath(summary.parent_path)}")
     print(f"target: {relpath(summary.target_path)}")
     print(f"hunks: {summary.hunks}")
-    print(f"total_changed_lines: {summary.total_changed_lines}")
+    print(f"total_changed_lines: {summary.total_changed_lines} (limit {args.max_total_changed_lines})")
     print(f"hyperparam_changed_lines: {summary.hyperparam_changed_lines}")
-    print(f"hyperparam_envs_changed: {', '.join(summary.hyperparam_envs) if summary.hyperparam_envs else '(none)'}")
-    print(f"hyperparam_non_env_lines: {summary.hyperparam_non_env_lines}")
-    print(f"non_hyperparam_changed_lines: {summary.non_hyperparam_changed_lines}")
+    env_text = ", ".join(summary.hyperparam_envs) if summary.hyperparam_envs else "(none)"
+    print(f"hyperparam_envs_changed: {env_text} (limit {args.max_env_changes})")
+    print(f"hyperparam_non_env_lines: {summary.hyperparam_non_env_lines} (limit {args.max_hparam_misc_lines})")
+    print(f"non_hyperparam_changed_lines: {summary.non_hyperparam_changed_lines} (limit {args.max_code_changes})")
 
     failures: list[str] = []
     if len(summary.hyperparam_envs) > args.max_env_changes:
@@ -276,19 +322,22 @@ def print_summary(summary: DiffSummary, args: argparse.Namespace) -> int:
             f"changed too many nonblank lines overall ({summary.total_changed_lines} > {args.max_total_changed_lines})"
         )
 
-    print("\n--- unified diff ---")
-    if summary.diff_text:
-        print(summary.diff_text, end="" if summary.diff_text.endswith("\n") else "\n")
+    if args.no_diff:
+        print("\ndiff: suppressed (--no-diff)")
     else:
-        print("(no diff)")
+        print("\n--- unified diff ---")
+        if summary.diff_text:
+            print(summary.diff_text, end="" if summary.diff_text.endswith("\n") else "\n")
+        else:
+            print("(no diff)")
 
     if failures:
-        print("\nFAIL:")
+        print("\n" + _paint("FAIL:", "1;31"))
         for failure in failures:
             print(f"- {failure}")
         return 1
 
-    print("\nPASS: change footprint is within configured surgical limits")
+    print("\n" + _paint("PASS: change footprint is within configured surgical limits", "1;32"))
     return 0
 
 
@@ -302,6 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-total-changed-lines", type=int, default=40)
     p.add_argument("--write-lock", action="store_true", help="write a lock file after analysis")
     p.add_argument("--check-lock", action="store_true", help="verify current file against the saved lock")
+    p.add_argument("--no-diff", action="store_true", help="print the summary without the unified diff")
     p.add_argument("--lock-file", help="override lock file path")
     return p
 

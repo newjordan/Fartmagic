@@ -63,7 +63,10 @@ lg_preflight_and_lock "${REPO_ROOT}" "${TRAIN_SCRIPT}" "${TRACKED_ENV}" "${NPROC
 print_banner() {
   local phase="$1"
   [[ "${RUN_BRAND_BANNER:-0}" == "1" ]] || return 0
-  [[ -f "${BANNER_FILE}" ]] || return 0
+  if [[ ! -f "${BANNER_FILE}" ]]; then
+    echo "FATAL: RUN_BRAND_BANNER=1 but banner file is missing: ${BANNER_FILE}" >&2
+    exit 1
+  fi
   echo "brand_banner:${phase}:start"
   cat "${BANNER_FILE}"
   echo "brand_banner:${phase}:end"

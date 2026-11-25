@@ -33,6 +33,16 @@ normalize_path() {
   printf '%s' "$p"
 }
 
+unquote_git_path() {
+  local p="$1"
+  if [[ ${#p} -ge 2 && "${p:0:1}" == '"' && "${p: -1}" == '"' ]]; then
+    p="${p:1:${#p}-2}"
+    p="${p//\\\"/\"}"
+    p="${p//\\\\/\\}"
+  fi
+  printf '%s' "$p"
+}
+
 parse_status_paths() {
   git status --porcelain=v1 | while IFS= read -r line; do
     [[ -z "$line" ]] && continue
@@ -40,8 +50,9 @@ parse_status_paths() {
     if [[ "$path" == *" -> "* ]]; then
       path="${path##* -> }"
     fi
-    normalize_path "$path"
-    printf '\n'
+    path="$(unquote_git_path "$(normalize_path "$path")")"
+    [[ -z "$path" ]] && continue
+    printf '%s\n' "$path"
   done
 }
 

@@ -43,5 +43,9 @@
 - `legs/2026-04-13_midnight_iii_v_qattn6`
 
 ## Lane Runner Entrypoints
-- `bash scripts/run_midnight_iii_lane.sh gate|run [seed] [nproc_per_node]`
-- `bash scripts/run_midnight_12l_lane.sh gate|run [seed] [nproc_per_node]`
+These dispatch to the clean campaign legs. They do not launch the promoted qattn6 artifact.
+
+- `bash scripts/run_midnight_iii_lane.sh gate|run [seed] [nproc_per_node]` runs `legs/2026-04-12_midnight_iii_clean`
+- `bash scripts/run_midnight_12l_lane.sh gate|run [seed] [nproc_per_node]` runs `legs/2026-04-12_midnight_12l_clean`
+
+Run the promoted leg directly with `bash legs/2026-04-13_midnight_iii_v_qattn6/gate.sh` or `run.sh`.

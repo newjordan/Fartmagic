@@ -1,17 +1,16 @@
-# Hypothesis — 2026-04-14_midnight_iii_v_2_3_online_gptq_cpu
+# Hypothesis — 2026-04-14_midnight_iii_v_2_4_brand_bookend
 
-Parent: legs/2026-04-13_midnight_iii_v_2_1_compile_lock/train_gpt.py
+Parent: legs/2026-04-14_midnight_iii_v_2_3_online_gptq_cpu/train_gpt.py
 
 ## One Variable
-- Name: `GPTQ_CAL_MODE`
-- New value: `online_cpu`
-- Baseline value: `offline`
+- Name: `RUN_BRAND_BANNER`
+- New value: `1`, printing `brand_banner.braille.txt` before and after the launch
+- Baseline value: banner disabled
 
 ## Why
-- Offline GPTQ calibration consumes dedicated end-of-run wallclock and can miss late-recursion dynamics.
-- Online CPU Hessian accumulation during training should preserve effective training budget while tracking the active looping regime.
+- `train_gpt.py` and the training exports in `tracked_env.sh` match the parent leg.
+- The bookend is a log marker around the process. It does not change the training math.
 
 ## Gate Pass Criteria
-- Log shows `gptq:online` collection activity during training.
-- Final section reports `gptq:calibrated` with non-zero layers.
-- Report required diagnostics and exact final metrics with submission bytes.
+- With the tracked env sourced, the launcher prints `brand_banner:pre:start` before `torchrun` and `brand_banner:post:start` after it.
+- A missing banner file is a fatal error when `RUN_BRAND_BANNER=1`.

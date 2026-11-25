@@ -39,3 +39,6 @@ export NUM_LOOPS=2
 export LOOP_START=3
 export LOOP_END=5
 export ENABLE_LOOPING_AT=0.35
+
+# One variable for this leg: print the brand bookend around the launch.
+export RUN_BRAND_BANNER=1
